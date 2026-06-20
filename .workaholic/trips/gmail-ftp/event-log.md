@@ -15,3 +15,4 @@
 | 2026-06-20T20:35:57+09:00 | planner | e2e-plan | e2e-plan.md | Authored E2E plan (S1-S10 smoke, G1-G8 credential-gated) and validated Go toolchain |
 | 2026-06-20T20:35:57+09:00 | architect | review-prep | review-criteria.md | Authored structural review checklist (A-H) and discovered reference boundaries |
 | 2026-06-20T20:40:45+09:00 | architect | code-review | internal/**, main.go | Approve with minor suggestions; all structural risks cleared; flagged deferred-verbs-in-dispatch fidelity |
+| 2026-06-20T20:40:45+09:00 | planner | e2e-testing | S1-S10 smoke | 9 PASS, 1 PARTIAL (S5b -json pre-auth envelope); Approve with minor suggestions |
