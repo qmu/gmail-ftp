@@ -19,3 +19,4 @@
 | 2026-06-20T20:41:28+09:00 | lead | amendment | plan.md | Amendment 2: permit discoverable deferred stubs; schedule S5b JSON-envelope fix for Iteration 1 |
 | 2026-06-20T20:43:37+09:00 | constructor | fix | main.go, internal/shell/shell_test.go | Fixed S5b: pre-auth fatal errors now emit JSON envelope in -json mode via single exitErr helper |
 | 2026-06-20T20:46:47+09:00 | architect | re-review | main.go | Approve with minor suggestions; S5b fix structurally sound; no regressions |
+| 2026-06-20T20:46:47+09:00 | planner | re-test | S5b, S2, S9 | S5b upgraded PARTIAL→PASS; overall Approve; zero panics |
