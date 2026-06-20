@@ -12,3 +12,4 @@
 | 2026-06-20T20:15:26+09:00 | architect | revision | models/model-v2.md | Accepted Constructor request-revision: committed to 2-level nav, added N+1 cost model |
 | 2026-06-20T20:16:09+09:00 | lead | phase-transition | planning→coding | Consensus reached; Amendment 1 fixes 2-level navigation, rm/mkdir/OAuth, and defers send/label to v1.1 |
 | 2026-06-20T20:35:57+09:00 | constructor | implementation | internal/**, main.go, plugins/** | Implemented gmail-ftp v1: auth/gmail/shell/audit, 65 passing tests, build+vet clean |
+| 2026-06-20T20:35:57+09:00 | planner | e2e-plan | e2e-plan.md | Authored E2E plan (S1-S10 smoke, G1-G8 credential-gated) and validated Go toolchain |
