@@ -1,0 +1,12 @@
+# OAuth secrets and cached tokens — never commit these
+credentials.json
+token.json
+*.token.json
+
+# Built binary
+/gmail-ftp
+/dist/
+
+# Editor / OS noise
+*.swp
+.DS_Store
