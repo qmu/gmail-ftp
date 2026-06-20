@@ -8,3 +8,5 @@
 | 2026-06-20T20:11:31+09:00 | planner | review | designs/design-v1.md, models/model-v1.md | Requested revision of Design (nav divergence); approved Model with minor suggestions |
 | 2026-06-20T20:11:31+09:00 | architect | review | directions/direction-v1.md, designs/design-v1.md | Recommended canonical 2-level navigation; approved both with observations/minor suggestions |
 | 2026-06-20T20:11:31+09:00 | constructor | review | directions/direction-v1.md, models/model-v1.md | Requested revision of Model; conceded 2-level navigation over own 3-level design |
+| 2026-06-20T20:15:26+09:00 | constructor | revision | designs/design-v2.md | Accepted Planner request-revision: adopted 2-level nav, fixed rm, defined mkdir/label |
+| 2026-06-20T20:15:26+09:00 | architect | revision | models/model-v2.md | Accepted Constructor request-revision: committed to 2-level nav, added N+1 cost model |
