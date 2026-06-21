@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"gmail-ftp/internal/audit"
 	gmailpkg "gmail-ftp/internal/gmail"
 
 	gmail "google.golang.org/api/gmail/v1"
@@ -33,6 +34,11 @@ type fakeClient struct {
 	createdLabels   []string
 	createdDrafts   int
 	modifyCalls     int
+
+	drafts        map[string][]byte // draftID -> raw MIME, for attach/send paths
+	updatedDrafts []string          // draftIDs updated via UpdateDraft
+	sentDrafts    []string          // draftIDs sent via SendDraft
+	lastCreated   []byte            // raw bytes of the most recent CreateDraft
 }
 
 func (f *fakeClient) ListLabels(ctx context.Context) ([]gmailpkg.Label, error) {
@@ -75,7 +81,36 @@ func (f *fakeClient) GetThread(ctx context.Context, id string) (*gmail.Thread, e
 
 func (f *fakeClient) CreateDraft(ctx context.Context, raw []byte) (*gmail.Draft, error) {
 	f.createdDrafts++
+	f.lastCreated = raw
 	return &gmail.Draft{Id: "draft1", Message: &gmail.Message{Id: "dm1", ThreadId: "dt1"}}, nil
+}
+
+func (f *fakeClient) GetDraftRaw(ctx context.Context, draftID string) (string, []byte, error) {
+	if raw, ok := f.drafts[draftID]; ok {
+		return "dt1", raw, nil
+	}
+	return "", nil, gmailpkg.ErrNotFound
+}
+
+func (f *fakeClient) UpdateDraft(ctx context.Context, draftID string, raw []byte) (*gmail.Draft, error) {
+	if _, ok := f.drafts[draftID]; !ok {
+		return nil, gmailpkg.ErrNotFound
+	}
+	f.drafts[draftID] = raw
+	f.updatedDrafts = append(f.updatedDrafts, draftID)
+	return &gmail.Draft{Id: draftID, Message: &gmail.Message{Id: "dm1", ThreadId: "dt1"}}, nil
+}
+
+func (f *fakeClient) SendDraft(ctx context.Context, draftID string) (*gmail.Message, error) {
+	if _, ok := f.drafts[draftID]; !ok {
+		return nil, gmailpkg.ErrNotFound
+	}
+	f.sentDrafts = append(f.sentDrafts, draftID)
+	return &gmail.Message{
+		Id:       "sent1",
+		ThreadId: "dt1",
+		Payload:  &gmail.MessagePart{Headers: []*gmail.MessagePartHeader{{Name: "To", Value: "a@b.test"}}},
+	}, nil
 }
 
 func (f *fakeClient) TrashMessage(ctx context.Context, id string) (*gmail.Message, error) {
@@ -228,7 +263,7 @@ func TestArgKind(t *testing.T) {
 		{"get", 1, "remote"},
 		{"get", 2, "local"},
 		{"put", 1, "local"},
-		{"put", 2, "remote"},
+		{"put", 2, ""}, // arg 2 is a draft id, not a completable remote path
 		{"lcd", 1, "local"},
 		{"pwd", 1, ""},
 		{"ls", 2, ""},
@@ -237,7 +272,8 @@ func TestArgKind(t *testing.T) {
 		{"search", 1, ""},      // arg 1 is the query, no completion
 		{"label", 1, "remote"}, // target message
 		{"label", 2, ""},       // label name, no completion
-		{"send", 1, "local"},
+		{"send", 1, ""},        // a draft id, not a completable path
+		{"compose", 1, "local"},
 	}
 	for _, tt := range tests {
 		if got := argKind(tt.verb, tt.idx); got != tt.want {
@@ -684,8 +720,8 @@ func TestCmdPutCreatesDraftNeverSends(t *testing.T) {
 	}
 }
 
-// send/label/unlabel are deferred to v1.1: their handlers exist but must return a
-// clear deferral notice and perform no mutation.
+// label/unlabel remain deferred to v1.1: their handlers exist but must return a
+// clear deferral notice and perform no mutation. (send is no longer deferred.)
 func TestDeferredVerbsAreStubbed(t *testing.T) {
 	f := newFake()
 	s, _ := newShell(f, false)
@@ -693,7 +729,6 @@ func TestDeferredVerbsAreStubbed(t *testing.T) {
 		name string
 		run  func([]string) error
 	}{
-		{"send", s.cmdSend},
 		{"label", s.cmdLabel},
 		{"unlabel", s.cmdUnlabel},
 	} {
@@ -704,6 +739,174 @@ func TestDeferredVerbsAreStubbed(t *testing.T) {
 	}
 	if f.createdDrafts != 0 || f.modifyCalls != 0 || len(f.trashedMessages) != 0 {
 		t.Error("deferred verbs must not mutate anything")
+	}
+}
+
+// compose builds a draft from To/Subject/body via the MIME builder and never
+// sends. The created draft's raw must carry the addressing headers.
+func TestCmdComposeCreatesDraftNeverSends(t *testing.T) {
+	f := newFake()
+	f.drafts = map[string][]byte{}
+	s, buf := newShell(f, false)
+	dir := t.TempDir()
+	bodyFile := filepath.Join(dir, "body.txt")
+	if err := os.WriteFile(bodyFile, []byte("Hello there"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.cmdCompose([]string{"--to", "a@b.test", "--subject", "Greetings", bodyFile}); err != nil {
+		t.Fatal(err)
+	}
+	if f.createdDrafts != 1 {
+		t.Fatalf("compose should create exactly one draft, got %d", f.createdDrafts)
+	}
+	if len(f.sentDrafts) != 0 {
+		t.Errorf("compose must never send, sent=%v", f.sentDrafts)
+	}
+	raw := string(f.lastCreated)
+	for _, want := range []string{"To: a@b.test", "Subject: Greetings", "Hello there"} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("composed raw missing %q:\n%s", want, raw)
+		}
+	}
+	if !strings.Contains(buf.String(), "not sent") {
+		t.Errorf("compose output must say not sent, got: %s", buf.String())
+	}
+}
+
+func TestCmdComposeRequiresTo(t *testing.T) {
+	f := newFake()
+	s, _ := newShell(f, false)
+	if err := s.cmdCompose([]string{"--subject", "x"}); err == nil {
+		t.Error("compose without --to should error")
+	}
+	if f.createdDrafts != 0 {
+		t.Error("compose with no --to must not create a draft")
+	}
+}
+
+// put <local> <draft> attaches the file to an existing draft via a single
+// UpdateDraft, and must NEVER send.
+func TestCmdPutAttachToDraftNeverSends(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "report.pdf")
+	if err := os.WriteFile(local, []byte("PDFBYTES"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := newFake()
+	f.drafts = map[string][]byte{"d9": []byte("To: x@y.test\r\nSubject: Hi\r\n\r\nbody")}
+	s, buf := newShell(f, false)
+	if err := s.cmdPut([]string{local, "id:draft:d9"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.updatedDrafts) != 1 || f.updatedDrafts[0] != "d9" {
+		t.Errorf("attach should update draft d9 exactly once, got %v", f.updatedDrafts)
+	}
+	if f.createdDrafts != 0 {
+		t.Errorf("attach must not create a new draft, got %d", f.createdDrafts)
+	}
+	if len(f.sentDrafts) != 0 {
+		t.Errorf("attach must never send, sent=%v", f.sentDrafts)
+	}
+	updated := string(f.drafts["d9"])
+	if !strings.Contains(updated, "multipart/mixed") || !strings.Contains(updated, `filename="report.pdf"`) {
+		t.Errorf("updated draft should be multipart with the attachment, got:\n%s", updated)
+	}
+	if !strings.Contains(buf.String(), "attached") || !strings.Contains(buf.String(), "not sent") {
+		t.Errorf("attach output: %s", buf.String())
+	}
+}
+
+// put's bare id: form also addresses a draft for attach.
+func TestCmdPutAttachAcceptsBareID(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "a.bin")
+	if err := os.WriteFile(local, []byte("X"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := newFake()
+	f.drafts = map[string][]byte{"d1": []byte("Subject: Hi\r\n\r\nbody")}
+	s, _ := newShell(f, false)
+	if err := s.cmdPut([]string{local, "id:d1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.updatedDrafts) != 1 {
+		t.Errorf("bare id: attach should update the draft, got %v", f.updatedDrafts)
+	}
+}
+
+// put <local> with no target still creates a draft and never sends (v1 behavior
+// preserved).
+func TestCmdPutNoTargetStillCreatesDraft(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "msg.eml")
+	if err := os.WriteFile(local, []byte("Subject: Hi\r\n\r\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := newFake()
+	f.drafts = map[string][]byte{}
+	s, _ := newShell(f, false)
+	if err := s.cmdPut([]string{local}); err != nil {
+		t.Fatal(err)
+	}
+	if f.createdDrafts != 1 {
+		t.Errorf("put with no target should create a draft, got %d", f.createdDrafts)
+	}
+	if len(f.sentDrafts) != 0 || len(f.updatedDrafts) != 0 {
+		t.Errorf("put with no target must not send or update, sent=%v updated=%v", f.sentDrafts, f.updatedDrafts)
+	}
+}
+
+// send resolves the draft, calls SendDraft, audits, echoes the recipient, and is
+// reachable only via the explicit verb — never from put.
+func TestCmdSendSendsDraftAndAudits(t *testing.T) {
+	f := newFake()
+	f.drafts = map[string][]byte{"d9": []byte("Subject: Hi\r\n\r\nbody")}
+	s, buf := newShell(f, false)
+	// A real logger pointed at a temp file so the OpSend audit write succeeds
+	// silently; we assert on the send call and the user-facing result.
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	s.log = audit.New(auditPath)
+	if err := s.cmdSend([]string{"id:draft:d9"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sentDrafts) != 1 || f.sentDrafts[0] != "d9" {
+		t.Errorf("send should send draft d9 exactly once, got %v", f.sentDrafts)
+	}
+	if f.createdDrafts != 0 || len(f.updatedDrafts) != 0 {
+		t.Errorf("send must not create or update drafts")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "sent message sent1") || !strings.Contains(out, "a@b.test") {
+		t.Errorf("send output should echo message id and recipient, got: %s", out)
+	}
+	// Verify the OpSend audit record landed.
+	data, err := os.ReadFile(auditPath)
+	if err == nil && !strings.Contains(string(data), `"op":"send"`) {
+		t.Errorf("send should write an OpSend audit record, got:\n%s", data)
+	}
+}
+
+func TestCmdSendMissingDraftIs404(t *testing.T) {
+	f := newFake()
+	f.drafts = map[string][]byte{}
+	s, _ := newShell(f, false)
+	err := s.cmdSend([]string{"id:draft:nope"})
+	if !errors.Is(err, gmailpkg.ErrNotFound) {
+		t.Errorf("sending a missing draft should 404, got %v", err)
+	}
+	if len(f.sentDrafts) != 0 {
+		t.Error("a 404 send must not record a send")
+	}
+}
+
+func TestCmdSendRejectsNonDraftArg(t *testing.T) {
+	f := newFake()
+	s, _ := newShell(f, false)
+	if err := s.cmdSend([]string{"some message name"}); err == nil {
+		t.Error("send should reject a non-id draft argument")
+	}
+	if len(f.sentDrafts) != 0 {
+		t.Error("rejected send must not send anything")
 	}
 }
 

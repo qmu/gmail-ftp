@@ -3,6 +3,7 @@ package shell
 import (
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,10 +23,11 @@ func init() {
 		"find":    {run: (*Shell).cmdFind, usage: "find <pattern> [label]", help: "search message subjects by substring"},
 		"search":  {run: (*Shell).cmdSearch, usage: "search <gmail-query>", help: "search with raw Gmail query syntax"},
 		"get":     {run: (*Shell).cmdGet, usage: "get <remote> [local]", help: "download a message (.eml) or attachment"},
-		"put":     {run: (*Shell).cmdPut, usage: "put <local> [remote]", help: "create a draft from a local file (never sends)"},
+		"put":     {run: (*Shell).cmdPut, usage: "put <local> [draft]", help: "create a draft from a local .eml, or attach a file to a draft (never sends)"},
+		"compose": {run: (*Shell).cmdCompose, usage: "compose --to <addr> --subject <s> [body-file]", help: "create a draft with To/Subject/body (never sends)"},
 		"mkdir":   {run: (*Shell).cmdMkdir, usage: "mkdir <name>", help: "create a Gmail user label"},
 		"rm":      {run: (*Shell).cmdRm, usage: "rm <name>", help: "trash a single message (reversible)"},
-		"send":    {run: (*Shell).cmdSend, usage: "send <draft>", help: "[deferred to v1.1] send a draft"},
+		"send":    {run: (*Shell).cmdSend, usage: "send <draft>", help: "send an existing draft (irreversible, audited)"},
 		"label":   {run: (*Shell).cmdLabel, usage: "label <msg> <name>", help: "[deferred to v1.1] add a label to a message"},
 		"unlabel": {run: (*Shell).cmdUnlabel, usage: "unlabel <msg> <name>", help: "[deferred to v1.1] remove a label from a message"},
 		"lcd":     {run: (*Shell).cmdLcd, usage: "lcd [dir]", help: "change the local working directory"},
@@ -363,27 +365,147 @@ func saveToFile(dest string, write func(io.Writer) (int64, error)) (string, int6
 	return dest, n, nil
 }
 
-// cmdPut creates a DRAFT from a local RFC 5322 file. It never sends — sending is
-// the explicit (deferred) send verb. Returns the new draft's id.
+// cmdPut has two never-sending modes. With one argument it creates a DRAFT from
+// a local RFC 5322 .eml file (unchanged v1 behavior). With a second argument
+// naming an existing draft (id:<draftId> or id:draft:<id>) it ATTACHES the local
+// file to that draft: it fetches the draft, appends the file as a new
+// multipart/mixed part, and writes it back with a single update. Sending is
+// never reachable from put — that is the explicit send verb only.
 func (s *Shell) cmdPut(args []string) error {
 	if len(args) < 1 {
-		return usageErr("put <local> [remote]")
+		return usageErr("put <local> [draft]")
 	}
 	local := args[0]
+	data, err := readLocalFile(local)
+	if err != nil {
+		return err
+	}
+	if len(args) >= 2 {
+		return s.putAttach(local, data, args[1])
+	}
+
+	draft, err := s.c.CreateDraft(s.ctx, data)
+	if err != nil {
+		return err
+	}
+	threadID := ""
+	if draft.Message != nil {
+		threadID = draft.Message.ThreadId
+	}
+	s.audit(audit.Entry{Op: audit.OpDraft, Name: filepath.Base(local), ID: draft.Id, ThreadID: threadID, Cwd: s.pwd(), Size: int64(len(data))})
+	return s.emit(actionResult{Action: "drafted", Name: filepath.Base(local), ID: draft.Id, ThreadID: threadID, Size: int64(len(data))}, func() {
+		fmt.Fprintf(s.out, "drafted %s (draft %s) — not sent\n", local, draft.Id)
+	})
+}
+
+// putAttach attaches the local file (already read into data) to the existing
+// draft addressed by draftArg. It rebuilds the draft's raw MIME with the new
+// attachment appended and issues one UpdateDraft call, so a failure mid-flight
+// never corrupts the draft. It is audited as a draft mutation and never sends.
+func (s *Shell) putAttach(local string, data []byte, draftArg string) error {
+	draftID, ok := parseDraftIDArg(draftArg)
+	if !ok {
+		return fmt.Errorf("%s: attach target must be a draft (id:<draftId> or id:draft:<id>)", draftArg)
+	}
+	threadID, raw, err := s.c.GetDraftRaw(s.ctx, draftID)
+	if err != nil {
+		return err
+	}
+	name := filepath.Base(local)
+	newRaw := gmailpkg.AppendAttachment(raw, gmailpkg.MIMEAttachment{
+		Filename:    name,
+		ContentType: contentTypeForName(name),
+		Content:     data,
+	})
+	draft, err := s.c.UpdateDraft(s.ctx, draftID, newRaw)
+	if err != nil {
+		return err
+	}
+	if draft.Message != nil && draft.Message.ThreadId != "" {
+		threadID = draft.Message.ThreadId
+	}
+	s.audit(audit.Entry{Op: audit.OpDraft, Name: name, ID: draft.Id, ThreadID: threadID, Cwd: s.pwd(), Size: int64(len(data))})
+	return s.emit(actionResult{Action: "attached", Name: name, ID: draft.Id, ThreadID: threadID, Size: int64(len(data))}, func() {
+		fmt.Fprintf(s.out, "attached %s to draft %s — not sent\n", name, draft.Id)
+	})
+}
+
+// readLocalFile reads a regular local file fully, rejecting a directory (no
+// recursive put). It is the shared read step of put's create and attach modes.
+func readLocalFile(local string) ([]byte, error) {
 	in, err := os.Open(local)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer in.Close()
-	if st, err := in.Stat(); err != nil {
-		return err
-	} else if st.IsDir() {
-		return fmt.Errorf("%s is a directory (recursive put is not supported)", local)
-	}
-	raw, err := io.ReadAll(in)
+	st, err := in.Stat()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	if st.IsDir() {
+		return nil, fmt.Errorf("%s is a directory (recursive put is not supported)", local)
+	}
+	return io.ReadAll(in)
+}
+
+// contentTypeForName guesses a MIME content type from a filename extension,
+// falling back to application/octet-stream. It keeps the attachment part's
+// declared type sensible without a content sniff.
+func contentTypeForName(name string) string {
+	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
+		return ct
+	}
+	return "application/octet-stream"
+}
+
+// cmdCompose creates a DRAFT from To/Subject/body without hand-authoring MIME:
+// it parses --to/--subject/--cc flags and an optional body-file (stdin-free; the
+// last positional argument names a local file read as the plain-text body),
+// builds the message via the pure MIME builder, and calls CreateDraft. Like put,
+// it NEVER sends — send is the only path that does.
+func (s *Shell) cmdCompose(args []string) error {
+	var to, cc, subject, bodyFile string
+	rest := args
+	for len(rest) > 0 {
+		a := rest[0]
+		switch a {
+		case "--to", "-to":
+			if len(rest) < 2 {
+				return fmt.Errorf("%s requires a value", a)
+			}
+			to, rest = rest[1], rest[2:]
+		case "--cc", "-cc":
+			if len(rest) < 2 {
+				return fmt.Errorf("%s requires a value", a)
+			}
+			cc, rest = rest[1], rest[2:]
+		case "--subject", "-subject":
+			if len(rest) < 2 {
+				return fmt.Errorf("%s requires a value", a)
+			}
+			subject, rest = rest[1], rest[2:]
+		default:
+			if strings.HasPrefix(a, "-") {
+				return fmt.Errorf("compose: unknown flag %q", a)
+			}
+			if bodyFile != "" {
+				return fmt.Errorf("compose: unexpected extra argument %q", a)
+			}
+			bodyFile, rest = a, rest[1:]
+		}
+	}
+	if to == "" {
+		return usageErr("compose --to <addr> --subject <s> [body-file]")
+	}
+	var body []byte
+	if bodyFile != "" {
+		b, err := readLocalFile(bodyFile)
+		if err != nil {
+			return err
+		}
+		body = b
+	}
+	raw := gmailpkg.BuildMIME(gmailpkg.MIMEHeaders{To: to, Cc: cc, Subject: subject}, body, nil)
 	draft, err := s.c.CreateDraft(s.ctx, raw)
 	if err != nil {
 		return err
@@ -392,9 +514,13 @@ func (s *Shell) cmdPut(args []string) error {
 	if draft.Message != nil {
 		threadID = draft.Message.ThreadId
 	}
-	s.audit(audit.Entry{Op: audit.OpDraft, Name: filepath.Base(local), ID: draft.Id, ThreadID: threadID, Cwd: s.pwd(), Size: int64(len(raw))})
-	return s.emit(actionResult{Action: "drafted", Name: filepath.Base(local), ID: draft.Id, ThreadID: threadID, Size: int64(len(raw))}, func() {
-		fmt.Fprintf(s.out, "drafted %s (draft %s) — not sent\n", local, draft.Id)
+	name := subject
+	if name == "" {
+		name = "(no subject)"
+	}
+	s.audit(audit.Entry{Op: audit.OpDraft, Name: name, ID: draft.Id, ThreadID: threadID, Cwd: s.pwd(), Size: int64(len(raw))})
+	return s.emit(actionResult{Action: "drafted", Name: name, ID: draft.Id, ThreadID: threadID, Size: int64(len(raw))}, func() {
+		fmt.Fprintf(s.out, "drafted to %s (draft %s) — not sent\n", to, draft.Id)
 	})
 }
 
@@ -514,10 +640,40 @@ func (s *Shell) cmdSearch(args []string) error {
 	})
 }
 
-// cmdSend is DEFERRED to v1.1. It is defined so the verb exists and is discovered
-// by help/completion, but it never sends mail in v1 — it returns a clear notice.
+// cmdSend sends an existing draft — the ONLY irreversible action and reachable
+// only through this explicit verb (never from put/compose). It resolves the
+// draft argument (id:<draftId> or id:draft:<id>), calls SendDraft, audits the
+// send distinctly (OpSend), and reports the sent message id, echoing the
+// recipient when the API returns it so the user sees what went out.
 func (s *Shell) cmdSend(args []string) error {
-	return fmt.Errorf("send is deferred to v1.1 — v1 never sends; use 'put' to create a draft and send it from Gmail")
+	if len(args) < 1 {
+		return usageErr("send <draft>")
+	}
+	draftID, ok := parseDraftIDArg(args[0])
+	if !ok {
+		return fmt.Errorf("%s: send takes a draft (id:<draftId> or id:draft:<id>)", args[0])
+	}
+	m, err := s.c.SendDraft(s.ctx, draftID)
+	if err != nil {
+		return err
+	}
+	msgID, threadID, to := "", "", ""
+	if m != nil {
+		msgID, threadID = m.Id, m.ThreadId
+		to = gmailpkg.Header(m, "To")
+	}
+	name := "draft " + draftID
+	if to != "" {
+		name = "to " + to
+	}
+	s.audit(audit.Entry{Op: audit.OpSend, Name: name, ID: msgID, ThreadID: threadID, Cwd: s.pwd()})
+	return s.emit(actionResult{Action: "sent", Name: name, ID: msgID, ThreadID: threadID}, func() {
+		if to != "" {
+			fmt.Fprintf(s.out, "sent message %s to %s\n", msgID, to)
+		} else {
+			fmt.Fprintf(s.out, "sent message %s\n", msgID)
+		}
+	})
 }
 
 // cmdLabel is DEFERRED to v1.1 (message-level label add). Stubbed, not wired.
@@ -605,6 +761,10 @@ func (s *Shell) cmdHelp(args []string) error {
 	fmt.Fprintln(s.out, "  rm  id:<msgID>           trash a single message")
 	fmt.Fprintln(s.out, "  get id:att:<msg>:<att>   download one attachment")
 	fmt.Fprintln(s.out, "  get/rm id:thread:<id>    export/trash a whole thread (opt-in)")
+	fmt.Fprintln(s.out, "Compose, attach, and send a message (send is irreversible + audited):")
+	fmt.Fprintln(s.out, "  compose --to a@b --subject Hi body.txt   create a draft (never sends)")
+	fmt.Fprintln(s.out, "  put report.pdf id:draft:<id>             attach a file to a draft (never sends)")
+	fmt.Fprintln(s.out, "  send id:draft:<id>                       send the draft (irreversible)")
 	return nil
 }
 

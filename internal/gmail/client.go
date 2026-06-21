@@ -183,8 +183,8 @@ func (c *Client) GetThread(ctx context.Context, id string) (*gmail.Thread, error
 }
 
 // CreateDraft creates a draft from a raw RFC 5322 message. It NEVER sends — the
-// (deferred) send verb is the only path that sends mail. Returns the draft and
-// its underlying message.
+// explicit send verb (SendDraft) is the only path that sends mail. Returns the
+// draft and its underlying message.
 func (c *Client) CreateDraft(ctx context.Context, raw []byte) (*gmail.Draft, error) {
 	d := &gmail.Draft{
 		Message: &gmail.Message{Raw: encodeRaw(raw)},
@@ -194,6 +194,54 @@ func (c *Client) CreateDraft(ctx context.Context, raw []byte) (*gmail.Draft, err
 		return nil, err
 	}
 	return created, nil
+}
+
+// GetDraftRaw fetches an existing draft and returns its draft ID, the ID of its
+// underlying message, and the raw RFC 5322 bytes of that message. It backs the
+// attach path (put <local> <draft>): the caller decodes the current MIME,
+// appends an attachment part, and writes it back via UpdateDraft. A 404 maps to
+// ErrNotFound.
+func (c *Client) GetDraftRaw(ctx context.Context, draftID string) (string, []byte, error) {
+	d, err := c.srv.Users.Drafts.Get(user, draftID).Format("raw").Context(ctx).Do()
+	if err != nil {
+		return "", nil, notFound(err)
+	}
+	if d.Message == nil {
+		return "", nil, ErrNotFound
+	}
+	raw, err := decodeRaw(d.Message.Raw)
+	if err != nil {
+		return "", nil, err
+	}
+	return d.Message.ThreadId, raw, nil
+}
+
+// UpdateDraft replaces an existing draft's content with a new raw RFC 5322
+// message, preserving the draft (it is updated in place, not recreated). It is
+// the write half of the attach path and NEVER sends. A 404 maps to ErrNotFound.
+func (c *Client) UpdateDraft(ctx context.Context, draftID string, raw []byte) (*gmail.Draft, error) {
+	d := &gmail.Draft{
+		Id:      draftID,
+		Message: &gmail.Message{Raw: encodeRaw(raw)},
+	}
+	updated, err := c.srv.Users.Drafts.Update(user, draftID, d).Context(ctx).Do()
+	if err != nil {
+		return nil, notFound(err)
+	}
+	return updated, nil
+}
+
+// SendDraft sends an existing draft via users.drafts.send, the ONLY irreversible
+// mutation the tool performs and reachable only from the explicit send verb. It
+// reuses the already-granted gmail.compose scope (which authorizes drafts.send)
+// — no wider scope is requested. A 404 (draft no longer exists) maps to
+// ErrNotFound.
+func (c *Client) SendDraft(ctx context.Context, draftID string) (*gmail.Message, error) {
+	m, err := c.srv.Users.Drafts.Send(user, &gmail.Draft{Id: draftID}).Context(ctx).Do()
+	if err != nil {
+		return nil, notFound(err)
+	}
+	return m, nil
 }
 
 // TrashMessage moves a single message to TRASH (the default, reversible rm

@@ -4,8 +4,8 @@ author: a@qmu.jp
 type: enhancement
 layer: [UX, Domain]
 effort:
-commit_hash:
-category:
+commit_hash: 14c4c2b
+category: Changed
 depends_on:
 ---
 

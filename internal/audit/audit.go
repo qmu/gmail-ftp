@@ -22,7 +22,7 @@ type Operation string
 
 const (
 	OpDraft   Operation = "draft"   // a put: a draft created from a local file
-	OpSend    Operation = "send"    // a send: a draft/message sent (deferred verb)
+	OpSend    Operation = "send"    // a send: a draft sent (the only irreversible op)
 	OpTrash   Operation = "trash"   // an rm: a message (or explicit thread) trashed
 	OpLabel   Operation = "label"   // a label add on a message (deferred verb)
 	OpUnlabel Operation = "unlabel" // a label remove on a message (deferred verb)

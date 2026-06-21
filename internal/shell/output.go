@@ -34,9 +34,9 @@ type entry struct {
 	ThreadID string `json:"threadId,omitempty"`
 }
 
-// actionResult is the JSON result of a mutating/transfer command (get, put, rm,
-// mkdir, and the deferred label/unlabel/send). Fields irrelevant to a given
-// action are omitted.
+// actionResult is the JSON result of a mutating/transfer command (get, put,
+// compose, send, rm, mkdir, and the deferred label/unlabel). Fields irrelevant
+// to a given action are omitted.
 type actionResult struct {
 	Action   string   `json:"action"`
 	Name     string   `json:"name"`

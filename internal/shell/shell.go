@@ -37,6 +37,9 @@ type gmailClient interface {
 	GetAttachment(ctx context.Context, msgID, attID string) ([]byte, error)
 	GetThread(ctx context.Context, id string) (*gmail.Thread, error)
 	CreateDraft(ctx context.Context, raw []byte) (*gmail.Draft, error)
+	GetDraftRaw(ctx context.Context, draftID string) (threadID string, raw []byte, err error)
+	UpdateDraft(ctx context.Context, draftID string, raw []byte) (*gmail.Draft, error)
+	SendDraft(ctx context.Context, draftID string) (*gmail.Message, error)
 	TrashMessage(ctx context.Context, id string) (*gmail.Message, error)
 	TrashThread(ctx context.Context, id string) (*gmail.Thread, error)
 	ModifyLabels(ctx context.Context, id string, add, remove []string) (*gmail.Message, error)
@@ -405,11 +408,16 @@ func argKind(verb string, argIndex int) string {
 			return "local"
 		}
 	case "put":
-		switch argIndex {
-		case 1:
+		// arg 1 is the local file; arg 2 (attach target) is a draft id, not a
+		// completable remote path.
+		if argIndex == 1 {
 			return "local"
-		case 2:
-			return "remote"
+		}
+	case "compose":
+		// compose takes flags and an optional local body-file; the body-file is
+		// the only completable positional and only when it is not a flag value.
+		if argIndex >= 1 {
+			return "local"
 		}
 	case "label", "unlabel":
 		// arg 1 is the target message (remote); arg 2 is a label name (no completion).
@@ -417,9 +425,8 @@ func argKind(verb string, argIndex int) string {
 			return "remote"
 		}
 	case "send":
-		if argIndex == 1 {
-			return "local"
-		}
+		// arg 1 is a draft id (id:<draftId> / id:draft:<id>), not a completable path.
+		return ""
 	case "lcd", "lls":
 		if argIndex == 1 {
 			return "local"
@@ -602,6 +609,7 @@ const (
 	idPrefix       = "id:"        // address a message/attachment directly by ID
 	idThreadPrefix = "id:thread:" // address a whole thread (opt-in; rm/get only)
 	idAttPrefix    = "id:att:"    // address an attachment: id:att:<msgID>:<attID>
+	idDraftPrefix  = "id:draft:"  // address a draft: id:draft:<draftID> (send/attach)
 )
 
 // parseIDArg reports whether seg is a bare "id:<ID>" reference (a message ID) and
@@ -612,7 +620,7 @@ func parseIDArg(seg string) (id string, ok bool) {
 	if !strings.HasPrefix(seg, idPrefix) {
 		return "", false
 	}
-	if strings.HasPrefix(seg, idThreadPrefix) || strings.HasPrefix(seg, idAttPrefix) {
+	if strings.HasPrefix(seg, idThreadPrefix) || strings.HasPrefix(seg, idAttPrefix) || strings.HasPrefix(seg, idDraftPrefix) {
 		return "", false
 	}
 	id = seg[len(idPrefix):]
@@ -620,6 +628,21 @@ func parseIDArg(seg string) (id string, ok bool) {
 		return "", false
 	}
 	return id, true
+}
+
+// parseDraftIDArg resolves a draft reference to its draft ID. It accepts the
+// explicit "id:draft:<id>" form and, as a convenience, the bare "id:<id>" form
+// (a draft is addressed by id: just like a message). An empty ID, or one
+// containing "/", is rejected. The id:thread: and id:att: forms are NOT matched.
+func parseDraftIDArg(seg string) (id string, ok bool) {
+	if strings.HasPrefix(seg, idDraftPrefix) {
+		id = seg[len(idDraftPrefix):]
+		if id == "" || strings.Contains(id, "/") {
+			return "", false
+		}
+		return id, true
+	}
+	return parseIDArg(seg)
 }
 
 // parseThreadIDArg reports whether seg is an "id:thread:<ID>" reference and

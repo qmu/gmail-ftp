@@ -33,12 +33,14 @@ import (
 //     deliberately subsumes read access and CANNOT permanently delete mail — the
 //     same "trash, not hard-delete" safety property gdrive-ftp relies on. The full
 //     https://mail.google.com/ scope (which grants hard-delete) is never requested.
-//   - gmail.compose covers creating a draft (put) and, in v1.1, sending.
+//   - gmail.compose covers creating a draft (put/compose), updating a draft to
+//     attach a file, AND sending a draft (drafts.send) — so no separate
+//     gmail.send scope is requested.
 //
-// Sending is gated behind the explicit (deferred) send verb; v1 never sends.
+// Sending is gated behind the explicit send verb; put/compose never send.
 var Scopes = []string{
 	gmail.GmailModifyScope,  // read + trash + label-create + label-modify (no hard-delete)
-	gmail.GmailComposeScope, // create drafts (put); send is deferred to v1.1
+	gmail.GmailComposeScope, // create/update drafts (put/compose) and send them (send)
 }
 
 // Client builds an authorized *http.Client for the Gmail API. On first use it

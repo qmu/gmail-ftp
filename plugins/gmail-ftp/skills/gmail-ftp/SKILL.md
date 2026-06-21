@@ -1,13 +1,14 @@
 ---
 name: gmail-ftp
-description: Use when a task needs to read or modify the user's Gmail from the command line — listing or navigating labels, listing or searching messages, downloading messages/attachments, creating a draft, creating a label, or trashing a message — via the `gmail-ftp` CLI. Covers the one-time auth setup and non-interactive one-shot command usage.
+description: Use when a task needs to read or modify the user's Gmail from the command line — listing or navigating labels, listing or searching messages, downloading messages/attachments, composing a draft and attaching files, sending a draft, creating a label, or trashing a message — via the `gmail-ftp` CLI. Covers the one-time auth setup and non-interactive one-shot command usage.
 ---
 
 # Using gmail-ftp for Gmail
 
 `gmail-ftp` is an FTP-style CLI for Gmail. Use it to list and navigate **labels**,
-list and search **messages**, download messages and attachments, create drafts,
-create labels, and trash messages. Prefer **one-shot** commands
+list and search **messages**, download messages and attachments, compose drafts
+and attach files, **send** a draft, create labels, and trash messages. Prefer
+**one-shot** commands
 (`gmail-ftp <cmd> args`) — each runs one command and exits, which is what you want
 as an agent. The interactive shell (`gmail-ftp` with no args) exists too but you
 generally won't use it.
@@ -87,6 +88,11 @@ gmail-ftp get id:18f1a2b ./report.txt
 # Create a DRAFT from a local RFC 822 file (NEVER sends)
 gmail-ftp put ./draft.eml
 
+# Compose -> attach -> send (the ONLY path that sends; each step explicit):
+gmail-ftp compose --to a@b.test --subject "Q2 report" ./body.txt  # drafts; never sends
+gmail-ftp put ./report.pdf id:draft:r-8423                        # attach to that draft; never sends
+gmail-ftp send id:draft:r-8423                                    # SENDS (irreversible, audited)
+
 # Create a label (the mkdir analogue)
 gmail-ftp mkdir Work/Receipts
 
@@ -95,15 +101,20 @@ gmail-ftp rm id:18f1a2b
 ```
 
 Success output goes to **stdout** (e.g. `downloaded …`, `drafted … — not sent`,
-`created label …`, `trashed …`). `ls` of a label prints message rows
+`attached … — not sent`, `sent message …`, `created label …`, `trashed …`).
+`ls` of a label prints message rows
 `<unread-flag> <date> <from> <name>`, with `*` marking unread; `ls /` prints
 labels with a trailing `/`.
 
 `lcd` / `lls` / `lpwd` are local-filesystem helpers, meaningful only in the
 interactive shell — ignore them in one-shot use.
 
-`send`, `label`, and `unlabel` are **deferred to v1.1**: the verbs exist but
-return a deferral notice and do nothing. v1 never sends mail.
+`send` sends an existing draft — the **only irreversible** action. It is
+reachable **only** through the explicit `send` verb (never from `put`/`compose`),
+and every send is recorded in the audit log. `compose` drafts a message from
+To/Subject/body and `put <local> <draft>` attaches a file to a draft; neither
+sends. `label` and `unlabel` remain **deferred to v1.1** (the verbs exist but
+return a deferral notice and do nothing).
 
 Flags: `-creds <path>` and `-token <path>` override the credential/token
 locations (defaults under `~/.config/gmail-ftp/`). `-json` switches output to
@@ -118,23 +129,29 @@ gmail-ftp -json ls /INBOX
 gmail-ftp -json put ./draft.eml
 # → stdout: {"action":"drafted","name":"draft.eml","id":"r-8423","threadId":"18f1c0d","size":612}
 
+gmail-ftp -json send id:draft:r-8423
+# → stdout: {"action":"sent","name":"to a@b.test","id":"<sent-msg-id>","threadId":"18f1c0d"}
+
 gmail-ftp -json get id:nope
 # → stderr: {"error":"no such file or directory"} , exit 1
 ```
 
 Contract: **results on stdout** (an array for `ls`/`find`/`search`; a single
-object for `get`/`put`/`mkdir`/`rm`; `{"path":…}` for `pwd`), **errors on stderr**
-as `{"error":…}` with a **non-zero exit**. Entry keys: `name`, `id`, `kind`
-(`label`/`message`/`attachment`), plus `from`/`subject`/`date`/`unread`/`size`/
-`threadId` for messages (omitted when empty). Action objects carry `action`
-(`downloaded`/`drafted`/`trashed`/`created`) plus `dest`/`size`/`id`/`threadId`.
+object for `get`/`put`/`compose`/`send`/`mkdir`/`rm`; `{"path":…}` for `pwd`),
+**errors on stderr** as `{"error":…}` with a **non-zero exit**. Entry keys:
+`name`, `id`, `kind` (`label`/`message`/`attachment`), plus
+`from`/`subject`/`date`/`unread`/`size`/`threadId` for messages (omitted when
+empty). Action objects carry `action`
+(`downloaded`/`drafted`/`attached`/`sent`/`trashed`/`created`) plus
+`dest`/`size`/`id`/`threadId`.
 Capture an `id` from a result and reuse it as `id:<id>` (or `id:thread:<threadId>`)
 in a follow-up command.
 
 ## Audit log (review what was changed)
 
-Every **mutating** operation you run — `put` (draft), `rm` (trash), `mkdir`
-(label) — is appended to `~/.config/gmail-ftp/audit.jsonl` (JSON Lines,
+Every **mutating** operation you run — `put`/`compose` (draft), `put <local>
+<draft>` (attach), `send` (the irreversible send, `op":"send"`), `rm` (trash),
+`mkdir` (label) — is appended to `~/.config/gmail-ftp/audit.jsonl` (JSON Lines,
 append-only). Read-only commands (`ls`/`cd`/`pwd`/`get`/`find`/`search`) are not
 logged. Each record has a `time`, `op`, `name`, Gmail `id`, `threadId`, `cwd`,
 and `size`. It never contains credentials or message contents.
@@ -163,8 +180,8 @@ On failure, gmail-ftp prints `gmail-ftp: <message>` to **stderr** and exits
   messages share a synthesized name; address by `id:` instead.
 - `<seg>: not a directory (messages are leaves; cd a label)` — you tried to `cd`
   into a message; only labels are navigable.
-- `send is deferred to v1.1` / `label is deferred to v1.1` — those verbs are not
-  active in v1.
+- `label is deferred to v1.1` / `unlabel is deferred to v1.1` — those verbs are
+  not active yet. (`send` is active: it sends a draft and is irreversible.)
 
 ## Gotchas
 
@@ -174,7 +191,9 @@ On failure, gmail-ftp prints `gmail-ftp: <message>` to **stderr** and exits
 - Message names are synthesized (date + subject) and may collide — prefer `id:`.
 - `rm` trashes a **single** message (reversible); only `id:thread:<id>` trashes a
   whole thread.
-- `put` creates a **draft only** — it never sends. `send` is deferred to v1.1.
+- `put` and `compose` create a **draft only** and never send. `send` is the one
+  irreversible action — it sends an existing draft and is audited; it is never
+  triggered by `put`/`compose`.
 - Listing a large label is **capped** (first ~50) and may show "showing first N";
   use `search` or a narrower label for more.
 - This skill tracks the CLI — if commands/flags change, update it from

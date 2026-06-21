@@ -2,16 +2,18 @@
 
 A tiny **FTP-style client for Gmail**, written in Go. It gives you a familiar
 interactive shell — `ls`, `cd`, `pwd`, `find`, `get` (download), `put` (create a
-draft), `mkdir` (create a label), `rm` (trash) — that talks to your mailbox over
-the official Gmail v1 API.
+draft / attach a file), `compose` (draft a message), `send` (send a draft),
+`mkdir` (create a label), `rm` (trash) — that talks to your mailbox over the
+official Gmail v1 API.
 
 > [!WARNING]
 > This requests `gmail.modify` + `gmail.compose` — it can read your mail, trash
-> messages (reversibly), create labels, and create drafts. It **never** requests
-> the full `https://mail.google.com/` scope and **cannot permanently delete**
-> mail. It also **never sends**: `put` only creates a draft, and the `send`
-> verb is deferred to v1.1. Keep `credentials.json` / `token.json` private —
-> they grant access to your mailbox.
+> messages (reversibly), create labels, create drafts, and **send drafts**. It
+> **never** requests the full `https://mail.google.com/` scope and **cannot
+> permanently delete** mail. Sending is the one **irreversible** action: it
+> happens only through the explicit `send` verb (never from `put`/`compose`) and
+> every send is recorded in the audit log. Keep `credentials.json` /
+> `token.json` private — they grant access to your mailbox.
 
 ## Navigation model (2-level: root → label → message)
 
@@ -96,6 +98,17 @@ gmail-ftp get id:18f1a2b ./message.eml
 gmail-ftp put ./draft.eml
 ```
 
+**Compose → attach → send** (the only path that sends; each step is explicit):
+
+```sh
+gmail-ftp compose --to a@b.test --subject "Q2 report" ./body.txt
+# → drafted to a@b.test (draft r-8423) — not sent
+gmail-ftp put ./report.pdf id:draft:r-8423
+# → attached report.pdf to draft r-8423 — not sent
+gmail-ftp send id:draft:r-8423
+# → sent message <id> to a@b.test     (irreversible, audited)
+```
+
 ### Flags
 
 | Flag      | Default                              | Meaning                                     |
@@ -127,10 +140,11 @@ guard against CSRF.
 | `find <pattern> [label]` | Search message subjects in the current (or anchored) label for a case-insensitive substring. |
 | `search <gmail-query>`   | Search the whole mailbox with raw Gmail query syntax (`from:x is:unread`). |
 | `get <remote> [local]`   | Download a message as `.eml` (raw RFC 822), or as `.txt` when the local name ends in `.txt`; download an attachment with `id:att:<msg>:<att>`; export a thread with `id:thread:<id>` (`.mbox`). |
-| `put <local> [remote]`   | Create a **draft** from a local RFC 822 file. Returns the draft id. **Never sends.** |
+| `put <local> [draft]`    | With no target, create a **draft** from a local RFC 822 `.eml`. With a draft target (`id:<draftId>` / `id:draft:<id>`), **attach** the local file to that draft. Returns the draft id. **Never sends.** |
+| `compose --to <addr> --subject <s> [body-file]` | Create a **draft** from To/Subject/body (optional `--cc`; the optional positional names a local plain-text body file). Builds the MIME for you. **Never sends.** |
 | `mkdir <name>`           | Create a Gmail **user label** (`mkdir Work/Receipts`).                 |
 | `rm <name>`              | Trash a **single message** (reversible). A whole thread is trashed only via the explicit `rm id:thread:<id>`. |
-| `send <draft>`           | **Deferred to v1.1** — v1 never sends. The verb exists but returns a deferral notice. |
+| `send <draft>`           | **Send** an existing draft (`send id:draft:<id>` or `send id:<draftId>`). This is the one **irreversible** action — it is audited and reachable only via this explicit verb, never from `put`/`compose`. |
 | `label` / `unlabel`      | **Deferred to v1.1** — message-level label add/remove ships later.    |
 | `lcd [dir]`              | Change the *local* working directory.                                 |
 | `lls [dir]`              | List a *local* directory.                                             |
@@ -207,10 +221,12 @@ $ gmail-ftp -json get id:nope
 
 ## Audit log
 
-Every mutating operation — `put` (draft create), `rm` (trash), and `mkdir`
-(label create) — is appended to a local **audit log** so you (or an AI agent
-driving the CLI) can look back at exactly what changed, and when. Read-only
-commands (`ls`, `cd`, `pwd`, `get`, `find`, `search`) are not logged.
+Every mutating operation — `put`/`compose` (draft create), `put <local> <draft>`
+(attach), `send` (the irreversible send), `rm` (trash), and `mkdir` (label
+create) — is appended to a local **audit log** so you (or an AI agent driving the
+CLI) can look back at exactly what changed, and when. Read-only commands (`ls`,
+`cd`, `pwd`, `get`, `find`, `search`) are not logged. A `send` is recorded with
+op `send` so the one irreversible action is always traceable.
 
 - **Location:** `~/.config/gmail-ftp/audit.jsonl`, beside `token.json` (file
   `0600`, directory `0700`).
@@ -246,13 +262,16 @@ gmail-ftp log | grep trash # plain rows, pipeable
 ## Notes & limitations
 
 - **Least-privilege scopes:** `gmail.modify` (read + trash + label create) and
-  `gmail.compose` (draft create). Never the full `https://mail.google.com/`
-  scope, and **never** hard-delete.
+  `gmail.compose` (draft create **and** sending drafts — no separate
+  `gmail.send` is requested). Never the full `https://mail.google.com/` scope,
+  and **never** hard-delete.
 - **`rm` trashes, it does not permanently delete** — messages land in Gmail's
   trash and can be restored from the web UI. A plain `rm` only ever trashes a
   single message.
-- **`put` creates a draft and never sends.** Sending (the irreversible `send`
-  verb) and message-level `label`/`unlabel` are **deferred to v1.1**.
+- **`put` and `compose` create a draft and never send.** Sending happens **only**
+  through the explicit, irreversible, audited `send` verb — never as a side
+  effect of `put`/`compose`. Message-level `label`/`unlabel` remain **deferred to
+  v1.1**.
 - **Message names are synthesized** (date + subject) and can collide; address a
   specific message by `id:` when a name is ambiguous.
 - **Listing is an N+1:** Gmail's `list` returns IDs only, so each row's headers

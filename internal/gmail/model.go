@@ -1,7 +1,11 @@
 package gmail
 
 import (
+	"bytes"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -300,6 +304,217 @@ func nameContains(name, pattern string) bool {
 // NameContains reports whether a synthesized message name contains pattern as a
 // case-insensitive substring (exported for the shell's find verb).
 func NameContains(name, pattern string) bool { return nameContains(name, pattern) }
+
+// --- multipart MIME builder (compose + attach) ---
+
+// MIMEHeaders carries the addressing/subject metadata for a composed message.
+// To and Subject are always emitted; Cc is emitted only when non-empty. Values
+// are header-folded onto a single line (newlines stripped) so a stray newline
+// in user input cannot inject extra headers.
+type MIMEHeaders struct {
+	To      string
+	Cc      string
+	Subject string
+}
+
+// MIMEAttachment is one file to attach: its display filename, its declared MIME
+// content type (defaulted to application/octet-stream when empty), and its raw
+// bytes (base64-encoded into the part body).
+type MIMEAttachment struct {
+	Filename    string
+	ContentType string
+	Content     []byte
+}
+
+// defaultAttachmentType is used when an attachment declares no content type.
+const defaultAttachmentType = "application/octet-stream"
+
+// sanitizeHeaderValue folds a header value to a single physical line: CR/LF are
+// replaced with spaces so user-supplied To/Subject/filename text can never
+// inject additional MIME headers (header-injection guard), and surrounding
+// whitespace is trimmed.
+func sanitizeHeaderValue(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' {
+			return ' '
+		}
+		return r
+	}, s)
+	return strings.TrimSpace(s)
+}
+
+// newBoundary returns a random, RFC 2046-safe multipart boundary token. The
+// random suffix makes an accidental collision with the body content vanishingly
+// unlikely.
+func newBoundary() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// rand.Read essentially never fails; fall back to a time-derived token so
+		// the builder stays pure-ish and never panics.
+		return "gmailftp-" + fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return "gmailftp-" + hex.EncodeToString(b[:])
+}
+
+// wrapBase64 hard-wraps a base64 string into CRLF-separated 76-character lines,
+// the line-length MIME prescribes for base64 transfer encoding.
+func wrapBase64(enc string) string {
+	const width = 76
+	var b strings.Builder
+	for len(enc) > width {
+		b.WriteString(enc[:width])
+		b.WriteString("\r\n")
+		enc = enc[width:]
+	}
+	b.WriteString(enc)
+	return b.String()
+}
+
+// writeAttachmentPart appends one base64 attachment part (Content-Type,
+// Content-Transfer-Encoding, Content-Disposition headers + wrapped body) to b.
+// The caller has already written the part's leading boundary delimiter.
+func writeAttachmentPart(b *bytes.Buffer, a MIMEAttachment) {
+	ct := sanitizeHeaderValue(a.ContentType)
+	if ct == "" {
+		ct = defaultAttachmentType
+	}
+	name := sanitizeHeaderValue(a.Filename)
+	fmt.Fprintf(b, "Content-Type: %s; name=\"%s\"\r\n", ct, name)
+	b.WriteString("Content-Transfer-Encoding: base64\r\n")
+	fmt.Fprintf(b, "Content-Disposition: attachment; filename=\"%s\"\r\n\r\n", name)
+	b.WriteString(wrapBase64(base64.StdEncoding.EncodeToString(a.Content)))
+	b.WriteString("\r\n")
+}
+
+// BuildMIME assembles a complete RFC 5322 message from addressing headers, a
+// plain-text body, and zero or more attachments, returning the raw bytes ready
+// for CreateDraft. With no attachments it emits a single text/plain message;
+// with attachments it emits a multipart/mixed message whose first part is the
+// text body and whose remaining parts are the base64-encoded files. The result
+// is pure (deterministic apart from the random boundary) and never sends.
+func BuildMIME(h MIMEHeaders, body []byte, atts []MIMEAttachment) []byte {
+	var b bytes.Buffer
+	b.WriteString("MIME-Version: 1.0\r\n")
+	if to := sanitizeHeaderValue(h.To); to != "" {
+		fmt.Fprintf(&b, "To: %s\r\n", to)
+	}
+	if cc := sanitizeHeaderValue(h.Cc); cc != "" {
+		fmt.Fprintf(&b, "Cc: %s\r\n", cc)
+	}
+	fmt.Fprintf(&b, "Subject: %s\r\n", sanitizeHeaderValue(h.Subject))
+
+	if len(atts) == 0 {
+		b.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n\r\n")
+		b.Write(body)
+		return b.Bytes()
+	}
+
+	boundary := newBoundary()
+	fmt.Fprintf(&b, "Content-Type: multipart/mixed; boundary=\"%s\"\r\n\r\n", boundary)
+	// Text body part.
+	fmt.Fprintf(&b, "--%s\r\n", boundary)
+	b.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n\r\n")
+	b.Write(body)
+	b.WriteString("\r\n")
+	// Attachment parts.
+	for _, a := range atts {
+		fmt.Fprintf(&b, "--%s\r\n", boundary)
+		writeAttachmentPart(&b, a)
+	}
+	fmt.Fprintf(&b, "--%s--\r\n", boundary)
+	return b.Bytes()
+}
+
+// AppendAttachment returns a new raw RFC 5322 message that is the original
+// message `raw` with `att` added as an additional multipart/mixed attachment
+// part. It treats the original message's body (everything after its header
+// block) as the first part of a fresh multipart/mixed container and appends the
+// new attachment after it. This rebuild-and-replace approach is deliberately a
+// single transformation: the caller updates the draft with one call, so a
+// partial failure can never corrupt the existing draft. The original top-level
+// headers (To/Cc/Subject/…) are preserved, except the content-type framing
+// which is replaced with the new multipart container.
+func AppendAttachment(raw []byte, att MIMEAttachment) []byte {
+	headers, bodyContentType, body := splitMessage(raw)
+
+	boundary := newBoundary()
+	var b bytes.Buffer
+	for _, h := range headers {
+		b.WriteString(h)
+		b.WriteString("\r\n")
+	}
+	fmt.Fprintf(&b, "Content-Type: multipart/mixed; boundary=\"%s\"\r\n\r\n", boundary)
+	// Original content becomes the first part, preserving its own content type
+	// (or a text/plain default when the original declared none).
+	fmt.Fprintf(&b, "--%s\r\n", boundary)
+	if bodyContentType == "" {
+		bodyContentType = "text/plain; charset=\"UTF-8\""
+	}
+	fmt.Fprintf(&b, "Content-Type: %s\r\n\r\n", bodyContentType)
+	b.Write(body)
+	if !bytes.HasSuffix(body, []byte("\r\n")) && !bytes.HasSuffix(body, []byte("\n")) {
+		b.WriteString("\r\n")
+	}
+	// New attachment part.
+	fmt.Fprintf(&b, "--%s\r\n", boundary)
+	writeAttachmentPart(&b, att)
+	fmt.Fprintf(&b, "--%s--\r\n", boundary)
+	return b.Bytes()
+}
+
+// splitMessage separates a raw RFC 5322 message into its top-level header lines
+// (excluding any Content-Type/MIME-Version/Content-Transfer-Encoding header,
+// which the rebuild replaces), the original Content-Type value (so it can be
+// preserved as the first nested part's type), and the body bytes after the
+// header/body separator. Header folding (continuation lines beginning with
+// whitespace) is preserved by attaching the continuation to the prior header.
+func splitMessage(raw []byte) (headers []string, contentType string, body []byte) {
+	sep := []byte("\r\n\r\n")
+	idx := bytes.Index(raw, sep)
+	if idx < 0 {
+		sep = []byte("\n\n")
+		idx = bytes.Index(raw, sep)
+	}
+	var headerBlock, bodyBlock []byte
+	if idx < 0 {
+		headerBlock, bodyBlock = raw, nil
+	} else {
+		headerBlock, bodyBlock = raw[:idx], raw[idx+len(sep):]
+	}
+
+	lines := splitLines(headerBlock)
+	for _, line := range lines {
+		// Continuation of a folded header (leading whitespace): glue to previous.
+		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') && len(headers) > 0 {
+			headers[len(headers)-1] += " " + strings.TrimSpace(line)
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "content-type:") {
+			contentType = strings.TrimSpace(line[len("content-type:"):])
+			continue
+		}
+		if strings.HasPrefix(lower, "mime-version:") || strings.HasPrefix(lower, "content-transfer-encoding:") {
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		headers = append(headers, line)
+	}
+	return headers, contentType, bodyBlock
+}
+
+// splitLines splits a header block into physical lines, accepting both CRLF and
+// bare LF terminators and dropping a trailing empty element.
+func splitLines(b []byte) []string {
+	s := strings.ReplaceAll(string(b), "\r\n", "\n")
+	parts := strings.Split(s, "\n")
+	if n := len(parts); n > 0 && parts[n-1] == "" {
+		parts = parts[:n-1]
+	}
+	return parts
+}
 
 // normalizeLabelName cleans a user-supplied label name: it trims surrounding
 // whitespace and collapses runs of "/" (Gmail's nested-label separator) so a
