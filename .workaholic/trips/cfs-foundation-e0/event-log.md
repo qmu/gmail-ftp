@@ -57,3 +57,4 @@
 | 2026-06-23T06:32:52+09:00 | Architect | code-review | t08 | Approve with observations: pure/deterministic stdlib, gated READ/http.get, sound prelude purity gate; recorded prelude-wiring (E4) and PlanNode/EffectNode (t10) reconciliation debts |
 | 2026-06-23T06:37:32+09:00 | Planner | e2e-testing | t08 | E2E via external crate: 46 PASS / 1 FAIL — FORMAT_DATE(i64::MAX) panics (overflow); checks 1-4 approved, blocked on the panic |
 | 2026-06-23T06:41:26+09:00 | Constructor | implementation | t08-fix | Make date functions total: guard civil-day overflow, structured Domain error, no panic |
+| 2026-06-23T06:42:23+09:00 | Lead | ticket-accepted | t08 | Stdlib accepted after overflow fix; E1 complete |
