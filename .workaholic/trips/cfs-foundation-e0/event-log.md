@@ -36,3 +36,4 @@
 | 2026-06-23T05:04:11+09:00 | Planner | e2e-testing | t09 | External consumer E2E: validate/preview/commit all pass (46/46); flagged non-exhaustive AppliedEffect lacks public ctor for E4 appliers |
 | 2026-06-23T05:05:09+09:00 | Lead | ticket-accepted | t09 | Effect-plan accepted |
 | 2026-06-23T05:14:20+09:00 | Constructor | implementation | t13 | Driver contract trait (archetype/Schema/capabilities+gate/ProcSig/pushdown/prelude/@version/applier); reconciled NodeSchema->NodeDesc{archetype,cfs_types::Schema}, added Path<->VfsPath lossless adapter, AppliedEffect::new; +9 tests (136->145) |
+| 2026-06-23T05:17:29+09:00 | Architect | code-review | t13 | Approve with observations; flag driver-identity/mount-prefix router (O1) and pushdown vocabulary (O3) before E4 drivers |
