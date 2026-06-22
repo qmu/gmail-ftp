@@ -14,3 +14,4 @@
 | 2026-06-22T23:23:41+09:00 | Lead | consensus-reached | round-1 | All reviews approved, no revision requests; plan fixed |
 | 2026-06-22T23:36:26+09:00 | Constructor | implementation | crates/* | Implemented t01 workspace scaffold; build/clippy/test green native aarch64 |
 | 2026-06-22T23:39:59+09:00 | Architect | code-review | crates/* | Analytical review of t01 scaffold against model guards and acceptance criteria |
+| 2026-06-22T23:49:40+09:00 | Planner | e2e-testing | cfs CLI | E2E validation of t01 CLI structured-error behavior and --json envelope |
