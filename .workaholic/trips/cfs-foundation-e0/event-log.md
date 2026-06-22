@@ -41,3 +41,4 @@
 | 2026-06-23T05:23:42+09:00 | Constructor | implementation | t13-refine | Capabilities builder, driver id()+prefix router, wider pushdown, verb tie-test |
 | 2026-06-23T05:24:40+09:00 | Lead | ticket-accepted | t13 | Driver contract accepted (with refinement) |
 | 2026-06-23T05:34:29+09:00 | Constructor | implementation | t15 | Implemented six builtin codecs (json/jsonl/yaml/toml/csv/md+frontmatter), CodecRegistry::with_builtins, value-level EXPAND/path-access, structured Decode/Encode errors; +31 tests (182 total). |
+| 2026-06-23T05:38:34+09:00 | Architect | code-review | t15 | Approve with observations; flag nested-struct field-name loss on decode->access path and dropped infer_schema/DESCRIBE seam as carry-overs |
