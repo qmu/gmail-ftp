@@ -47,3 +47,4 @@
 | 2026-06-23T05:47:32+09:00 | Lead | ticket-accepted | t15 | Codec registry accepted; nested-struct naming fix landed |
 | 2026-06-23T05:54:40+09:00 | Constructor | implementation | t06 | Implemented name resolution in cfs-core (CALL procedures + receiver-typed pure aliases), wired the cfs-core->cfs-parser edge and canonical EffectVerb maps; 200 tests green (+16). |
 | 2026-06-23T05:57:54+09:00 | Architect | code-review | t06 | Approve with observations: edge wired+guarded, resolution faithful, purity holds by construction; keep WriteVerb mirror as parser-free plan-side intermediate |
+| 2026-06-23T05:59:44+09:00 | Planner | e2e-testing | t06 | External-consumer E2E: 14/14 checks PASS (CALL, all 8 ResolveError arms, alias desugar/fail-closed, namespace isolation, capability gate, no I/O, no panics) — E2E approved |
