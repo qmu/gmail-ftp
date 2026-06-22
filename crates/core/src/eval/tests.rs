@@ -422,4 +422,59 @@ fn error_codes_are_stable() {
         .code(),
         "unknown_column"
     );
+    assert_eq!(
+        EvalError::Fn(crate::FnError::UnknownFunction { name: "x".into() }).code(),
+        "unknown_function"
+    );
+}
+
+// ---- t08: function-registry-wired evaluation (`Evaluator::with_stdlib`) ----
+
+/// Evaluate with the function registry wired so `fn(...)` projections are typed.
+fn eval_with_stdlib(src: &str) -> Result<EvalValue, EvalError> {
+    let reg = seeded_registry();
+    let stdlib = crate::StdlibRegistry::with_core();
+    let stmt = parse_statement(src).expect("parse");
+    Evaluator::with_stdlib(&reg, &stdlib).eval(&stmt)
+}
+
+/// A `SELECT fn(col)` projection carries the **built-in's declared return type** (t08),
+/// not the late-bound `Unknown` of t07 — `UPPER` → `Text`, `LENGTH` → `Int`.
+#[test]
+fn select_over_builtin_carries_the_functions_return_type() {
+    let v =
+        eval_with_stdlib("FROM /db/users |> SELECT UPPER(name) AS u, LENGTH(name) AS n").unwrap();
+    let schema = v.as_relation().unwrap().schema();
+    assert_eq!(schema.column("u").unwrap().ty, ColumnType::Text);
+    assert_eq!(schema.column("n").unwrap().ty, ColumnType::Int);
+}
+
+/// An unknown `fn(...)` in a projection is a structured [`EvalError::Fn`] (not a silent
+/// `Unknown` column) once the registry is wired.
+#[test]
+fn select_over_unknown_function_is_a_structured_error() {
+    let err = eval_with_stdlib("FROM /db/users |> SELECT NOPE(name) AS x").unwrap_err();
+    assert_eq!(err.code(), "unknown_function");
+}
+
+/// Aggregate-vs-scalar dispatch (RFD §3): an aggregate (`SUM`) in a plain `SELECT` is a
+/// typed error, while the same `SUM` under `AGGREGATE` types to its `Float` return.
+#[test]
+fn aggregate_dispatch_is_context_sensitive() {
+    // SUM in a SELECT → aggregate-outside-aggregate, a typed error.
+    let err = eval_with_stdlib("FROM /db/users |> SELECT SUM(id) AS s").unwrap_err();
+    assert_eq!(err.code(), "aggregate_outside_aggregate");
+    // SUM under AGGREGATE → typed to Float, no error.
+    let v = eval_with_stdlib("FROM /db/users |> AGGREGATE SUM(id) AS s").unwrap();
+    let schema = v.as_relation().unwrap().schema();
+    assert_eq!(schema.column("s").unwrap().ty, ColumnType::Float);
+}
+
+/// Without the registry wired, a `fn(...)` projection stays late-bound (`Unknown`) — the
+/// t07 behaviour is preserved for `Evaluator::new`.
+#[test]
+fn unwired_evaluator_keeps_functions_late_bound() {
+    let v = eval("FROM /db/users |> SELECT UPPER(name) AS u").unwrap();
+    let schema = v.as_relation().unwrap().schema();
+    assert_eq!(schema.column("u").unwrap().ty, ColumnType::Unknown);
 }

@@ -27,10 +27,16 @@
 mod eval;
 mod registry;
 mod resolve;
+mod stdlib;
 
 pub use eval::{call_proc_id, effect_kind_for, EvalError, EvalValue, Evaluator, PlanSource};
 pub use registry::{CodecRegistry, MountRegistry, ProcRegistry};
 pub use resolve::{capability_verb_for, write_verb_for, ResolveError, ResolvedCall, Resolver};
+pub use stdlib::{
+    AggregateFactory, AggregateKind, AggregateState, AliasDecl, BuiltinEval, BuiltinFn, EnvSource,
+    EvalCtx, FnError, FnSig, MapEnv, NoEnv, PlanNode, PlanNodeKind, Prelude, PreludeError,
+    ResolvedAlias, StdlibRegistry,
+};
 
 // Re-export the trait seams and shared types so consumers depend on `cfs-core` only.
 pub use cfs_codec::Codec;

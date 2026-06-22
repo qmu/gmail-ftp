@@ -41,6 +41,7 @@ use cfs_types::{Column, ColumnType, DriverId, Name, Schema};
 
 use crate::registry::MountRegistry;
 use crate::resolve::{write_verb_for, ResolveError, Resolver};
+use crate::stdlib::{BuiltinEval, FnError, StdlibRegistry};
 
 /// A logical relation node — a **description** of how a query produces rows, never an
 /// executed scan (RFD §3 purity). The fold of a `FROM` source + `|>` pipe ops produces
@@ -189,6 +190,9 @@ pub enum EvalError {
     /// A schema/type rule rejected the statement (delegated to the t05 type model):
     /// unknown column, non-expandable field, incomparable types.
     Type(cfs_types::TypeError),
+    /// A `fn(...)` registry-function call was ill-formed (delegated to the t08 stdlib):
+    /// unknown function, wrong arity, or an aggregate used outside an `AGGREGATE` context.
+    Fn(FnError),
     /// A `FROM` / effect-target path did not route to any registered driver mount, so no
     /// schema could be described for it. Carries the path for AI recovery.
     UnroutedPath {
@@ -204,6 +208,7 @@ impl EvalError {
         match self {
             EvalError::Resolve(e) => e.code(),
             EvalError::Type(e) => e.code(),
+            EvalError::Fn(e) => e.code(),
             EvalError::UnroutedPath { .. } => "unrouted_path",
         }
     }
@@ -221,6 +226,12 @@ impl From<cfs_types::TypeError> for EvalError {
     }
 }
 
+impl From<FnError> for EvalError {
+    fn from(e: FnError) -> Self {
+        EvalError::Fn(e)
+    }
+}
+
 /// The pure evaluator (RFD §3, t07): a read-only pass over a parsed [`Statement`] that
 /// folds the query side into a [`PlanSource`] and the write side into a [`Plan`]. Holds
 /// the [`MountRegistry`] read-only (for `describe` schema + capability/procedure
@@ -228,16 +239,91 @@ impl From<cfs_types::TypeError> for EvalError {
 pub struct Evaluator<'r> {
     mounts: &'r MountRegistry,
     resolver: Resolver<'r>,
+    /// The function registry (t08), consulted to type `fn(...)` calls in expression
+    /// position. `None` keeps t07's late-bound behaviour (a `fn(...)` projects an
+    /// `Unknown` column and is not registry-checked); `Some` tightens it — the function's
+    /// declared return type drives the projected column type and an unknown function /
+    /// aggregate-in-`WHERE` becomes a structured [`EvalError::Fn`].
+    stdlib: Option<&'r StdlibRegistry>,
 }
 
 impl<'r> Evaluator<'r> {
-    /// Build an evaluator over a mount registry.
+    /// Build an evaluator over a mount registry (no function registry — `fn(...)` calls
+    /// stay late-bound, t07 behaviour).
     #[must_use]
     pub fn new(mounts: &'r MountRegistry) -> Self {
         Self {
             mounts,
             resolver: Resolver::new(mounts),
+            stdlib: None,
         }
+    }
+
+    /// Build an evaluator wired to the function registry (t08): `fn(...)` calls are typed
+    /// against the stdlib, so a projection over a built-in carries the built-in's declared
+    /// return type and an unknown / mis-contexted function is a structured error.
+    #[must_use]
+    pub fn with_stdlib(mounts: &'r MountRegistry, stdlib: &'r StdlibRegistry) -> Self {
+        Self {
+            mounts,
+            resolver: Resolver::new(mounts),
+            stdlib: Some(stdlib),
+        }
+    }
+
+    /// The declared return type of a `fn(name, ...)` call against the function registry,
+    /// or a structured [`FnError`] (unknown function / wrong arity / aggregate misuse). The
+    /// `under_aggregate` flag enforces the aggregate-vs-scalar dispatch rule (RFD §3): an
+    /// aggregate is legal only under `AGGREGATE`, a scalar is rejected where an aggregate
+    /// is required. A prelude-alias name (receiver-scoped) types as `Unknown` here — its
+    /// resolution is t06's receiver-typing concern, not the function registry's.
+    ///
+    /// # Errors
+    /// [`FnError`] for an unknown function, an arity mismatch, or an aggregate/scalar used
+    /// in the wrong context.
+    pub fn type_of_fn(
+        &self,
+        name: &str,
+        argc: usize,
+        under_aggregate: bool,
+    ) -> Result<ColumnType, FnError> {
+        let Some(reg) = self.stdlib else {
+            return Ok(ColumnType::Unknown);
+        };
+        let Some(builtin) = reg.builtin(name) else {
+            // Not a core built-in. If a driver ships it as a prelude alias, it is a
+            // receiver-typed callable (t06), late-bound here; otherwise it is unknown.
+            if reg.alias_providers(name).is_empty() {
+                return Err(FnError::UnknownFunction {
+                    name: name.to_string(),
+                });
+            }
+            return Ok(ColumnType::Unknown);
+        };
+        if !builtin.sig.accepts_arity(argc) {
+            return Err(FnError::Arity {
+                name: name.to_string(),
+                expected: builtin.sig.min_args,
+                found: argc,
+            });
+        }
+        // Aggregate-vs-scalar dispatch (RFD §3): a typed error, never a panic.
+        let is_aggregate = matches!(builtin.eval, BuiltinEval::Aggregate(_));
+        if is_aggregate && !under_aggregate {
+            return Err(FnError::AggregateOutsideAggregate {
+                name: name.to_string(),
+            });
+        }
+        if !is_aggregate && under_aggregate && matches!(builtin.eval, BuiltinEval::Scalar(_)) {
+            // A bare scalar directly under AGGREGATE (not wrapping/aggregating) is the
+            // dual misuse — but scalars are legal *inside* an aggregate's argument, so we
+            // only flag a top-level scalar projection. The caller passes `under_aggregate`
+            // only for the projection head, so this stays correct.
+            return Err(FnError::ScalarInAggregate {
+                name: name.to_string(),
+            });
+        }
+        Ok(builtin.sig.returns.clone())
     }
 
     /// Evaluate a statement to its [`EvalValue`] (RFD §3 entry point). Resolution (the
@@ -318,8 +404,17 @@ impl<'r> Evaluator<'r> {
                 input: Box::new(input),
             }),
             // Projection narrows to the named columns (t05 `project` is the source of truth).
-            PipeOp::Select(projs) | PipeOp::Aggregate(projs) => {
-                let schema = project_schema(input.schema(), projs)?;
+            // `SELECT` types `fn(...)` projections as scalars; `AGGREGATE` types them under
+            // the aggregate-context rule (t08 dispatch).
+            PipeOp::Select(projs) => {
+                let schema = self.project_schema(input.schema(), projs, false)?;
+                Ok(PlanSource::Project {
+                    input: Box::new(input),
+                    schema,
+                })
+            }
+            PipeOp::Aggregate(projs) => {
+                let schema = self.project_schema(input.schema(), projs, true)?;
                 Ok(PlanSource::Project {
                     input: Box::new(input),
                     schema,
@@ -454,7 +549,7 @@ impl<'r> Evaluator<'r> {
         // The RETURNING projection schema, computed against the effect's input schema.
         if let Some(returning) = &effect.returning {
             let input_schema = self.effect_input_schema(effect)?;
-            let schema = project_schema(&input_schema, returning)?;
+            let schema = self.project_schema(&input_schema, returning, false)?;
             plan = plan.returning(schema);
         }
 
@@ -483,6 +578,67 @@ impl<'r> Evaluator<'r> {
             }
             None => Err(EvalError::UnroutedPath { path: full }),
         }
+    }
+
+    /// Project a schema by a list of [`Projection`]s (RFD §4 `SELECT`/`AGGREGATE`). `*`
+    /// keeps the input schema; a bare `col`/`col AS a` resolves the real column type (t05
+    /// `project`); a `fn(...)` expression is **typed against the function registry** (t08):
+    /// the built-in's declared return type becomes the projected column type, and an
+    /// unknown function / aggregate-misuse is a structured [`EvalError::Fn`]. Without a
+    /// wired registry, a computed expression stays late-bound (`Unknown`, t07 behaviour).
+    ///
+    /// `under_aggregate` is `true` for an `AGGREGATE` projection (so a top-level aggregate
+    /// `fn` is legal there and rejected in a `SELECT`).
+    fn project_schema(
+        &self,
+        input: &Schema,
+        projs: &[Projection],
+        under_aggregate: bool,
+    ) -> Result<Schema, EvalError> {
+        // A bare `*` (alone) preserves the whole schema.
+        if projs.iter().any(|p| matches!(p, Projection::Star)) && projs.len() == 1 {
+            return Ok(input.clone());
+        }
+        let mut out = Vec::with_capacity(projs.len());
+        for p in projs {
+            match p {
+                Projection::Star => out.extend(input.columns.clone()),
+                Projection::Expr { expr, alias } => match (alias, expr) {
+                    // `col` / `col AS a` → resolve the real column type (source of truth).
+                    (alias, cfs_parser::Expr::Col(name)) => {
+                        let col = input.project(std::slice::from_ref(name))?;
+                        let mut c = col.columns.into_iter().next().unwrap_or_else(|| {
+                            Column::new(name.clone(), ColumnType::Unknown, true)
+                        });
+                        if let Some(a) = alias {
+                            c.name = a.clone();
+                        }
+                        out.push(c);
+                    }
+                    // A `fn(...)` projection → type it against the function registry (t08).
+                    // The built-in's return type drives the column; an unknown/mis-contexted
+                    // function is a structured error (not a silent `Unknown`).
+                    (alias, cfs_parser::Expr::Fn(fnref)) => {
+                        let ty = self.type_of_fn(&fnref.name, fnref.args.len(), under_aggregate)?;
+                        let name = alias
+                            .clone()
+                            .unwrap_or_else(|| format!("expr{}", out.len()));
+                        out.push(Column::new(name, ty, true));
+                    }
+                    // Any other computed/aliased expression → an Unknown-typed column under
+                    // its alias (or a synthesised name); pure expr typing stays late-bound.
+                    (Some(a), _) => out.push(Column::new(a.clone(), ColumnType::Unknown, true)),
+                    (None, _) => {
+                        out.push(Column::new(
+                            format!("expr{}", out.len()),
+                            ColumnType::Unknown,
+                            true,
+                        ));
+                    }
+                },
+            }
+        }
+        Ok(Schema::new(out))
     }
 }
 
@@ -554,47 +710,6 @@ fn values_schema(values: &Values) -> Schema {
         cols.push(Column::new(name, ColumnType::Unknown, true));
     }
     Schema::new(cols)
-}
-
-/// Project a schema by a list of [`Projection`]s (RFD §4 `SELECT`). `*` keeps the input
-/// schema; named expressions narrow/rename via the t05 `project` algebra where the
-/// expression is a bare column, otherwise synthesise an `Unknown` column under its alias.
-fn project_schema(input: &Schema, projs: &[Projection]) -> Result<Schema, EvalError> {
-    // A bare `*` (alone) preserves the whole schema.
-    if projs.iter().any(|p| matches!(p, Projection::Star)) && projs.len() == 1 {
-        return Ok(input.clone());
-    }
-    let mut out = Vec::with_capacity(projs.len());
-    for p in projs {
-        match p {
-            Projection::Star => out.extend(input.columns.clone()),
-            Projection::Expr { expr, alias } => match (alias, expr) {
-                // `col` / `col AS a` → resolve the real column type (source of truth).
-                (alias, cfs_parser::Expr::Col(name)) => {
-                    let col = input.project(std::slice::from_ref(name))?;
-                    let mut c =
-                        col.columns.into_iter().next().unwrap_or_else(|| {
-                            Column::new(name.clone(), ColumnType::Unknown, true)
-                        });
-                    if let Some(a) = alias {
-                        c.name = a.clone();
-                    }
-                    out.push(c);
-                }
-                // A computed/aliased expression → an Unknown-typed column under its alias
-                // (or a synthesised name); pure expression typing is late-bound.
-                (Some(a), _) => out.push(Column::new(a.clone(), ColumnType::Unknown, true)),
-                (None, _) => {
-                    out.push(Column::new(
-                        format!("expr{}", out.len()),
-                        ColumnType::Unknown,
-                        true,
-                    ));
-                }
-            },
-        }
-    }
-    Ok(Schema::new(out))
 }
 
 /// The honest affected estimate for an effect (RFD §10): an `INSERT … VALUES` of `n`
