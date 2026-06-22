@@ -194,6 +194,40 @@ impl Schema {
         Ok(Schema::new(out))
     }
 
+    /// Concatenate two schemas for a `JOIN`, applying a **column-collision policy**
+    /// (O-t07-2): the left schema's columns come first, then the right's; a right
+    /// column whose name already exists on the left is **disambiguated** by prefixing
+    /// its provenance driver id (`<driver>.<name>`), or a positional `r.<name>` suffix
+    /// when no driver provenance is available, so the joined schema never silently
+    /// shadows a left column behind a right one of the same name.
+    ///
+    /// This is the structural counterpart to the t07 evaluator's raw column concat
+    /// (which dropped the collision question): a federated `JOIN` of two sources that
+    /// both expose `id`/`name` produces a schema where both sides remain addressable.
+    /// Nullability and types are preserved per side (a `JOIN` does not widen).
+    #[must_use]
+    pub fn join(&self, rhs: &Schema) -> Schema {
+        let mut out: Vec<Column> = self.columns.clone();
+        let left_names: std::collections::BTreeSet<&str> =
+            self.columns.iter().map(|c| c.name.as_str()).collect();
+        for c in &rhs.columns {
+            if left_names.contains(c.name.as_str()) {
+                let qualifier = c
+                    .provenance
+                    .driver
+                    .as_ref()
+                    .map(|d| d.as_str().to_string())
+                    .unwrap_or_else(|| "r".to_string());
+                let mut renamed = c.clone();
+                renamed.name = format!("{qualifier}.{}", c.name);
+                out.push(renamed);
+            } else {
+                out.push(c.clone());
+            }
+        }
+        Schema::new(out)
+    }
+
     /// Resolve a dotted path `a.b.c` to its nested type, walking `Struct` columns
     /// **without flattening** (RFD §4 path access). A path that descends into a
     /// `Json` column yields [`ColumnType::Unknown`] (late-bound, still queryable), not

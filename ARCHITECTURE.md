@@ -24,6 +24,8 @@ these boundaries without restructuring the workspace.
 | `types` | `cfs-types` | The canonical type & schema model: `Value`/`Row`/`RowBatch`, `Schema`/`ColumnType`, schema algebra + typed predicates (§4/§5). **Leaf** crate (t05). |
 | `server` | `cfs-server` | The server face: `serve` stub + `/server` mount seam (§8). |
 | `parser` | `cfs-parser` | Parser front door skeleton; **filled by t02** (§2.2/§9). |
+| `pushdown` | `cfs-pushdown` | The pushdown planner (t14, Domain): `LogicalPlan`/`PhysicalPlan`/`ScanNode`/`PushedQuery`, `partition_by_source` (source-split + federation), AST→IR lowering (predicates sourced from the AST, O-t07-3), and `explain()`. Pure; no I/O (§6). |
+| `engine` | `cfs-engine` | The local combine engine (t14, Infrastructure): the `CombineEngine` seam + in-house `MiniEvaluator` running the cross-source residual (filter/project/hash-join/set-ops/aggregate/sort/limit/EXPAND). DuckDB rejected, ADR-0002; dependency-light + wasm-clean (§6/§9). |
 
 ## Dependency spine (acyclic, no back-edges)
 
@@ -42,6 +44,14 @@ cfs-txn    → { cfs-plan, cfs-types }  (t11 transactional envelope: PURE orches
 cfs-runtime → { cfs-plan, cfs-types, cfs-txn }  (t10/t11 — tokio CONFINED here; the runtime bridges
                                 its async ApplyDriver to cfs-txn's synchronous LegApplier seam)
 cfs-parser → cfs-lang          (consumes the frozen keyword consts / AST)
+cfs-pushdown → { cfs-driver, cfs-types, cfs-plan, cfs-parser }  (t14 pushdown planner: PURE.
+                                PushdownProfile accessors from cfs-driver; the typed Predicate
+                                + Schema::join from cfs-types; AST lowering from cfs-parser. No
+                                I/O/async/vendor — acyclic, below cfs-core.)
+cfs-engine → { cfs-pushdown, cfs-types }  (t14 local combine engine: the MiniEvaluator over the
+                                PhysicalPlan. Dependency closure = serde family only; wasm-clean.)
+cfs-core   → cfs-pushdown       (t14 integration seam: cfs_core::plan wires query AST → LogicalPlan
+                                → PhysicalPlan via the live MountRegistry; surfaces ScanNodes for T10.)
 cfs-types  → (serde only)      (LEAF: no workspace deps; the vendor-free type model, t05)
 ```
 

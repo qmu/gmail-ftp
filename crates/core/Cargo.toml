@@ -21,6 +21,10 @@ cfs-types = { path = "../types" }
 # One direction only: `cfs-parser` must never depend on `cfs-core` (cycle prevention,
 # asserted by `cfs-cmd/tests/dep_direction.rs`).
 cfs-parser = { path = "../parser" }
+# The pushdown planner (t14): core wires the query AST → LogicalPlan → PhysicalPlan,
+# building the SourceRegistry from the MountRegistry so independent native ScanNodes
+# surface for T10's batcher. Acyclic: cfs-core → cfs-pushdown → cfs-driver.
+cfs-pushdown = { path = "../pushdown" }
 
 [lints]
 workspace = true

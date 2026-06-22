@@ -143,6 +143,7 @@ dependencies = [
  "cfs-lang",
  "cfs-parser",
  "cfs-plan",
+ "cfs-pushdown",
  "cfs-types",
 ]
 
@@ -155,6 +156,17 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "cfs-engine"
+version = "0.0.0"
+dependencies = [
+ "cfs-driver",
+ "cfs-parser",
+ "cfs-pushdown",
+ "cfs-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -175,6 +187,18 @@ dependencies = [
 name = "cfs-plan"
 version = "0.0.0"
 dependencies = [
+ "cfs-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "cfs-pushdown"
+version = "0.0.0"
+dependencies = [
+ "cfs-driver",
+ "cfs-parser",
+ "cfs-plan",
  "cfs-types",
  "serde",
  "serde_json",

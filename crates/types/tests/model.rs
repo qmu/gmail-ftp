@@ -111,6 +111,37 @@ fn project_selects_subset_in_order() {
 }
 
 #[test]
+fn join_concatenates_and_disambiguates_collisions() {
+    use cfs_types::{DriverId, Provenance};
+    // Left: a relational table with id/name (no provenance).
+    let left = Schema::new(vec![
+        Column::new("id", ColumnType::Int, false),
+        Column::new("name", ColumnType::Text, true),
+    ]);
+    // Right: a git-history relation that also exposes `id` (provenance-tagged) plus a
+    // unique `sha` column.
+    let right = Schema::new(vec![
+        Column::new("id", ColumnType::Int, false).with_provenance(Provenance {
+            driver: Some(DriverId::new("git")),
+            source_col: None,
+        }),
+        Column::new("sha", ColumnType::Text, false),
+    ]);
+    let joined = left.join(&right);
+    // Left columns come first, verbatim; the colliding right `id` is qualified by its
+    // provenance driver (`git.id`); the unique `sha` is kept as-is.
+    assert_eq!(joined.column_names(), vec!["id", "name", "git.id", "sha"]);
+    // No silent shadowing: both ids remain addressable.
+    assert!(joined.column("id").is_some());
+    assert!(joined.column("git.id").is_some());
+
+    // Collision with no provenance falls back to the positional `r.` qualifier.
+    let right_anon = Schema::new(vec![Column::new("name", ColumnType::Text, true)]);
+    let joined_anon = left.join(&right_anon);
+    assert_eq!(joined_anon.column_names(), vec!["id", "name", "r.name"]);
+}
+
+#[test]
 fn expand_array_of_struct_flattens_element_columns() {
     let s = fixture_schema();
     // EXPAND items (Array(Struct{sku,qty})) replaces `items` with sku,qty in place.

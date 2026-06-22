@@ -72,3 +72,4 @@
 | 2026-06-23T07:50:22+09:00 | Planner | e2e-testing | t12 | E2E: items 1-4 PASS (audit determinism, secret-free, observability, has_intent reconcile); item 5 Conflict semantics PASS but RecoveryReport with Conflict(Version) FAILS serde_json serialization (internal-tagging newtype-over-primitive) -> E2E blocked |
 | 2026-06-23T07:54:23+09:00 | Constructor | implementation | t12-fix | Make LegOutcome::Conflict a struct variant so RecoveryReport JSON serializes; fix run_acid Indeterminate |
 | 2026-06-23T07:55:12+09:00 | Lead | ticket-accepted | t12 | Audit/observability accepted after serde fix; E2 complete |
+| 2026-06-23T08:14:54+09:00 | Constructor | implementation | t14 | Pushdown planner (cfs-pushdown) + local combine engine (cfs-engine, MiniEvaluator) with ADR-0002; predicates sourced from AST; Schema::join; +30 tests, 332 green |

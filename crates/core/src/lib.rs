@@ -25,11 +25,13 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod eval;
+mod plan;
 mod registry;
 mod resolve;
 mod stdlib;
 
 pub use eval::{call_proc_id, effect_kind_for, EvalError, EvalValue, Evaluator, PlanSource};
+pub use plan::{plan_pipeline, plan_query, source_registry, PushdownError};
 pub use registry::{CodecRegistry, MountRegistry, ProcRegistry};
 pub use resolve::{capability_verb_for, write_verb_for, ResolveError, ResolvedCall, Resolver};
 pub use stdlib::{
