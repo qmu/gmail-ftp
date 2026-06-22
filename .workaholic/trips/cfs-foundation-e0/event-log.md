@@ -50,3 +50,4 @@
 | 2026-06-23T05:59:44+09:00 | Planner | e2e-testing | t06 | External-consumer E2E: 14/14 checks PASS (CALL, all 8 ResolveError arms, alias desugar/fail-closed, namespace isolation, capability gate, no I/O, no panics) — E2E approved |
 | 2026-06-23T06:00:21+09:00 | Lead | ticket-accepted | t06 | Name resolution accepted |
 | 2026-06-23T06:06:47+09:00 | Constructor | implementation | t07 | Pure evaluator: AST Statement -> cfs_plan::Plan effect-plan + logical PlanSource with threaded schema; verb pipeline via write_verb_for∘kind_for_verb; +18 unit tests |
+| 2026-06-23T06:10:09+09:00 | Architect | code-review | t07 | Approve with observations: pure fold sound, PlanSource core placement correct but flag pushdown-IR + t10 dep carry-overs |
