@@ -24,3 +24,4 @@
 | 2026-06-23T00:12:24+09:00 | Lead | phase-transition | coding->complete | Trip complete: t01 + t02 accepted, all gates green |
 | 2026-06-23T04:13:02+09:00 | Constructor | implementation | t03 | Implemented pure cfs_lang::lex tokenizer (Token/Span/LexError + 22 tests); native aarch64 fmt/clippy/build/test all green, 60 tests. |
 | 2026-06-23T04:28:02+09:00 | Constructor | implementation | t04 | Implemented full RFD §3 pipe-SQL grammar + owned AST over the t03 token stream, with closed-core/three-registry governance and span-bearing structured errors; 38 parser tests green |
+| 2026-06-23T04:35:01+09:00 | Architect | code-review | t03,t04 | Catch-up analytical review of lexer and grammar |
