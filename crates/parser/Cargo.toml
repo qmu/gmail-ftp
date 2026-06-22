@@ -11,6 +11,10 @@ description = "cfs parser front door (RFD-0001 §2.2/§9). Skeleton reserved for
 [dependencies]
 # The parser consumes the frozen keyword consts / AST from cfs-lang (boundary B6).
 cfs-lang = { path = "../lang" }
+# Chosen parser library (t02, docs/adr/0001-parser-library.md): winnow — maintained,
+# macro-free, zero transitive deps (wasm-friendly), precise spans. Confined to the
+# crate-private `grammar` module; never appears in the public API (fidelity G6).
+winnow = "1.0.3"
 
 [lints]
 workspace = true

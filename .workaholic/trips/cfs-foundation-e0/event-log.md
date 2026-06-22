@@ -16,3 +16,4 @@
 | 2026-06-22T23:39:59+09:00 | Architect | code-review | crates/* | Analytical review of t01 scaffold against model guards and acceptance criteria |
 | 2026-06-22T23:49:40+09:00 | Planner | e2e-testing | cfs CLI | E2E validation of t01 CLI structured-error behavior and --json envelope |
 | 2026-06-22T23:50:31+09:00 | Lead | ticket-accepted | t01 | t01 scaffold accepted: 29 tests green, analytical review + E2E approved, no iteration |
+| 2026-06-23T00:02:53+09:00 | Constructor | implementation | spike+adr+cfs-parser | Implemented t02 parser spike (winnow vs chumsky), ADR locking choice, thin parser-skeleton |

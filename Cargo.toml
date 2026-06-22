@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+# `crates/*` are production members. `spikes/*` are THROWAWAY t02 comparison
+# evidence (publish = false), kept in the workspace so they build/fmt/clippy with
+# the rest but never ship. See docs/adr/0001-parser-library.md.
+members = ["crates/*", "spikes/*"]
 
 [workspace.package]
 edition = "2021"

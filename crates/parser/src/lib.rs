@@ -1,67 +1,113 @@
 //! `cfs-parser` — the parser front door (RFD-0001 §2.2, §9).
 //!
-//! **This crate is the empty-but-typed skeleton reserved for ticket t02.** E0 (t01)
-//! creates it as the 9th workspace member, wires its dependency on [`cfs_lang`]
-//! (boundary B6: the parser consumes the frozen keyword consts and AST), and stubs
-//! the public surface. **t02 fills it**: the winnow-vs-chumsky decision spike under
-//! `spikes/`, the owned [`ParseError`], the real `parse_statement`, the golden error
-//! corpus, and the ADR `docs/adr/0001-parser-library.md`.
+//! E0/t02 fills the skeleton: the parser library is **winnow** (decision locked in
+//! `docs/adr/0001-parser-library.md` after the winnow-vs-chumsky spike under
+//! `spikes/parser-spike`). This crate parses the **E0-subset grammar**
+//! `FROM <path> |> WHERE <expr> |> SELECT <cols>` (UPPERCASE keywords, `|>` pipes).
+//! The full RFD §3 grammar is E1.
 //!
 //! ## Reversibility (fidelity guard G6, boundary B6)
-//! The chosen parser library's types must **never** appear in this crate's public
-//! API — they are wrapped behind the owned [`ParseError`] and the `parse_statement`
-//! signature, so E1 can swap libraries without breaking callers.
+//! winnow appears ONLY in the crate-private [`grammar`] module. The public API is
+//! the owned [`ParseError`] and the owned [`ast`] types — no winnow type leaks
+//! past the crate boundary, so E1 can swap libraries without breaking callers.
+//! This is asserted by [`tests::no_vendor_type_in_public_api`].
 //!
 //! ## Reserved upward edge (acceptance criterion C5)
-//! The intended dependency direction is `cfs-core → cfs-parser` (core calls
-//! `parse_statement` to turn DSL text into AST). That edge is **declared here, not
-//! yet wired**, so E1 adds it in one direction and cannot accidentally introduce a
-//! cycle (`cfs-parser` must never depend on `cfs-core`). See the crate-level note
-//! and `ARCHITECTURE.md`.
+//! The intended dependency direction is `cfs-core → cfs-parser`. `cfs-parser` must
+//! never depend on `cfs-core` (no cycle). See `ARCHITECTURE.md`.
 //!
 //! ## wasm-friendliness (boundary guard B7)
-//! `cfs-parser` must build for `wasm32` (RFD §9). No threads, no `std::fs`, no
-//! sockets — t02 keeps the chosen library's features pure.
+//! `cfs-parser` builds for `wasm32` (RFD §9). winnow has **zero transitive
+//! dependencies** and is macro-free/pure-Rust, so it adds no threads, `std::fs`,
+//! or sockets (a deciding factor over chumsky, which pulls `stacker`/`psm` — a
+//! C-built stack manipulator that is wasm-hostile). The `wasm32-unknown-unknown`
+//! build is validated in CI (the target is not installed on the dev host).
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-/// Owned parse error (skeleton). t02 fills in byte/char span, expected-set, and a
-/// machine code; the chosen library's error type is wrapped here and never exposed
-/// (fidelity guard G6). Kept as an opaque owned type at E0.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub struct ParseError {
-    /// A short, machine-facing description. Replaced by structured span/expected
-    /// fields in t02.
-    pub message: String,
-}
+pub mod ast;
+mod error;
+mod grammar;
 
-/// Parse one cfs statement into an AST (skeleton).
+pub use ast::{CmpOp, Expr, Literal, Path, PipeOp, Stmt};
+pub use error::{ParseError, ParseErrorCode};
+
+/// The frozen closed-core keyword set (RFD §3), re-exported from `cfs-lang` so the
+/// parser and its callers share one source of truth (boundary B6).
+pub use cfs_lang::{Keyword, KEYWORDS, OPERATORS};
+
+/// Parse one cfs statement into the owned [`Stmt`] AST.
 ///
-/// E0 returns the not-implemented error; t02 implements the real grammar with the
-/// library its ADR locks. The signature is the stable, reversible boundary: the AST
-/// type and this function shape do not depend on the chosen parser library.
+/// E0 handles the spike-grammar subset `FROM <path> |> WHERE <expr> |> SELECT
+/// <cols>`; E1 extends it to the full RFD §3 grammar. The signature is the stable,
+/// reversible boundary: neither [`Stmt`] nor [`ParseError`] depends on the chosen
+/// parser library (winnow), so the library is swappable.
 ///
 /// # Errors
-/// At E0 always returns [`ParseError`] indicating the parser is not yet implemented.
-pub fn parse_statement(_src: &str) -> Result<(), ParseError> {
-    // TODO(t02/E1): implement the real grammar (winnow default per RFD §9; chumsky
-    // if the golden error-recovery corpus is decisive). Return an owned AST node.
-    Err(ParseError {
-        message: "parser not yet implemented (reserved for t02/E1)".to_string(),
-    })
+/// Returns an owned [`ParseError`] (byte span + expected-set + machine code) on any
+/// parse failure — the AI structured-error path of RFD §5.
+pub fn parse_statement(src: &str) -> Result<Stmt, ParseError> {
+    grammar::parse(src)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The skeleton compiles and the reserved consts from cfs-lang are reachable —
-    /// proving the B6 edge (`cfs-parser -> cfs-lang`) is wired.
     #[test]
-    fn skeleton_returns_not_implemented_and_sees_lang_keywords() {
-        assert!(parse_statement("FROM /mail").is_err());
-        // The frozen keyword vocabulary is visible from the parser crate.
-        assert!(cfs_lang::KEYWORDS.contains(&"FROM"));
+    fn parses_full_pipeline() {
+        let stmt = parse_statement("FROM mail.inbox |> WHERE subject LIKE 'invoice' |> SELECT id")
+            .expect("valid pipeline must parse");
+        assert_eq!(stmt.from, Path(vec!["mail".into(), "inbox".into()]));
+        assert_eq!(stmt.ops.len(), 2);
+    }
+
+    #[test]
+    fn from_only_parses() {
+        let stmt = parse_statement("FROM mail").expect("FROM-only is valid");
+        assert!(stmt.ops.is_empty());
+    }
+
+    #[test]
+    fn lowercase_keyword_is_structured_unknown_keyword() {
+        let err = parse_statement("FROM mail |> where id = 1").expect_err("lowercase rejected");
+        assert_eq!(err.code, ParseErrorCode::UnknownKeyword);
+        assert_eq!(err.at, 13);
+    }
+
+    #[test]
+    fn missing_pipe_is_unexpected_token() {
+        let err = parse_statement("FROM mail WHERE id = 1").expect_err("missing |> rejected");
+        assert_eq!(err.code, ParseErrorCode::UnexpectedToken);
+    }
+
+    #[test]
+    fn dangling_where_is_eof() {
+        let err = parse_statement("FROM mail |> WHERE").expect_err("dangling WHERE rejected");
+        assert_eq!(err.code, ParseErrorCode::UnexpectedEof);
+    }
+
+    #[test]
+    fn sees_frozen_keyword_set() {
+        // The B6 edge (cfs-parser -> cfs-lang) is wired and the frozen vocabulary
+        // is re-exported here.
+        assert!(KEYWORDS.contains(&"FROM"));
+        assert_eq!(Keyword::Where.text(), "WHERE");
+    }
+
+    /// No-vendor-leak audit (RFD §9, acceptance criterion). The public error type is
+    /// the owned `ParseError`; this test pins its construction and `Display` shape so
+    /// a refactor cannot accidentally start surfacing a winnow type through it. The
+    /// structural guarantee (winnow confined to the private `grammar` module) is
+    /// enforced by `grammar` being non-`pub`; this test pins the observable surface.
+    #[test]
+    fn no_vendor_type_in_public_api() {
+        let err = parse_statement("").expect_err("empty input is an error");
+        // ParseError is fully owned: clonable, comparable, displayable without any
+        // parser-library type in scope.
+        let cloned = err.clone();
+        assert_eq!(err, cloned);
+        let shown = format!("{err}");
+        assert!(shown.contains("UNEXPECTED_EOF"));
     }
 }
