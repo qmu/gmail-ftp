@@ -54,7 +54,47 @@ enum Command {
         /// Path to the `.cfs` server config.
         config: PathBuf,
     },
+    /// Manage stored credentials per driver/account (t27, RFD-0001 §10). The account
+    /// *name* is metadata (safe to print); the credential itself is never echoed.
+    Account {
+        #[command(subcommand)]
+        verb: AccountVerb,
+    },
     // The absence of a subcommand starts the interactive shell (handled in `run`).
+}
+
+/// `cfs account <verb>` — the credential-store management verbs (t27). Each maps onto a
+/// [`cfs_core::Secrets`] backend + the resolution model; the credential value is read
+/// from a prompt / stdin (never an argv, which would leak into shell history and `ps`).
+#[derive(Subcommand, Debug)]
+enum AccountVerb {
+    /// Add (or replace) the credential for a driver's named account.
+    Add {
+        /// The driver this account belongs to, e.g. `mail`, `s3`.
+        driver: String,
+        /// The account name, e.g. `work`, `personal`.
+        account: String,
+    },
+    /// List configured accounts (optionally for one driver). Prints selectors + metadata
+    /// only — never a credential.
+    List {
+        /// Restrict the listing to one driver.
+        driver: Option<String>,
+    },
+    /// Set the persistent active account for a driver (`account use`).
+    Use {
+        /// The driver to set the active account for.
+        driver: String,
+        /// The account to make active.
+        account: String,
+    },
+    /// Remove the credential for a driver's named account (idempotent).
+    Remove {
+        /// The driver.
+        driver: String,
+        /// The account to remove.
+        account: String,
+    },
 }
 
 /// The library entrypoint the thin `cfs` binary calls. Parses `args`, dispatches,
@@ -96,6 +136,7 @@ where
     let outcome = match cli.cmd {
         Some(Command::Run { stmt }) => dispatch_run(&engine, &session, &stmt),
         Some(Command::Serve { config }) => cfs_server::serve(&config),
+        Some(Command::Account { verb }) => dispatch_account(&engine, &session, &verb),
         None => dispatch_shell(&engine, &session),
     };
 
@@ -118,6 +159,27 @@ fn dispatch_run(_engine: &Engine, _session: &Session, stmt: &str) -> Result<(), 
 fn dispatch_shell(_engine: &Engine, _session: &Session) -> Result<(), CfsError> {
     tracing::debug!(target: "cfs::cmd", "dispatch interactive shell (stub)");
     Err(CfsError::NotImplemented { feature: "shell" })
+}
+
+/// Dispatch `cfs account <verb>` (t27). The credential store + resolver substrate this
+/// drives lives in `cfs-secrets` (consumed via [`cfs_core::Secrets`]); the verb surface
+/// is declared here and the credential-bearing I/O (prompt → keyring/passphrase →
+/// encrypted backend) is the parked seam the keyring-plumbing follow-up fills. Matches the
+/// E0 stub pattern of the other arms: a structured, secret-free `NotImplemented` per verb.
+/// No credential is ever read from argv (it would leak into shell history / `ps`).
+fn dispatch_account(
+    _engine: &Engine,
+    _session: &Session,
+    verb: &AccountVerb,
+) -> Result<(), CfsError> {
+    let feature = match verb {
+        AccountVerb::Add { .. } => "account add",
+        AccountVerb::List { .. } => "account list",
+        AccountVerb::Use { .. } => "account use",
+        AccountVerb::Remove { .. } => "account remove",
+    };
+    tracing::debug!(target: "cfs::cmd", feature, "dispatch account (stub)");
+    Err(CfsError::NotImplemented { feature })
 }
 
 /// Render a [`CfsError`] to stderr: a human line, or a `{"error": {...}}` JSON
@@ -201,6 +263,50 @@ mod tests {
     fn serve_returns_exit_code_one_on_not_implemented() {
         let code = run(["cfs", "serve", "x.cfs"]);
         assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn account_verbs_dispatch_to_structured_not_implemented() {
+        let engine = Engine::new();
+        let session = Session::new();
+        let cases = [
+            (
+                AccountVerb::Add {
+                    driver: "mail".into(),
+                    account: "work".into(),
+                },
+                "account add",
+            ),
+            (AccountVerb::List { driver: None }, "account list"),
+            (
+                AccountVerb::Use {
+                    driver: "mail".into(),
+                    account: "work".into(),
+                },
+                "account use",
+            ),
+            (
+                AccountVerb::Remove {
+                    driver: "mail".into(),
+                    account: "work".into(),
+                },
+                "account remove",
+            ),
+        ];
+        for (verb, feature) in cases {
+            let err = dispatch_account(&engine, &session, &verb).unwrap_err();
+            match err {
+                CfsError::NotImplemented { feature: f } => assert_eq!(f, feature),
+                other => panic!("expected NotImplemented({feature}), got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn account_subcommand_parses_and_exits_one() {
+        // `cfs account list` parses cleanly and reaches the structured stub (exit 1).
+        assert_eq!(run(["cfs", "account", "list"]), 1);
+        assert_eq!(run(["cfs", "account", "add", "mail", "work"]), 1);
     }
 
     #[test]

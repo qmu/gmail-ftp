@@ -285,6 +285,58 @@ fn runtime_is_confined_to_plan_and_types() {
 }
 
 #[test]
+fn secrets_is_confined_to_types_and_core_consumes_it() {
+    // t27: cfs-secrets is the credential / secret store + multi-account resolution
+    // (RFD §10). It is consumer-side, owned-DTO only, and reuses the canonical
+    // `cfs_types::DriverId` — so among workspace crates it depends ONLY on cfs-types
+    // (a leaf), keeping the spine acyclic (cfs-secrets → cfs-types). cfs-core consumes
+    // it (the Engine threads a `Secrets` handle into the driver-bind context) and
+    // re-exports it, so the rest of the workspace reaches secrets through the hub.
+    let graph = load_graph();
+    let workspace_crates = [
+        "cfs-cmd",
+        "cfs-core",
+        "cfs-server",
+        "cfs-lang",
+        "cfs-plan",
+        "cfs-driver",
+        "cfs-codec",
+        "cfs-parser",
+        "cfs-types",
+        "cfs-runtime",
+        "cfs-txn",
+        "cfs-pushdown",
+        "cfs-secrets",
+    ];
+
+    // (a) secrets' only workspace dependency is cfs-types.
+    let secrets_deps = graph
+        .direct_deps
+        .get("cfs-secrets")
+        .expect("cfs-secrets is a workspace package");
+    for d in secrets_deps
+        .iter()
+        .filter(|d| workspace_crates.contains(&d.as_str()))
+    {
+        assert_eq!(
+            d, "cfs-types",
+            "spine violation: cfs-secrets must depend only on cfs-types among workspace \
+             crates (it carries no driver/plan/vendor coupling), but depends on {d}"
+        );
+    }
+
+    // (b) core consumes secrets (the bind-context credential surface).
+    let core_deps = graph.direct_deps.get("cfs-core").expect("cfs-core package");
+    assert!(
+        core_deps.iter().any(|d| d == "cfs-secrets"),
+        "cfs-core must depend on cfs-secrets to thread the Secrets handle into the Engine (t27)"
+    );
+
+    // (c) nothing depends back up onto cfs-cmd via secrets, and the spine stays acyclic:
+    // cfs-secrets must NOT depend on any higher crate (already covered by (a)).
+}
+
+#[test]
 fn core_depends_on_parser_one_directionally() {
     // C5 / E1 (ticket t06): the cfs-core -> cfs-parser edge is now WIRED — name
     // resolution (`cfs_core::resolve`) consumes the parsed `cfs_parser::Statement`. The

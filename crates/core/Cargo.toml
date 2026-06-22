@@ -25,6 +25,11 @@ cfs-parser = { path = "../parser" }
 # building the SourceRegistry from the MountRegistry so independent native ScanNodes
 # surface for T10's batcher. Acyclic: cfs-core → cfs-pushdown → cfs-driver.
 cfs-pushdown = { path = "../pushdown" }
+# The credential / secret store + multi-account resolution (t27, RFD §10). core threads
+# a `Secrets` handle into the Engine so the driver-bind context fetches credentials via
+# the one trait, and re-exports the secrets surface so consumers depend on cfs-core only.
+# Acyclic: cfs-core → cfs-secrets → cfs-types (a leaf).
+cfs-secrets = { path = "../secrets" }
 
 [lints]
 workspace = true

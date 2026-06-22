@@ -58,6 +58,18 @@ pub use cfs_types::{
     Predicate, Provenance, Row, RowBatch, Schema, SchemaSource, TypeError, Typed, TypedPredicate,
     Value,
 };
+// The credential / secret store + multi-account resolution (t27, RFD §10), re-exported
+// so drivers and the server reach the one secrets surface through `cfs-core`. `Secret`
+// is the only type holding key material (redacting Debug/Display, no Clone/Serialize,
+// zeroized on drop); the store keys by `(driver, account)` and the resolver turns a
+// statement's context into a concrete account, recording the `AccountSource` for the
+// audit ledger — never the credential.
+pub use cfs_secrets::{
+    grant_scopes, resolve as resolve_account, AccountId, AccountIdError, AccountRecord,
+    AccountSource, ActiveAccounts, CredentialKey, EnvStore, InMemoryStore,
+    Resolution as AccountResolution, ResolveError as AccountResolveError, ScopeError, ScopeGrant,
+    Secret, SecretError, Secrets,
+};
 
 /// The output mode for a session (RFD-0001 §7: `-json` vs human).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -94,15 +106,32 @@ pub struct Engine {
     pub codecs: CodecRegistry,
     /// Reserved audit-sink hook (E2). `None` until a sink is installed.
     pub audit_sink: Option<std::sync::Arc<dyn AuditSink>>,
+    /// The credential / secret store (t27, RFD §10): the one [`Secrets`] surface the
+    /// driver-bind context fetches credentials from at COMMIT time, keyed by
+    /// `(driver, account)`. `None` until a backend is installed (the CLI installs a
+    /// [`cfs_secrets::LocalStore`]; the server a `WorkerStore`/`EnvStore`). Held behind
+    /// the trait so the engine is oblivious to the backend, and a `Plan` never embeds a
+    /// secret — only an account *selector* (purity invariant, RFD §3).
+    pub secrets: Option<std::sync::Arc<dyn Secrets>>,
     /// Reserved capability-enforcement flag (E5). Shape only at E0.
     pub capabilities_enforced: bool,
 }
 
 impl Engine {
-    /// A fresh engine with three empty registries and no audit sink.
+    /// A fresh engine with three empty registries, no audit sink, and no secret store.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Install the credential / secret store (t27). The driver-bind context fetches
+    /// credentials through this handle at COMMIT time; before one is installed,
+    /// credential resolution is unavailable (a driver that needs a secret fails with a
+    /// structured error rather than running unauthenticated).
+    #[must_use]
+    pub fn with_secrets(mut self, secrets: std::sync::Arc<dyn Secrets>) -> Self {
+        self.secrets = Some(secrets);
+        self
     }
 }
 
@@ -143,7 +172,23 @@ mod tests {
         assert!(e.procs.is_empty());
         assert!(e.codecs.is_empty());
         assert!(e.audit_sink.is_none());
+        assert!(e.secrets.is_none());
         assert!(!e.capabilities_enforced);
+    }
+
+    #[test]
+    fn engine_threads_a_secrets_handle_through_the_bind_context() {
+        // The driver-bind context fetches credentials via the one `Secrets` trait (t27).
+        // An in-memory backend (no fs, no network, no real keychain) proves the wiring.
+        let store = std::sync::Arc::new(InMemoryStore::new());
+        let key = CredentialKey::new(DriverId::new("mail"), AccountId::new("work").unwrap());
+        store.put(&key, Secret::from("tok")).unwrap();
+
+        let engine = Engine::new().with_secrets(store);
+        let secrets = engine.secrets.as_ref().expect("secrets installed");
+        assert_eq!(secrets.get(&key).unwrap().expose_str(), Some("tok"));
+        // A redacted Debug never leaks the value, even through the engine handle.
+        assert!(!format!("{:?}", secrets.get(&key).unwrap()).contains("tok"));
     }
 
     #[test]
