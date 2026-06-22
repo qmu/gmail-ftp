@@ -75,3 +75,4 @@
 | 2026-06-23T08:14:54+09:00 | Constructor | implementation | t14 | Pushdown planner (cfs-pushdown) + local combine engine (cfs-engine, MiniEvaluator) with ADR-0002; predicates sourced from AST; Schema::join; +30 tests, 332 green |
 | 2026-06-23T08:18:30+09:00 | Architect | code-review | t14 | Approve with observations: split sound, O-t07-3 honored, ADR-0002 evidence-based; flagged federated-residual column-naming (O1) for E4 |
 | 2026-06-23T08:21:41+09:00 | Planner | e2e-testing | t14 | E2E-validated t14 as external consumer: 26/26 checks PASS (pushdown split by profile, differential split==all-local for WHERE/SELECT/LIMIT/ORDER/aggregate/DISTINCT, cross-source JOIN federation with Schema::join disambiguation, capability gating + no panics); verdict E2E approved; one non-blocking observation that plan_query does not thread driver SELECT-cap into the read gate. |
+| 2026-06-23T08:22:36+09:00 | Lead | ticket-accepted | t14 | Pushdown+engine accepted; E3 complete |
