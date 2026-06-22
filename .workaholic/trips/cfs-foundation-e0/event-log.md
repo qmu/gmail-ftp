@@ -51,3 +51,4 @@
 | 2026-06-23T06:00:21+09:00 | Lead | ticket-accepted | t06 | Name resolution accepted |
 | 2026-06-23T06:06:47+09:00 | Constructor | implementation | t07 | Pure evaluator: AST Statement -> cfs_plan::Plan effect-plan + logical PlanSource with threaded schema; verb pipeline via write_verb_for∘kind_for_verb; +18 unit tests |
 | 2026-06-23T06:10:09+09:00 | Architect | code-review | t07 | Approve with observations: pure fold sound, PlanSource core placement correct but flag pushdown-IR + t10 dep carry-overs |
+| 2026-06-23T06:13:11+09:00 | Planner | e2e-testing | t07 | E2E-validated t07 evaluator externally: 24/24 checks pass; query schema threading id:Int/subject:Text, INSERT/REMOVE effect plans, typed RETURNING, irreversible PREVIEW, Read->write DAG edge, 3 structured error codes, poisoned applier never fired |
