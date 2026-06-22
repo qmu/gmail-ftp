@@ -103,3 +103,7 @@ revision required):
 - **[Constructor]** codec registry + 6 builtins (json/jsonl/yaml/toml/csv/md+frontmatter), struct/array bridge, EXPAND/path-access, structured errors. **[Architect]** Approve with observations. **[Planner]** E2E approved.
 - **Defect caught by BOTH gates + fixed**: `Value::Struct` lost nested field names → `a.b.c` over decoded data returned None. Fixed by making `Value::Struct(Fields)` carry named ordered fields; decode→access regression test added (commit `6918d35`). 184 tests green. This was a t05-rooted core-model fix landed before drivers depend on it.
 - **Carry-over**: defaulted `Codec::infer_schema` (DESCRIBE-without-materialization) deferred to driver/DESCRIBE ticket (non-breaking later).
+
+### t06 ACCEPTED (Lead, 2026-06-23)
+- **[Constructor]** name resolution in `cfs-core` (CALL→procedures via mount router, receiver-typed prelude aliases fail-closed, capability gating); wired core→parser edge; EffectVerb exhaustive matches. +16 tests, 200 green. **[Architect]** Approve with observations. **[Planner]** E2E approved 14/14 (no I/O during resolve).
+- **Minor carry-overs**: O-A reconcile ARCHITECTURE.md "Reserved edge" wording (now wired); O-D add a comment that `cfs_parser::EffectVerb` must NOT become `#[non_exhaustive]` or the cross-crate exhaustive verb guard silently defeats. (Fold into t07.)
