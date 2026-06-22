@@ -16,6 +16,10 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod codecs;
+mod convert;
+mod nested;
+
 // Re-export the shared error so codec consumers see it without naming cfs-driver.
 pub use cfs_driver::CfsError;
 
@@ -24,6 +28,16 @@ pub use cfs_driver::CfsError;
 // json, explicit nulls, schema descriptor) now lives in the leaf `cfs-types` crate,
 // and codecs target it so the `bytes <-> rows` boundary speaks the one row model.
 pub use cfs_types::{Row, RowBatch, Schema, Value};
+
+// The six builtin codecs (t15) and the canonical `builtin_codecs()` set that
+// `CodecRegistry::with_builtins()` loads. Each codec maps `bytes <-> RowBatch` purely.
+pub use codecs::{
+    builtin_codecs, CsvCodec, JsonCodec, JsonlCodec, MarkdownFrontmatterCodec, TomlCodec, YamlCodec,
+};
+
+// The runtime nested-data operators (RFD §4): value-level `EXPAND` and `a.b.c` path
+// access over the struct/array model. The type-level twins live in `cfs_types::Schema`.
+pub use nested::{access, access_row, expand};
 
 /// The pure `bytes ↔ rows` codec trait (RFD-0001 §4).
 pub trait Codec: Send + Sync {

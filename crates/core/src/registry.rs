@@ -164,6 +164,25 @@ impl CodecRegistry {
         Self::default()
     }
 
+    /// A registry pre-loaded with the six builtin codecs (`json`, `jsonl`, `yaml`,
+    /// `toml`, `csv`, `md+frontmatter`) from `cfs-codec` (t15). This is the default the
+    /// engine resolves `DECODE`/`ENCODE fmt` through; a backend extends it via
+    /// [`CodecRegistry::register`] (a new codec = zero keywords, RFD §3).
+    ///
+    /// The builtins have distinct format names, so registration never collides; the
+    /// `expect_used` lint is satisfied without an `unwrap` because the only error arm
+    /// ([`CfsError::DuplicateRegistration`]) is structurally unreachable here.
+    #[must_use]
+    pub fn with_builtins() -> Self {
+        let mut reg = Self::new();
+        for codec in cfs_codec::builtin_codecs() {
+            // Builtin format names are unique by construction; ignore the (unreachable)
+            // duplicate error rather than panic, keeping lib code panic-free.
+            let _ = reg.register(codec);
+        }
+        reg
+    }
+
     /// Register a codec under its declared format.
     ///
     /// # Errors
@@ -357,5 +376,20 @@ mod tests {
 
         let dup = reg.register(Arc::new(FakeCodec));
         assert!(matches!(dup, Err(CfsError::DuplicateRegistration(_))));
+    }
+
+    /// t15 — `with_builtins` resolves all six builtin codecs by name, and an unknown
+    /// format returns a structured `UnknownCodec` (not a panic).
+    #[test]
+    fn codec_registry_with_builtins_resolves_all_six() {
+        let reg = CodecRegistry::with_builtins();
+        assert_eq!(reg.len(), 6);
+        for fmt in ["json", "jsonl", "yaml", "toml", "csv", "md+frontmatter"] {
+            assert_eq!(reg.resolve(fmt).unwrap().fmt(), fmt);
+        }
+        assert!(matches!(
+            reg.resolve("parquet"),
+            Err(CfsError::UnknownCodec(_))
+        ));
     }
 }

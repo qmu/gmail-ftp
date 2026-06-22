@@ -40,3 +40,4 @@
 | 2026-06-23T05:18:49+09:00 | Planner | e2e-testing | t13 | Implemented an out-of-workspace MyDriver against the Driver contract; all 5 E2E items PASS; found Capabilities lacks an out-of-crate constructor (F1, non-blocking) |
 | 2026-06-23T05:23:42+09:00 | Constructor | implementation | t13-refine | Capabilities builder, driver id()+prefix router, wider pushdown, verb tie-test |
 | 2026-06-23T05:24:40+09:00 | Lead | ticket-accepted | t13 | Driver contract accepted (with refinement) |
+| 2026-06-23T05:34:29+09:00 | Constructor | implementation | t15 | Implemented six builtin codecs (json/jsonl/yaml/toml/csv/md+frontmatter), CodecRegistry::with_builtins, value-level EXPAND/path-access, structured Decode/Encode errors; +31 tests (182 total). |

@@ -51,6 +51,27 @@ pub enum CfsError {
     #[error("parse error")]
     Parse,
 
+    /// A codec failed to decode bytes for its format (RFD §4/§5). Structured so an AI
+    /// gets a typed parse error, not prose: names the `fmt` and a machine-facing
+    /// `detail` (where available, a line/offset hint is folded into `detail`).
+    #[error("decode error ({fmt}): {detail}")]
+    Decode {
+        /// The codec format that failed to decode (e.g. `json`, `csv`).
+        fmt: &'static str,
+        /// A machine-facing reason (the underlying parser message / location).
+        detail: String,
+    },
+
+    /// A codec failed to encode a [`crate::CfsError`]-bearing row batch back to bytes
+    /// for its format (RFD §4). Structured for AI recovery: names the `fmt` and reason.
+    #[error("encode error ({fmt}): {detail}")]
+    Encode {
+        /// The codec format that failed to encode (e.g. `toml`, `csv`).
+        fmt: &'static str,
+        /// A machine-facing reason the rows could not be encoded.
+        detail: String,
+    },
+
     /// A virtual path was malformed at the driver boundary (empty, or not absolute).
     /// Carries the offending text and a stable machine-facing reason (RFD §5).
     #[error("invalid path {path:?}: {reason}")]
@@ -88,6 +109,8 @@ impl CfsError {
             Self::UnknownCodec(_) => "unknown_codec",
             Self::DuplicateRegistration(_) => "duplicate_registration",
             Self::Parse => "parse_error",
+            Self::Decode { .. } => "decode_error",
+            Self::Encode { .. } => "encode_error",
             Self::InvalidPath { .. } => "invalid_path",
             Self::UnsupportedVerb { .. } => "unsupported_verb",
         }
