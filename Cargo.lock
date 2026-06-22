@@ -145,6 +145,8 @@ name = "cfs-parser"
 version = "0.0.0"
 dependencies = [
  "cfs-lang",
+ "serde",
+ "serde_json",
  "winnow",
 ]
 

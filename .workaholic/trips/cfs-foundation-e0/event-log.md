@@ -23,3 +23,4 @@
 | 2026-06-23T00:12:05+09:00 | Lead | ticket-accepted | t02 | t02 parser spike accepted: winnow locked in ADR, structured ParseError verified, 38 tests green, no regression |
 | 2026-06-23T00:12:24+09:00 | Lead | phase-transition | coding->complete | Trip complete: t01 + t02 accepted, all gates green |
 | 2026-06-23T04:13:02+09:00 | Constructor | implementation | t03 | Implemented pure cfs_lang::lex tokenizer (Token/Span/LexError + 22 tests); native aarch64 fmt/clippy/build/test all green, 60 tests. |
+| 2026-06-23T04:28:02+09:00 | Constructor | implementation | t04 | Implemented full RFD §3 pipe-SQL grammar + owned AST over the t03 token stream, with closed-core/three-registry governance and span-bearing structured errors; 38 parser tests green |
