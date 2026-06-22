@@ -33,3 +33,4 @@
 | 2026-06-23T04:50:36+09:00 | Lead | ticket-accepted | t05 | Type/schema model accepted; NodeSchema↔Schema carry-over to t13 |
 | 2026-06-23T04:59:13+09:00 | Constructor | implementation | t09 | Formalized cfs-plan into a typed effect DAG with PREVIEW/COMMIT semantics, RecordingApplier, golden+purity tests |
 | 2026-06-23T05:02:34+09:00 | Architect | code-review | t09 | Approve with observations: effect-plan DAG + PREVIEW/COMMIT faithful; recorded WriteVerb-drift, VfsPath-Path, purity-denylist, RETURNING-asymmetry carry-overs |
+| 2026-06-23T05:04:11+09:00 | Planner | e2e-testing | t09 | External consumer E2E: validate/preview/commit all pass (46/46); flagged non-exhaustive AppliedEffect lacks public ctor for E4 appliers |
