@@ -135,6 +135,9 @@ name = "cfs-driver"
 version = "0.0.0"
 dependencies = [
  "cfs-plan",
+ "cfs-types",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

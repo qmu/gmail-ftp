@@ -26,6 +26,17 @@ pub struct AppliedEffect {
     pub affected: u64,
 }
 
+impl AppliedEffect {
+    /// Construct an applied-effect report. Provided because the struct is
+    /// `#[non_exhaustive]`, so out-of-crate (E4) driver-backed [`PlanApplier`] impls
+    /// cannot build one with a struct literal — they need a constructor to report a
+    /// successful apply. Additive; the `#[non_exhaustive]` guarantee is preserved.
+    #[must_use]
+    pub fn new(id: NodeId, affected: u64) -> Self {
+        Self { id, affected }
+    }
+}
+
 /// An error from applying one effect. The applier owns the real error taxonomy (E4);
 /// here it is an owned message so the plan crate stays vendor-free and `commit` can
 /// account for failures without leaking a driver type.

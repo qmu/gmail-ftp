@@ -175,6 +175,24 @@ fn types_is_a_leaf_and_codec_depends_on_it() {
         core_deps.iter().any(|d| d == "cfs-types"),
         "cfs-core must depend on cfs-types to re-export the type model (t05)"
     );
+
+    // t13: the Driver contract's `describe` returns the canonical typed
+    // `cfs_types::Schema` (archetype tag + Schema), so cfs-driver depends DIRECTLY on
+    // the cfs-types leaf. This is the reconciliation of the old untyped NodeSchema into
+    // the one workspace schema; the edge is acyclic because cfs-types is a leaf
+    // (cfs-driver → { cfs-plan, cfs-types } → cfs-types).
+    let driver_deps = graph
+        .direct_deps
+        .get("cfs-driver")
+        .expect("cfs-driver package");
+    assert!(
+        driver_deps.iter().any(|d| d == "cfs-types"),
+        "cfs-driver must depend on cfs-types for the typed Schema in the Driver contract (t13)"
+    );
+    assert!(
+        driver_deps.iter().any(|d| d == "cfs-plan"),
+        "cfs-driver must depend on cfs-plan for the PlanApplier/Plan effect seam (t09/t13)"
+    );
 }
 
 #[test]

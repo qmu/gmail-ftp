@@ -4,7 +4,7 @@
 //! the server resolve through.
 //!
 //! Each registry is generic over a **trait object** (`Arc<dyn Driver>` /
-//! `Arc<dyn Codec>` / an owned `ProcedureDecl`), not over concrete types
+//! `Arc<dyn Codec>` / an owned `ProcSig`), not over concrete types
 //! (fidelity guard G2): a new driver (E4) implements the trait and calls `register`
 //! — it touches zero core types. All three share the identical `new` / `register` /
 //! `resolve` shape and use `BTreeMap` for deterministic iteration (test stability).
@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use cfs_codec::Codec;
-use cfs_driver::{CfsError, Driver, ProcedureDecl};
+use cfs_driver::{CfsError, Driver, ProcSig};
 
 /// Registry of path mounts → drivers (RFD-0001 §3, "paths"). Keyed by mount string
 /// (`/mail`, `/s3`, …).
@@ -70,10 +70,11 @@ impl MountRegistry {
 /// Registry of functions + `CALL` procedures (RFD-0001 §3, "functions /
 /// procedures"). One registry because both alias functions and procedures are
 /// receiver-typed, registry-resolved, and keyword-free. Keyed by qualified name
-/// (e.g. `mail.send`). E0 stores the [`ProcedureDecl`] declaration only.
+/// (e.g. `mail.send`). Stores the [`ProcSig`] declaration (params, irreversible,
+/// returns, requires_scopes — t13) only.
 #[derive(Default)]
 pub struct ProcRegistry {
-    procs: BTreeMap<String, ProcedureDecl>,
+    procs: BTreeMap<String, ProcSig>,
 }
 
 impl ProcRegistry {
@@ -87,7 +88,7 @@ impl ProcRegistry {
     ///
     /// # Errors
     /// [`CfsError::DuplicateRegistration`] if the name is already taken.
-    pub fn register(&mut self, qualified_name: &str, decl: ProcedureDecl) -> Result<(), CfsError> {
+    pub fn register(&mut self, qualified_name: &str, decl: ProcSig) -> Result<(), CfsError> {
         if self.procs.contains_key(qualified_name) {
             return Err(CfsError::DuplicateRegistration(qualified_name.to_string()));
         }
@@ -99,7 +100,7 @@ impl ProcRegistry {
     ///
     /// # Errors
     /// [`CfsError::UnknownProcedure`] if the name is not registered.
-    pub fn resolve(&self, qualified_name: &str) -> Result<&ProcedureDecl, CfsError> {
+    pub fn resolve(&self, qualified_name: &str) -> Result<&ProcSig, CfsError> {
         self.procs
             .get(qualified_name)
             .ok_or_else(|| CfsError::UnknownProcedure(qualified_name.to_string()))
@@ -172,15 +173,37 @@ impl CodecRegistry {
 mod tests {
     use super::*;
     use cfs_codec::{Codec, RowBatch};
-    use cfs_driver::{Capabilities, NodeSchema, Path};
+    use cfs_driver::{Archetype, Capabilities, NodeDesc, Path, PushdownProfile, VersionSupport};
+    use cfs_plan::{AppliedEffect, ApplyError, EffectNode, PlanApplier};
+    use cfs_types::Schema;
 
-    struct FakeDriver;
+    /// A no-I/O applier the fake driver hands back through the `applier()` seam.
+    #[derive(Default)]
+    struct NoopApplier;
+    impl PlanApplier for NoopApplier {
+        fn apply(&mut self, node: &EffectNode) -> Result<AppliedEffect, ApplyError> {
+            Ok(AppliedEffect::new(node.id, 0))
+        }
+    }
+
+    struct FakeDriver {
+        pushdown: PushdownProfile,
+        applier: NoopApplier,
+    }
+    impl FakeDriver {
+        fn new() -> Self {
+            Self {
+                pushdown: PushdownProfile::None,
+                applier: NoopApplier,
+            }
+        }
+    }
     impl Driver for FakeDriver {
         fn mount(&self) -> &str {
             "/fake"
         }
-        fn describe(&self, _p: &Path) -> Result<NodeSchema, CfsError> {
-            let _ = NodeSchema::new(cfs_driver::Archetype::BlobNamespace, vec![]);
+        fn describe(&self, _p: &Path) -> Result<NodeDesc, CfsError> {
+            let _ = NodeDesc::new(Archetype::BlobNamespace, Schema::empty());
             Err(CfsError::NotImplemented {
                 feature: "describe",
             })
@@ -188,8 +211,17 @@ mod tests {
         fn capabilities(&self, _p: &Path) -> Capabilities {
             Capabilities::default()
         }
-        fn procedures(&self) -> &[ProcedureDecl] {
+        fn procedures(&self) -> &[ProcSig] {
             &[]
+        }
+        fn pushdown(&self) -> &PushdownProfile {
+            &self.pushdown
+        }
+        fn version_support(&self, _p: &Path) -> VersionSupport {
+            VersionSupport::None
+        }
+        fn applier(&self) -> &dyn PlanApplier {
+            &self.applier
         }
     }
 
@@ -215,11 +247,11 @@ mod tests {
             Err(CfsError::UnknownMount(_))
         ));
 
-        reg.register(Arc::new(FakeDriver)).unwrap();
+        reg.register(Arc::new(FakeDriver::new())).unwrap();
         assert_eq!(reg.len(), 1);
         assert_eq!(reg.resolve("/fake").unwrap().mount(), "/fake");
 
-        let dup = reg.register(Arc::new(FakeDriver));
+        let dup = reg.register(Arc::new(FakeDriver::new()));
         assert!(matches!(dup, Err(CfsError::DuplicateRegistration(_))));
     }
 
@@ -232,7 +264,7 @@ mod tests {
             Err(CfsError::UnknownProcedure(_))
         ));
 
-        let decl = ProcedureDecl::new("send");
+        let decl = ProcSig::new("send");
         reg.register("mail.send", decl.clone()).unwrap();
         assert_eq!(reg.len(), 1);
         assert_eq!(reg.resolve("mail.send").unwrap().name, "send");

@@ -30,7 +30,8 @@ pub use registry::{CodecRegistry, MountRegistry, ProcRegistry};
 // Re-export the trait seams and shared types so consumers depend on `cfs-core` only.
 pub use cfs_codec::Codec;
 pub use cfs_driver::{
-    AliasFn, Archetype, Capabilities, CfsError, Driver, NodeSchema, Path, ProcedureDecl,
+    check_capability, resolve_proc, AliasFn, Archetype, Capabilities, CfsError, Driver, NodeDesc,
+    Param, Path, ProcSig, PushdownProfile, Verb, VersionSupport,
 };
 pub use cfs_plan::{
     commit, preview, Affected, AppliedEffect, ApplyError, CommitReport, EffectKind, EffectNode,

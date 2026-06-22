@@ -50,6 +50,30 @@ pub enum CfsError {
     /// `cfs-parser::ParseError` maps into this arm).
     #[error("parse error")]
     Parse,
+
+    /// A virtual path was malformed at the driver boundary (empty, or not absolute).
+    /// Carries the offending text and a stable machine-facing reason (RFD §5).
+    #[error("invalid path {path:?}: {reason}")]
+    InvalidPath {
+        /// The offending path text.
+        path: String,
+        /// A stable, machine-facing reason the path was rejected.
+        reason: &'static str,
+    },
+
+    /// A verb was planned against a node whose driver does not declare it — the
+    /// **parse/resolve-time capability gate** (RFD §5). Structured for AI consumption:
+    /// it names the path, the rejected verb, and the verbs the node *does* support so
+    /// the caller (or the AI) can recover without prose-parsing.
+    #[error("unsupported verb {verb} at {path:?}; supported: [{}]", supported.join(", "))]
+    UnsupportedVerb {
+        /// The path the verb was planned against.
+        path: String,
+        /// The rejected verb's stable label (e.g. `UPDATE`).
+        verb: &'static str,
+        /// The verbs the node does support, as stable labels (for AI recovery).
+        supported: Vec<&'static str>,
+    },
 }
 
 impl CfsError {
@@ -64,6 +88,8 @@ impl CfsError {
             Self::UnknownCodec(_) => "unknown_codec",
             Self::DuplicateRegistration(_) => "duplicate_registration",
             Self::Parse => "parse_error",
+            Self::InvalidPath { .. } => "invalid_path",
+            Self::UnsupportedVerb { .. } => "unsupported_verb",
         }
     }
 }
