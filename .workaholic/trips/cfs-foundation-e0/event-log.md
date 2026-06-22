@@ -73,3 +73,4 @@
 | 2026-06-23T07:54:23+09:00 | Constructor | implementation | t12-fix | Make LegOutcome::Conflict a struct variant so RecoveryReport JSON serializes; fix run_acid Indeterminate |
 | 2026-06-23T07:55:12+09:00 | Lead | ticket-accepted | t12 | Audit/observability accepted after serde fix; E2 complete |
 | 2026-06-23T08:14:54+09:00 | Constructor | implementation | t14 | Pushdown planner (cfs-pushdown) + local combine engine (cfs-engine, MiniEvaluator) with ADR-0002; predicates sourced from AST; Schema::join; +30 tests, 332 green |
+| 2026-06-23T08:18:30+09:00 | Architect | code-review | t14 | Approve with observations: split sound, O-t07-3 honored, ADR-0002 evidence-based; flagged federated-residual column-naming (O1) for E4 |
