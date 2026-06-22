@@ -196,6 +196,68 @@ fn types_is_a_leaf_and_codec_depends_on_it() {
 }
 
 #[test]
+fn runtime_is_confined_to_plan_and_types() {
+    // t10 (O3): mechanically lock the tokio confinement. `cfs-runtime` is the sole impure
+    // stage (RFD §3/§6 COMMIT); tokio/futures live there and MUST NOT leak into the spine.
+    // This is the structural counterpart of `cfs-plan`'s purity test: assert two directions —
+    //
+    //   (a) `cfs-runtime` depends, among workspace crates, ONLY on `{cfs-plan, cfs-types}`
+    //       (no `cfs-core`/`cfs-parser`/`cfs-driver`/`cfs-codec`/`cfs-lang`/`cfs-cmd`/
+    //       `cfs-server`), so the runtime walks the effect plan and nothing else; and
+    //   (b) NOTHING in the workspace depends back up onto `cfs-runtime`, so tokio can never
+    //       enter another crate's closure via this edge (the confinement that keeps
+    //       `cfs-plan` I/O-free and its purity dep-closure test green by construction).
+    let graph = load_graph();
+
+    let workspace_crates = [
+        "cfs-cmd",
+        "cfs-core",
+        "cfs-server",
+        "cfs-lang",
+        "cfs-plan",
+        "cfs-driver",
+        "cfs-codec",
+        "cfs-parser",
+        "cfs-types",
+        "cfs-runtime",
+    ];
+
+    // (a) runtime's workspace deps are exactly the allowed leaf set.
+    let runtime_deps = graph
+        .direct_deps
+        .get("cfs-runtime")
+        .expect("cfs-runtime is a workspace package");
+    let allowed = ["cfs-plan", "cfs-types"];
+    let mut ws_deps: Vec<&String> = runtime_deps
+        .iter()
+        .filter(|d| workspace_crates.contains(&d.as_str()))
+        .collect();
+    ws_deps.sort();
+    ws_deps.dedup();
+    for d in &ws_deps {
+        assert!(
+            allowed.contains(&d.as_str()),
+            "confinement violation: cfs-runtime must depend only on {allowed:?} among \
+             workspace crates, but depends on {d} (this would pull tokio toward the spine). \
+             Workspace deps were: {ws_deps:?}"
+        );
+    }
+
+    // (b) nothing depends back up onto the runtime — the edge is strictly
+    // cfs-runtime -> {cfs-plan, cfs-types}, never the reverse.
+    for (pkg, deps) in &graph.direct_deps {
+        if pkg == "cfs-runtime" {
+            continue;
+        }
+        assert!(
+            !deps.iter().any(|d| d == "cfs-runtime"),
+            "confinement violation: {pkg} depends on cfs-runtime; tokio must stay confined to \
+             cfs-runtime, so no other crate may depend back up onto it"
+        );
+    }
+}
+
+#[test]
 fn core_depends_on_parser_one_directionally() {
     // C5 / E1 (ticket t06): the cfs-core -> cfs-parser edge is now WIRED — name
     // resolution (`cfs_core::resolve`) consumes the parsed `cfs_parser::Statement`. The

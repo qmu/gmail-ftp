@@ -149,6 +149,23 @@ fn registry(driver: Arc<MockDriver>) -> cfs_runtime::DriverRegistry {
     cfs_runtime::DriverRegistry::new().with(driver_id(), driver)
 }
 
+/// A node whose target driver is `driver-{d}` (distinct per group), with kind INSERT. Used by
+/// the wide-frontier admission test so every group is its OWN `(driver,kind)` key — they never
+/// coalesce and each gets its own per-driver semaphore, so the only cap that can bind is the
+/// global one. That makes the mock's peak concurrent `apply_batch` count a faithful proxy for
+/// the peak number of *admitted* group-futures (each admitted future holds a global permit for
+/// its whole lifetime, including the driver call).
+fn node_on(driver: &str, id: u32) -> EffectNode {
+    EffectNode::new(
+        NodeId(id),
+        EffectKind::Insert,
+        Target::new(
+            DriverId::new(driver),
+            VfsPath::new(format!("/{driver}/{id}")),
+        ),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Batching: N independent same-(driver,kind) effects → ONE apply_batch call.
 // ---------------------------------------------------------------------------
@@ -500,6 +517,132 @@ async fn unregistered_driver_fails_every_leg_terminally() {
             ..
         }
     ));
+}
+
+// ---------------------------------------------------------------------------
+// O1: a very wide frontier admits at most `global` group-futures at once
+// (bounded pending-future admission — "must not spawn unbounded tasks / cannot
+// exhaust memory") while still completing and batching every group.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wide_frontier_admits_at_most_global_group_futures() {
+    // 100 INDEPENDENT groups, each on its OWN driver (so they never coalesce and per-driver
+    // throttling can never bind). With global=3, no more than 3 group-futures may be admitted
+    // (each holds a global permit for its whole lifetime), so the peak concurrent driver call
+    // — and therefore the peak number of resident admitted futures — must stay <= 3.
+    const WIDTH: u32 = 100;
+    const GLOBAL: usize = 3;
+
+    let mock = Arc::new(MockDriver::new().holding(Duration::from_millis(5)));
+    let mut reg = cfs_runtime::DriverRegistry::new();
+    let mut plan = Plan::pure();
+    for i in 0..WIDTH {
+        let driver = format!("driver-{i}");
+        // Share the single mock under every distinct driver id, so it observes the global
+        // peak across all groups while each group keeps its own per-driver semaphore.
+        reg = reg.with(DriverId::new(&driver), mock.clone());
+        plan = plan.merge(Plan::leaf(node_on(&driver, i)));
+    }
+
+    let interp = Interpreter::new(
+        reg,
+        ConcurrencyLimits::new(GLOBAL, 8),
+        RetryPolicy::default(),
+    );
+    let outcome = interp.commit(plan, &allow_all()).await.unwrap();
+
+    // The bounded-admission assertion: peak admitted (== peak in-flight driver calls here,
+    // since per-driver never throttles) never exceeded the global cap.
+    assert!(
+        mock.peak_in_flight() <= GLOBAL,
+        "peak admitted group-futures {} exceeded global cap {GLOBAL}",
+        mock.peak_in_flight()
+    );
+    // Real parallelism still happened (the admission gate did not serialise everything).
+    assert!(
+        mock.peak_in_flight() >= 2,
+        "expected concurrent admission up to the cap, peak was {}",
+        mock.peak_in_flight()
+    );
+    // ...and EVERY group still completed and was batched (one call per distinct-key group).
+    assert_eq!(mock.call_count(), WIDTH as usize);
+    assert!(outcome.is_complete());
+    assert_eq!(outcome.applied_ids().len(), WIDTH as usize);
+    assert!(
+        mock.recorded_sizes().iter().all(|&s| s == 1),
+        "each distinct-driver group is its own size-1 batch"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// O2: preview drives the SAME Frontier as commit, so skip/irreversible
+// accounting matches commit's for the same failing-shaped plan.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn preview_skip_accounting_matches_commit_for_same_shaped_plan() {
+    // Build a plan whose failure SHAPE is provoked the same way in both paths: a capability
+    // denial on A(0), with B(1) -> A and C(2) -> B (transitive dependents), plus an
+    // independent D(3) that is allowed. commit fails A on the denial and skips B, C; preview
+    // must reach the identical disposition because both drive `Frontier`.
+    let build_plan = || {
+        let mut p = Plan::leaf(node(0, EffectKind::Remove))
+            .then(Plan::leaf(node(1, EffectKind::Update)))
+            .then(Plan::leaf(node(2, EffectKind::Update)));
+        p = p.merge(Plan::leaf(node(3, EffectKind::Insert)));
+        p
+    };
+    // Grant INSERT (allows D) but NOT REMOVE (denies A) on the mock driver.
+    let caps = CapabilitySet::none().grant(driver_id(), &EffectKind::Insert);
+
+    let mock = Arc::new(MockDriver::new());
+    let interp = Interpreter::with_defaults(registry(mock.clone()));
+
+    let preview = interp.preview(&build_plan(), &caps).unwrap();
+    let commit = interp.commit(build_plan(), &caps).await.unwrap();
+
+    // Same ledger ordering (topo) and same per-node disposition KIND between the two paths.
+    let disposition = |o: &cfs_runtime::Outcome| -> Vec<(NodeId, &'static str)> {
+        o.ledger
+            .iter()
+            .map(|e| {
+                let tag = match &e.status {
+                    LegStatus::Applied { .. } => "applied",
+                    LegStatus::Failed { .. } => "failed",
+                    LegStatus::Skipped { .. } => "skipped",
+                    _ => "other",
+                };
+                (e.id, tag)
+            })
+            .collect()
+    };
+    assert_eq!(
+        disposition(&preview),
+        disposition(&commit),
+        "preview skip/failure accounting must match commit (single Frontier source of truth)"
+    );
+    // And the aggregate skip/failed counts agree too.
+    assert_eq!(preview.failed_count(), commit.failed_count());
+    assert_eq!(preview.skipped_count(), commit.skipped_count());
+    assert_eq!(
+        preview.skipped_count(),
+        2,
+        "B and C are skipped transitively"
+    );
+    assert_eq!(preview.failed_count(), 1, "A is the capability denial");
+    // Skip causes match exactly (both attribute B's skip to A(0)).
+    let cause = |o: &cfs_runtime::Outcome, id: u32| {
+        o.ledger
+            .iter()
+            .find(|e| e.id == NodeId(id))
+            .and_then(|e| match e.status {
+                LegStatus::Skipped { cause } => Some(cause),
+                _ => None,
+            })
+    };
+    assert_eq!(cause(&preview, 1), cause(&commit, 1));
+    assert_eq!(cause(&preview, 1), Some(NodeId(0)));
 }
 
 #[tokio::test]

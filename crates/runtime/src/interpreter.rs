@@ -60,53 +60,77 @@ impl Interpreter {
     /// # Errors
     /// [`ApplyError::InvalidPlan`] if the plan is not a DAG.
     pub fn preview(&self, plan: &Plan, caps: &CapabilitySet) -> Result<Outcome, ApplyError> {
-        // Preview is synchronous and pure (no driver calls); reuse the topo order directly.
+        // Preview is synchronous and pure (no driver calls), but it drives the SAME `Frontier`
+        // that `commit` uses so the t09 skip/topo semantics have a single source of truth and
+        // cannot drift between the dry run and the real apply. The only difference from commit
+        // is that a would-run node is recorded as a zero-duration "applied" and immediately
+        // marked `complete` (no driver dispatch), while a capability denial is recorded as
+        // failed and marked `fail` (so its dependents surface as skips, exactly as in commit).
         let order = cfs_plan::topo_order(plan).ok_or(ApplyError::InvalidPlan)?;
+        let mut frontier = Frontier::new(plan).ok_or(ApplyError::InvalidPlan)?;
         let mut ledger_by_id: HashMap<NodeId, LedgerEntry> = HashMap::new();
-        let mut tainted: Vec<NodeId> = Vec::new();
-        for id in &order {
-            let Some(node) = plan.node(*id) else {
-                return Err(ApplyError::UnknownNode(*id));
-            };
-            let failed_parent = plan
-                .deps
-                .iter()
-                .filter(|(_, child)| child == id)
-                .map(|(parent, _)| *parent)
-                .find(|parent| tainted.contains(parent));
-            let status = if let Some(cause) = failed_parent {
-                tainted.push(*id);
-                LegStatus::Skipped { cause }
-            } else if !caps.allows(&node.target, &node.kind) {
-                // A preview still surfaces a capability denial (so the dry run warns), and
-                // its dependents are then shown as skipped — but no driver is touched.
-                tainted.push(*id);
-                LegStatus::Failed {
-                    error: EffectError::CapabilityDenied {
-                        driver: node.target.driver.clone(),
-                        verb: node.kind.label().to_string(),
-                    },
-                    attempts: 0,
+
+        loop {
+            let ready = frontier.ready();
+            if ready.is_empty() {
+                // Either every node has settled, or the frontier is genuinely stuck. With no
+                // in-flight work in preview, an empty ready-set means the walk is finished.
+                break;
+            }
+            for r in ready {
+                match r {
+                    Ready::Skip { id, cause } => {
+                        // Same skip accounting as commit (Frontier already tainted + relaxed).
+                        ledger_by_id.insert(id, skip_entry(plan, id, cause));
+                    }
+                    Ready::Run(id) => {
+                        let Some(node) = plan.node(id) else {
+                            return Err(ApplyError::UnknownNode(id));
+                        };
+                        if caps.allows(&node.target, &node.kind) {
+                            // Would-apply leg: zero-duration "applied" estimate, no driver call.
+                            ledger_by_id.insert(
+                                id,
+                                LedgerEntry {
+                                    id,
+                                    driver: node.target.driver.clone(),
+                                    kind: node.kind.clone(),
+                                    irreversible: node.irreversible,
+                                    status: LegStatus::Applied {
+                                        affected: 0,
+                                        attempts: 0,
+                                    },
+                                    duration: Duration::ZERO,
+                                },
+                            );
+                            frontier.complete(id);
+                        } else {
+                            // A preview still surfaces a capability denial (so the dry run
+                            // warns), and its dependents are then shown as skipped — but no
+                            // driver is touched. `fail` taints it so the Frontier propagates
+                            // the skip identically to commit.
+                            ledger_by_id.insert(
+                                id,
+                                LedgerEntry {
+                                    id,
+                                    driver: node.target.driver.clone(),
+                                    kind: node.kind.clone(),
+                                    irreversible: node.irreversible,
+                                    status: LegStatus::Failed {
+                                        error: EffectError::CapabilityDenied {
+                                            driver: node.target.driver.clone(),
+                                            verb: node.kind.label().to_string(),
+                                        },
+                                        attempts: 0,
+                                    },
+                                    duration: Duration::ZERO,
+                                },
+                            );
+                            frontier.fail(id);
+                        }
+                    }
                 }
-            } else {
-                // Preview marks would-apply legs as applied with the *planned* estimate and
-                // zero duration — no driver call, no real affected count.
-                LegStatus::Applied {
-                    affected: 0,
-                    attempts: 0,
-                }
-            };
-            ledger_by_id.insert(
-                *id,
-                LedgerEntry {
-                    id: *id,
-                    driver: node.target.driver.clone(),
-                    kind: node.kind.clone(),
-                    irreversible: node.irreversible,
-                    status,
-                    duration: Duration::ZERO,
-                },
-            );
+            }
         }
         Ok(self.assemble(&order, ledger_by_id))
     }
@@ -129,7 +153,16 @@ impl Interpreter {
         let mut per_driver: HashMap<cfs_types::DriverId, Arc<Semaphore>> = HashMap::new();
 
         // In-flight batch dispatches; each resolves to the per-effect results of one group.
+        // A group is pushed here ONLY after its global permit has been acquired, so the number
+        // of resident `run_group` futures (each owning a cloned `RowBatch`) is bounded by
+        // `limits.global` — a wide frontier cannot materialise unboundedly many pending
+        // futures (ticket: "must not spawn unbounded tasks / cannot exhaust memory").
         let mut in_flight: FuturesUnordered<_> = FuturesUnordered::new();
+        // Coalesced groups that are ready to run but have not yet acquired a global permit.
+        // They hold no future and no extra clones beyond the `BatchGroup` itself; admission is
+        // gated below so resident futures never exceed `limits.global`.
+        let mut admit_queue: std::collections::VecDeque<BatchGroup> =
+            std::collections::VecDeque::new();
 
         loop {
             // 1) Materialise the WHOLE current ready-set, then group it across the whole
@@ -181,38 +214,60 @@ impl Interpreter {
                 }
             }
 
-            // 3) Spawn one task per coalesced group, bounded by the two-level semaphores.
+            // 3) Enqueue this frontier's coalesced groups for *admission*. Coalescing still
+            //    runs over the whole ready-set (N+1 → 1 preserved); the groups simply wait in
+            //    `admit_queue` until a global permit frees up rather than each spawning a
+            //    future eagerly.
             for group in coalesce(&runnable) {
                 progressed = true;
+                admit_queue.push_back(group);
+            }
+
+            // 4) Admit as many queued groups as the global cap allows *right now*. Each
+            //    admitted group carries its already-acquired owned global permit into
+            //    `run_group`, so resident futures are bounded by `limits.global`. We never
+            //    block here: `try_acquire_owned` only takes free permits, and the loop's
+            //    await below frees one as each in-flight group completes, re-admitting the
+            //    next queued group on the following pass.
+            while !admit_queue.is_empty() {
+                let Ok(global_permit) = global.clone().try_acquire_owned() else {
+                    break;
+                };
+                // Non-empty checked above; a permit is in hand.
+                let Some(group) = admit_queue.pop_front() else {
+                    break;
+                };
                 let driver_id = group.key.driver.clone();
                 let driver = self.drivers.get(&driver_id);
                 let per = per_driver
                     .entry(driver_id.clone())
                     .or_insert_with(|| Arc::new(Semaphore::new(self.limits.per_driver)))
                     .clone();
-                let global = global.clone();
                 let retry = self.retry;
-                in_flight.push(run_group(group, driver, global, per, retry));
+                in_flight.push(run_group(group, driver, global_permit, per, retry));
             }
 
-            // 4) Termination: the walk is over once every node has settled.
-            if frontier.is_done() && in_flight.is_empty() {
+            // 5) Termination: the walk is over once every node has settled and nothing is
+            //    queued or in flight.
+            if frontier.is_done() && in_flight.is_empty() && admit_queue.is_empty() {
                 break;
             }
 
             // If nothing is in flight, decide whether to loop again (more nodes became ready
-            // this pass — e.g. skips to surface) or break. Breaking only when the iteration
-            // made no progress AND nothing is in flight guards against an infinite spin on a
-            // malformed plan while still draining newly-ready skip frontiers.
+            // this pass — e.g. skips to surface, or queued groups awaiting admission) or
+            // break. Breaking only when the iteration made no progress AND nothing is in
+            // flight AND nothing is queued guards against an infinite spin on a malformed
+            // plan while still draining newly-ready skip frontiers and admission backlog.
             if in_flight.is_empty() {
-                if progressed {
+                if progressed || !admit_queue.is_empty() {
                     continue;
                 }
                 break;
             }
 
-            // 5) Await the next completed group, fold its results into the ledger + frontier,
-            //    then loop to surface newly-unblocked nodes (auto-advancing the frontier).
+            // 6) Await the next completed group, fold its results into the ledger + frontier,
+            //    then loop to surface newly-unblocked nodes (auto-advancing the frontier) and
+            //    re-admit queued groups against the just-freed global permit.
             if let Some(results) = in_flight.next().await {
                 for (entry, ok) in results {
                     let id = entry.id;
@@ -266,19 +321,22 @@ fn skip_entry(plan: &Plan, id: NodeId, cause: NodeId) -> LedgerEntry {
 
 /// Dispatch one coalesced [`BatchGroup`] to its driver under the two-level concurrency caps,
 /// applying per-leg timeout + bounded retry, and return one `(LedgerEntry, applied_ok)` per
-/// effect in the group. Acquiring the global permit first then the per-driver permit bounds
-/// blast radius (global) while respecting upstream rate limits (per-driver).
+/// effect in the group. The global permit is acquired by the driver loop *before* this future
+/// is constructed (bounding the count of resident futures to `limits.global`) and moved in
+/// here as `global_permit`; the per-driver permit is acquired here so blast radius (global) is
+/// bounded while upstream rate limits (per-driver) are respected.
 async fn run_group(
     group: BatchGroup,
     driver: Option<Arc<dyn crate::driver::ApplyDriver>>,
-    global: Arc<Semaphore>,
+    global_permit: tokio::sync::OwnedSemaphorePermit,
     per_driver: Arc<Semaphore>,
     retry: RetryPolicy,
 ) -> Vec<(LedgerEntry, bool)> {
-    // Backpressure: hold both permits for the lifetime of the driver call. `acquire_owned`
-    // cannot error unless the semaphore is closed (we never close it), so a failure degrades
-    // to "no extra concurrency limit" rather than a panic.
-    let _g = global.acquire_owned().await.ok();
+    // Backpressure: hold both permits for the lifetime of the driver call. The global permit
+    // arrives already acquired (admission gate); the per-driver permit `acquire_owned` cannot
+    // error unless the semaphore is closed (we never close it), so a failure degrades to "no
+    // extra per-driver limit" rather than a panic. The global permit is released on drop.
+    let _g = global_permit;
     let _p = per_driver.acquire_owned().await.ok();
 
     let span = tracing::info_span!(
