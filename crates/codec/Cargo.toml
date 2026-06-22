@@ -12,6 +12,10 @@ description = "cfs codec contract (RFD-0001 §4): the pure bytes <-> rows Codec 
 # Depends on cfs-driver only for the shared CfsError (decision D1). This is an
 # acyclic, RFD-justified edge: both trait crates return Result<_, CfsError>.
 cfs-driver = { path = "../driver" }
+# Depends on cfs-types (a leaf) for the canonical Value/Row/RowBatch row model
+# (t05). Codecs are pure `bytes <-> rows`, so they target the canonical row DTOs
+# instead of redefining placeholders. Acyclic: cfs-types is a leaf.
+cfs-types = { path = "../types" }
 
 [lints]
 workspace = true

@@ -120,6 +120,7 @@ fn binary_depends_only_on_cmd_among_workspace_crates() {
         "cfs-driver",
         "cfs-codec",
         "cfs-parser",
+        "cfs-types",
     ];
     let ws_deps: Vec<&String> = bin_deps
         .iter()
@@ -129,6 +130,50 @@ fn binary_depends_only_on_cmd_among_workspace_crates() {
         ws_deps,
         vec![&"cfs-cmd".to_string()],
         "the cfs binary must depend on cfs-cmd only (thin entrypoint)"
+    );
+}
+
+#[test]
+fn types_is_a_leaf_and_codec_depends_on_it() {
+    // t05: cfs-types is the canonical type/schema model. It must be a true leaf —
+    // it depends on NO other workspace crate (keeping the spine acyclic and the type
+    // model vendor-free). cfs-codec and cfs-core depend ON it for the row model.
+    let graph = load_graph();
+    let workspace_crates = [
+        "cfs-cmd",
+        "cfs-core",
+        "cfs-server",
+        "cfs-lang",
+        "cfs-plan",
+        "cfs-driver",
+        "cfs-codec",
+        "cfs-parser",
+        "cfs-types",
+    ];
+    let types_deps = graph
+        .direct_deps
+        .get("cfs-types")
+        .expect("cfs-types package");
+    for ws in workspace_crates {
+        assert!(
+            !types_deps.iter().any(|d| d == ws),
+            "spine violation: cfs-types must be a leaf but depends on {ws}"
+        );
+    }
+
+    // The canonical row model flows up: codec and core depend on cfs-types.
+    let codec_deps = graph
+        .direct_deps
+        .get("cfs-codec")
+        .expect("cfs-codec package");
+    assert!(
+        codec_deps.iter().any(|d| d == "cfs-types"),
+        "cfs-codec must depend on cfs-types for the canonical row model (t05)"
+    );
+    let core_deps = graph.direct_deps.get("cfs-core").expect("cfs-core package");
+    assert!(
+        core_deps.iter().any(|d| d == "cfs-types"),
+        "cfs-core must depend on cfs-types to re-export the type model (t05)"
     );
 }
 

@@ -116,6 +116,7 @@ name = "cfs-codec"
 version = "0.0.0"
 dependencies = [
  "cfs-driver",
+ "cfs-types",
 ]
 
 [[package]]
@@ -126,6 +127,7 @@ dependencies = [
  "cfs-driver",
  "cfs-lang",
  "cfs-plan",
+ "cfs-types",
 ]
 
 [[package]]
@@ -159,6 +161,14 @@ name = "cfs-server"
 version = "0.0.0"
 dependencies = [
  "cfs-core",
+]
+
+[[package]]
+name = "cfs-types"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

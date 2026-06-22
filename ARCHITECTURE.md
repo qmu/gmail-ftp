@@ -21,18 +21,21 @@ these boundaries without restructuring the workspace.
 | `plan` | `cfs-plan` | Effects-as-data: `Effect`, `Plan`, `irreversible` (§3/§6). |
 | `driver` | `cfs-driver` | The `Driver` contract + owned DTOs; owns `CfsError` & `Path` (§5/§9). |
 | `codec` | `cfs-codec` | The pure `bytes ↔ rows` `Codec` contract (§4). |
+| `types` | `cfs-types` | The canonical type & schema model: `Value`/`Row`/`RowBatch`, `Schema`/`ColumnType`, schema algebra + typed predicates (§4/§5). **Leaf** crate (t05). |
 | `server` | `cfs-server` | The server face: `serve` stub + `/server` mount seam (§8). |
 | `parser` | `cfs-parser` | Parser front door skeleton; **filled by t02** (§2.2/§9). |
 
 ## Dependency spine (acyclic, no back-edges)
 
 ```
-cfs (bin) → cfs-cmd → cfs-core → { cfs-lang, cfs-plan, cfs-driver, cfs-codec }
+cfs (bin) → cfs-cmd → cfs-core → { cfs-lang, cfs-plan, cfs-driver, cfs-codec, cfs-types }
                          ▲
                    cfs-server ── depends on cfs-core
 cfs-codec  → cfs-driver        (shared CfsError, decision D1 — acyclic)
+cfs-codec  → cfs-types         (canonical Value/Row/RowBatch row model, t05 — acyclic)
 cfs-driver → cfs-plan          (Driver methods reference plan types)
 cfs-parser → cfs-lang          (consumes the frozen keyword consts / AST)
+cfs-types  → (serde only)      (LEAF: no workspace deps; the vendor-free type model, t05)
 ```
 
 Arrows point toward more-foundational crates. There are **no cycles** and **no
@@ -49,6 +52,24 @@ need); `cfs-codec` depends on `cfs-driver` for the shared error, and `cfs-core`
 **re-exports** both so the workspace still sees one `cfs_core::CfsError` /
 `cfs_core::Path`. This preserves "one error enum, shared workspace-wide" while keeping
 the spine strictly acyclic.
+
+### Decision D2 — the `cfs-types` leaf (t05)
+
+The canonical type & schema model (`Value`/`Row`/`RowBatch`, `Schema`/`ColumnType`,
+`TypeError`, schema algebra, typed predicates) lives in a dedicated **leaf** crate
+`cfs-types` (pre-reserved by the Architect). E0 shipped placeholder `Value`/`Row`/
+`RowBatch` in `cfs-codec`; t05 promotes them to the canonical typed model and
+`cfs-codec` now **re-exports** them from `cfs-types`, so the `bytes ↔ rows` boundary
+and the evaluator speak one row model. The crate depends on **no other workspace
+crate** (only `serde`/`serde_json`, the latter solely as the carrier for the `Json`
+value of irregular columns), keeping it the lowest node in the spine and the type
+model vendor-free (RFD §9, G6). To preserve that leaf status, `DriverId` is defined
+*inside* `cfs-types` (an owned newtype, never a vendor handle) rather than imported
+from `cfs-driver`, and the `SchemaSource` trait takes a logical segment list
+(`&[Name]`) instead of the driver `Path`; E4 adapts the driver `Path` at the boundary.
+`cfs-core` depends on `cfs-types` and re-exports it so the workspace sees one
+`cfs_core::Schema` / `Value` / `TypeError`. Mechanically enforced by
+`dep_direction.rs::types_is_a_leaf_and_codec_depends_on_it`.
 
 ### Reserved edge — `cfs-core → cfs-parser` (acceptance criterion C5)
 

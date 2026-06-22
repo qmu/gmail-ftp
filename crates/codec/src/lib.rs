@@ -19,39 +19,11 @@
 // Re-export the shared error so codec consumers see it without naming cfs-driver.
 pub use cfs_driver::CfsError;
 
-/// A single decoded value (RFD-0001 §4 data model). E0 ships a minimal owned set;
-/// nested `struct`/`array` column types and typed columns land in E3.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub enum Value {
-    /// SQL-style absence of a value.
-    Null,
-    /// A boolean.
-    Bool(bool),
-    /// A 64-bit signed integer.
-    Int(i64),
-    /// A 64-bit float.
-    Float(f64),
-    /// An owned UTF-8 string.
-    Text(String),
-}
-
-/// A single row: an ordered list of column values. Owned data only.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Row {
-    /// The column values, in column order.
-    pub values: Vec<Value>,
-}
-
-/// A batch of rows with their column names — the relational side of a codec
-/// (RFD-0001 §4). Owned data only; this is the DTO that crosses the codec boundary.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct RowBatch {
-    /// Column names, in column order.
-    pub columns: Vec<String>,
-    /// The rows.
-    pub rows: Vec<Row>,
-}
+// Re-export the canonical row model from cfs-types (t05). E0 shipped placeholder
+// `Value`/`Row`/`RowBatch` here; the canonical typed model (scalars, struct/array,
+// json, explicit nulls, schema descriptor) now lives in the leaf `cfs-types` crate,
+// and codecs target it so the `bytes <-> rows` boundary speaks the one row model.
+pub use cfs_types::{Row, RowBatch, Schema, Value};
 
 /// The pure `bytes ↔ rows` codec trait (RFD-0001 §4).
 pub trait Codec: Send + Sync {
@@ -92,10 +64,12 @@ mod tests {
                     values: vec![Value::Text(line.to_string())],
                 })
                 .collect();
-            Ok(RowBatch {
-                columns: vec!["line".to_string()],
-                rows,
-            })
+            let schema = Schema::new(vec![cfs_types::Column::new(
+                "line",
+                cfs_types::ColumnType::Text,
+                false,
+            )]);
+            Ok(RowBatch { schema, rows })
         }
 
         fn encode(&self, batch: &RowBatch) -> Result<Vec<u8>, CfsError> {

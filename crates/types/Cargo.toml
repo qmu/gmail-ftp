@@ -1,0 +1,20 @@
+[package]
+name = "cfs-types"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "cfs type & schema model (RFD-0001 §4/§5): owned, vendor-free row/relation types (Value, Row, RowBatch, Schema, ColumnType), schema algebra (project/resolve_path/expand/unify), and typed-predicate checking. The pure, leaf, wasm-safe contract every driver and the evaluator compute over."
+
+[dependencies]
+# Leaf crate: no I/O, no vendor SDK, no other workspace crate. serde powers the
+# owned DTOs (RFD §9) and golden snapshots; serde_json::Value is the carrier for the
+# `Json` value of deeply-irregular columns (RFD §4) — a pure data tree, not I/O.
+# Both stay within the "dependency-free beyond serde" spirit (the serde family only).
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -13,6 +13,9 @@ cfs-driver = { path = "../driver" }
 cfs-codec = { path = "../codec" }
 cfs-lang = { path = "../lang" }
 cfs-plan = { path = "../plan" }
+# The canonical type & schema model (t05). A leaf crate; core re-exports it so the
+# rest of the workspace sees one `cfs_core::Schema` / `Value` / `TypeError`.
+cfs-types = { path = "../types" }
 # NOTE (acceptance criterion C5): the intended `cfs-core -> cfs-parser` edge is
 # DECLARED but not yet wired. E1 adds cfs-parser here (one direction only) so the
 # parser front door is reachable from core's dispatch without a cycle. Do not add

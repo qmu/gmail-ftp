@@ -28,11 +28,18 @@ mod registry;
 pub use registry::{CodecRegistry, MountRegistry, ProcRegistry};
 
 // Re-export the trait seams and shared types so consumers depend on `cfs-core` only.
-pub use cfs_codec::{Codec, Row, RowBatch, Value};
+pub use cfs_codec::Codec;
 pub use cfs_driver::{
     AliasFn, Archetype, Capabilities, CfsError, Driver, NodeSchema, Path, ProcedureDecl,
 };
 pub use cfs_plan::{Effect, Plan};
+// The canonical type & schema model (t05), re-exported so consumers see one
+// `cfs_core::Schema` / `Value` / `TypeError` surface.
+pub use cfs_types::{
+    typecheck_predicate, CmpOp, ColRef, Column, ColumnType, DriverId, Literal, Name, Pattern,
+    Predicate, Provenance, Row, RowBatch, Schema, SchemaSource, TypeError, Typed, TypedPredicate,
+    Value,
+};
 
 /// The output mode for a session (RFD-0001 §7: `-json` vs human).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
