@@ -28,3 +28,4 @@
 | 2026-06-23T04:35:40+09:00 | Planner | e2e-testing | t03,t04 | E2E validation of lexer + grammar front door |
 | 2026-06-23T04:36:36+09:00 | Lead | ticket-accepted | t03,t04 | Lexer + grammar accepted after retroactive review/E2E gates |
 | 2026-06-23T04:45:18+09:00 | Constructor | implementation | t05 | Add cfs-types leaf crate (Value/Row/RowBatch, Schema/ColumnType, schema algebra, typed predicates); reconcile codec placeholders; update spine + dep test + ARCHITECTURE |
+| 2026-06-23T04:48:36+09:00 | Architect | code-review | t05 | Approve with observations; flagged two-schema NodeSchema vs Schema reconciliation as E1/E4 carry-over, ratified D2 DriverId-in-types and serde_json Json carrier |
