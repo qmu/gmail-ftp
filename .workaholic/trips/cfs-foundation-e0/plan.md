@@ -94,3 +94,7 @@ revision required):
 ### t09 ACCEPTED (Lead, 2026-06-23)
 - **[Constructor]** typed effect-plan DAG in `cfs-plan` (EffectKind/EffectNode/Plan + validate/topo/PREVIEW/COMMIT, PlanApplier impure seam), +22 tests. **[Architect]** Approve with observations. **[Planner]** E2E approved 46/46.
 - **Carry-overs**: (O2) `WriteVerb`↔`EffectVerb` drift → put canonical exhaustive match in `cfs-core` at E1 and drop the mirror; (O3) define `VfsPath`↔driver `Path` adapter at E4/t13; (Planner) add `AppliedEffect::new` public ctor so out-of-crate driver appliers can build success values (needed by t13/E4).
+
+### t13 ACCEPTED (Lead, 2026-06-23)
+- **[Constructor]** full Driver contract (archetype, typed schema, per-node capabilities, procs, pushdown, prelude, @version, `applier()` impure seam); reconciled NodeSchema→Schema, Path↔VfsPath adapter, AppliedEffect::new. **[Architect]** Approve with observations. **[Planner]** E2E approved (external driver implemented). **Refinement** (commit `060a457`): Capabilities builder (external-constructible), `Driver::id()`+longest-prefix `MountRegistry::resolve_path` router, wider pushdown vocab (aggregate/distinct/group_by)+accessors, Verb↔Capability tie-test. 151 tests green.
+- **Carry-overs**: O4 validate mount() strings; t14 planner consumes pushdown via accessors (done).

@@ -39,3 +39,4 @@
 | 2026-06-23T05:17:29+09:00 | Architect | code-review | t13 | Approve with observations; flag driver-identity/mount-prefix router (O1) and pushdown vocabulary (O3) before E4 drivers |
 | 2026-06-23T05:18:49+09:00 | Planner | e2e-testing | t13 | Implemented an out-of-workspace MyDriver against the Driver contract; all 5 E2E items PASS; found Capabilities lacks an out-of-crate constructor (F1, non-blocking) |
 | 2026-06-23T05:23:42+09:00 | Constructor | implementation | t13-refine | Capabilities builder, driver id()+prefix router, wider pushdown, verb tie-test |
+| 2026-06-23T05:24:40+09:00 | Lead | ticket-accepted | t13 | Driver contract accepted (with refinement) |
