@@ -10,14 +10,28 @@
 //! the golden test ([`mod tests`]) fails if it tries (fidelity guard G1 / C1).
 //!
 //! AST sum types (the `enum`-modelled grammar) land in this crate in E1. E0 ships
-//! only the frozen keyword vocabulary plus the [`keywords`] module that exposes it.
+//! the frozen keyword vocabulary ([`keywords`]) plus the **lexer** ([`lex`], t03):
+//! a pure `&str -> Vec<Spanned<Token>>` scanner that is the first stage of the
+//! language core (RFD §2.2). The lexer lives here, not in `cfs-parser`, so the
+//! closed core has exactly one home (G1) and `cfs-lang` keeps **zero dependencies**
+//! (a hand-written byte cursor, no combinator library) — no winnow type can leak
+//! (G6) because winnow never enters this crate.
 //!
 //! ## wasm-friendliness (boundary guard B7)
-//! This crate is pure data: no threads, no `std::fs`, no sockets. It must stay that
-//! way so the `wasm32` target (RFD §9) remains cheap.
+//! This crate is pure data + a pure scanner: no threads, no `std::fs`, no sockets,
+//! no dependencies. It must stay that way so the `wasm32` target (RFD §9) remains
+//! cheap.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod error;
 pub mod keywords;
+pub mod lex;
+pub mod span;
+pub mod token;
 
+pub use error::{LexError, LexErrorKind};
 pub use keywords::{Keyword, KEYWORDS, OPERATORS};
+pub use lex::lex;
+pub use span::{Span, Spanned};
+pub use token::{LitType, PathSeg, SizeUnit, Token};

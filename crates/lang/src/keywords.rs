@@ -63,6 +63,55 @@ pub enum Keyword {
 }
 
 impl Keyword {
+    /// Reverse lookup: classify a single source *word* as a reserved keyword.
+    ///
+    /// This recognizes only the **single-word** keywords. Multi-word keywords
+    /// (`GROUP BY`, `ORDER BY`, `INSERT INTO`, `UPSERT INTO`, `MATERIALIZED
+    /// VIEW`) are intentionally *not* matched here: the lexer's contract (RFD §3,
+    /// t03) is that multi-word keywords are emitted as separate adjacent tokens
+    /// and composition is the parser's job. The lead word of a multi-word keyword
+    /// (e.g. `GROUP`, `INSERT`) is therefore returned as `None` and surfaces as an
+    /// uppercase identifier; the parser stitches the pair back together.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        Some(match word {
+            "FROM" => Self::From,
+            "WHERE" => Self::Where,
+            "SELECT" => Self::Select,
+            "EXTEND" => Self::Extend,
+            "SET" => Self::Set,
+            "AGGREGATE" => Self::Aggregate,
+            "LIMIT" => Self::Limit,
+            "DISTINCT" => Self::Distinct,
+            "JOIN" => Self::Join,
+            "UNION" => Self::Union,
+            "EXCEPT" => Self::Except,
+            "INTERSECT" => Self::Intersect,
+            "AS" => Self::As,
+            "EXPAND" => Self::Expand,
+            "UPDATE" => Self::Update,
+            "REMOVE" => Self::Remove,
+            "VALUES" => Self::Values,
+            "RETURNING" => Self::Returning,
+            "CALL" => Self::Call,
+            "DECODE" => Self::Decode,
+            "ENCODE" => Self::Encode,
+            "PREVIEW" => Self::Preview,
+            "COMMIT" => Self::Commit,
+            "CREATE" => Self::Create,
+            "ENDPOINT" => Self::Endpoint,
+            "TRIGGER" => Self::Trigger,
+            "JOB" => Self::Job,
+            "VIEW" => Self::View,
+            "WEBHOOK" => Self::Webhook,
+            "POLICY" => Self::Policy,
+            "DO" => Self::Do,
+            "EVERY" => Self::Every,
+            "ON" => Self::On,
+            _ => return None,
+        })
+    }
+
     /// The canonical surface text of this keyword, exactly as written in RFD §3.
     #[must_use]
     pub const fn text(self) -> &'static str {
@@ -218,6 +267,38 @@ mod tests {
             15,
             "the operator set is frozen at 15 entries (RFD §3)"
         );
+    }
+
+    /// Drift guard for `from_word`: every single-word keyword (no internal space)
+    /// must round-trip `text -> from_word -> Keyword`, and every multi-word keyword
+    /// must NOT be recognized as a single word (it is lexed as adjacent tokens).
+    #[test]
+    fn from_word_recognizes_exactly_single_word_keywords() {
+        for kw in ALL_KEYWORDS {
+            let text = kw.text();
+            if text.contains(' ') {
+                // Multi-word keyword: never matched as a single word.
+                assert_eq!(
+                    Keyword::from_word(text),
+                    None,
+                    "multi-word keyword `{text}` must not be a single-word match"
+                );
+            } else {
+                assert_eq!(
+                    Keyword::from_word(text),
+                    Some(*kw),
+                    "single-word keyword `{text}` must round-trip through from_word"
+                );
+            }
+        }
+        // Non-keywords are not recognized.
+        assert_eq!(
+            Keyword::from_word("from"),
+            None,
+            "case-sensitive: lowercase"
+        );
+        assert_eq!(Keyword::from_word("GROUP"), None, "lead word of GROUP BY");
+        assert_eq!(Keyword::from_word("BANANA"), None);
     }
 
     /// The exhaustive list of every `Keyword` variant, used by the golden test.
