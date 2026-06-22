@@ -186,6 +186,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "cfs-plan",
+ "cfs-txn",
  "cfs-types",
  "futures",
  "serde",
@@ -200,6 +201,17 @@ name = "cfs-server"
 version = "0.0.0"
 dependencies = [
  "cfs-core",
+]
+
+[[package]]
+name = "cfs-txn"
+version = "0.0.0"
+dependencies = [
+ "cfs-plan",
+ "cfs-types",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

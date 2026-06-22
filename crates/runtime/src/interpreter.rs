@@ -41,6 +41,13 @@ impl Interpreter {
         }
     }
 
+    /// Borrow the underlying driver registry — the seam the t11 transactional commit
+    /// (`crate::txn`) resolves async drivers through, kept crate-private so the field stays
+    /// encapsulated.
+    pub(crate) fn drivers_arc(&self) -> &DriverRegistry {
+        &self.drivers
+    }
+
     /// Construct an interpreter with default limits/retry.
     #[must_use]
     pub fn with_defaults(drivers: DriverRegistry) -> Self {

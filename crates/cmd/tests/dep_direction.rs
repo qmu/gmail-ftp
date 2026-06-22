@@ -201,12 +201,19 @@ fn runtime_is_confined_to_plan_and_types() {
     // stage (RFD §3/§6 COMMIT); tokio/futures live there and MUST NOT leak into the spine.
     // This is the structural counterpart of `cfs-plan`'s purity test: assert two directions —
     //
-    //   (a) `cfs-runtime` depends, among workspace crates, ONLY on `{cfs-plan, cfs-types}`
-    //       (no `cfs-core`/`cfs-parser`/`cfs-driver`/`cfs-codec`/`cfs-lang`/`cfs-cmd`/
-    //       `cfs-server`), so the runtime walks the effect plan and nothing else; and
+    //   (a) `cfs-runtime` depends, among workspace crates, ONLY on `{cfs-plan, cfs-types,
+    //       cfs-txn}` (no `cfs-core`/`cfs-parser`/`cfs-driver`/`cfs-codec`/`cfs-lang`/
+    //       `cfs-cmd`/`cfs-server`), so the runtime walks the effect plan + the pure
+    //       transactional envelope and nothing else; and
     //   (b) NOTHING in the workspace depends back up onto `cfs-runtime`, so tokio can never
     //       enter another crate's closure via this edge (the confinement that keeps
     //       `cfs-plan` I/O-free and its purity dep-closure test green by construction).
+    //
+    // t11 added `cfs-txn` (the transactional correctness envelope). It is ITSELF pure
+    // orchestration confined to `{cfs-plan, cfs-types}` (no tokio of its own — the runtime
+    // bridges its async ApplyDriver to cfs-txn's synchronous LegApplier seam), so admitting
+    // the `cfs-runtime → cfs-txn` edge does not widen tokio's reach: cfs-txn carries no
+    // async runtime into the spine. We assert that confinement too.
     let graph = load_graph();
 
     let workspace_crates = [
@@ -220,14 +227,16 @@ fn runtime_is_confined_to_plan_and_types() {
         "cfs-parser",
         "cfs-types",
         "cfs-runtime",
+        "cfs-txn",
     ];
 
-    // (a) runtime's workspace deps are exactly the allowed leaf set.
+    // (a) runtime's workspace deps are exactly the allowed leaf set (plan/types + the pure
+    // cfs-txn envelope).
     let runtime_deps = graph
         .direct_deps
         .get("cfs-runtime")
         .expect("cfs-runtime is a workspace package");
-    let allowed = ["cfs-plan", "cfs-types"];
+    let allowed = ["cfs-plan", "cfs-types", "cfs-txn"];
     let mut ws_deps: Vec<&String> = runtime_deps
         .iter()
         .filter(|d| workspace_crates.contains(&d.as_str()))
@@ -240,6 +249,24 @@ fn runtime_is_confined_to_plan_and_types() {
             "confinement violation: cfs-runtime must depend only on {allowed:?} among \
              workspace crates, but depends on {d} (this would pull tokio toward the spine). \
              Workspace deps were: {ws_deps:?}"
+        );
+    }
+
+    // (a') cfs-txn is itself confined to {cfs-plan, cfs-types} — it carries no tokio/async
+    // runtime, so the runtime → txn edge does not widen the impure surface.
+    let txn_deps = graph
+        .direct_deps
+        .get("cfs-txn")
+        .expect("cfs-txn is a workspace package");
+    let txn_allowed = ["cfs-plan", "cfs-types"];
+    for d in txn_deps
+        .iter()
+        .filter(|d| workspace_crates.contains(&d.as_str()))
+    {
+        assert!(
+            txn_allowed.contains(&d.as_str()),
+            "confinement violation: cfs-txn must stay pure orchestration over \
+             {txn_allowed:?} among workspace crates, but depends on {d}"
         );
     }
 

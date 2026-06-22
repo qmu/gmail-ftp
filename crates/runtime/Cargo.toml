@@ -16,6 +16,11 @@ cfs-plan = { path = "../plan" }
 # The capability gate re-check at apply time keys on the canonical DriverId from the
 # leaf type crate (the same identity carried in every Target).
 cfs-types = { path = "../types" }
+# The transactional correctness envelope (t11): EffectKey idempotency, optimistic-
+# concurrency preconditions, CommitStrategy selection, the saga/ACID executors, the
+# audit ledger, and the RecoveryReport. Pure orchestration (no tokio of its own); the
+# interpreter bridges its async ApplyDriver to cfs-txn's synchronous LegApplier seam.
+cfs-txn = { path = "../txn" }
 # Async runtime + synchronization for bounded parallelism. CONFINED to this crate so
 # `cfs-plan`'s purity dep-closure test (which forbids tokio) stays green — the spine is
 # cfs-runtime -> {cfs-plan, cfs-types}, and nothing depends back up onto cfs-runtime.

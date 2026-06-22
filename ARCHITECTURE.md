@@ -36,6 +36,11 @@ cfs-codec  → cfs-types         (canonical Value/Row/RowBatch row model, t05 �
 cfs-driver → cfs-plan          (Driver::applier returns the PlanApplier seam; Plan nodes)
 cfs-driver → cfs-types         (Driver::describe returns the canonical typed Schema, t13)
 cfs-plan   → cfs-types         (effect nodes carry the canonical RowBatch/DriverId, t09 — acyclic)
+cfs-txn    → { cfs-plan, cfs-types }  (t11 transactional envelope: PURE orchestration — EffectKey
+                                idempotency, @version/ETag preconditions, CommitStrategy, saga/ACID
+                                executors, audit ledger, RecoveryReport; NO tokio of its own)
+cfs-runtime → { cfs-plan, cfs-types, cfs-txn }  (t10/t11 — tokio CONFINED here; the runtime bridges
+                                its async ApplyDriver to cfs-txn's synchronous LegApplier seam)
 cfs-parser → cfs-lang          (consumes the frozen keyword consts / AST)
 cfs-types  → (serde only)      (LEAF: no workspace deps; the vendor-free type model, t05)
 ```
