@@ -1,0 +1,42 @@
+[package]
+name = "cfs-driver-git"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "cfs git driver (RFD-0001 §5, E4 t26): the canonical all-four-archetypes driver over the LOCAL git object database (loose objects + refs + reflog), NOT the GitHub HTTP API. One Driver mounted at /git/<repo>[@<ref>]/<rest> exposes: a versioned-blob FS (BlobFs: ls/read trees+blobs at any @ref, bytes feeding the t15 codec registry so DECODE json|yaml|toml|csv|md+frontmatter works on committed files); relational history nodes (commits/changes/blame/refs/tags) queried with WHERE/ORDER BY/LIMIT/JOIN, revwalk-expressible predicates pushed down and the rest kept as a TRUTHFUL residual; and an append-log (reflog tail read, the recovery oracle). Writes are PURE PLANS (GitEffect::{WriteLooseObject, UpdateRef, WriteReflogEntry}); only COMMIT applies them. Object writes are content-addressed (idempotent, reversible/GC-able); ref updates are compare-and-swap on the old oid (optimistic concurrency via @version) so a stale old-oid is rejected, never clobbered, and a forced move is reflog-recoverable. A git commit is modelled strictly as INSERT INTO /git/<repo>/commits to AVOID the frozen COMMIT plan-keyword clash. merge/rebase/checkout/tag are CALL git.* procedures returning pure plan DAGs; merge/rebase compute the result tree DURING planning (in-memory three-way merge) and surface conflicts as a typed plan-build error in PREVIEW with ZERO effects. Capabilities gate verbs at PARSE time (UPDATE /commits rejected structurally). Owned DTOs only — no gix/vendor type past the boundary (RFD §9). Per ADR-0003 the object reader is in-house (pure-Rust DEFLATE inflate + SHA-1 content addressing + <type> <len>\\0<payload> framing), zero new dependency crates, wasm-clean, differentially checked against real `git` fixture output — gix rejected on the same footprint/offline/wasm grounds ADR-0002 rejected DuckDB."
+
+[dependencies]
+# The introspective Driver contract (t13): Driver trait, Archetype/Capabilities/ProcSig/
+# PushdownProfile/VersionSupport DTOs, the shared CfsError, and the Path boundary adapter.
+cfs-driver = { path = "../driver" }
+# The effect substrate (t06/t09): EffectKind/EffectNode/Target/VfsPath + the synchronous
+# PlanApplier seam the runtime bridge drives under COMMIT.
+cfs-plan = { path = "../plan" }
+# The canonical typed row model + Schema/Column/Value/RowBatch/DriverId (t05) the describe
+# schema, the relational rows, and the effect args speak.
+cfs-types = { path = "../types" }
+# Blob bytes → rows: the t15 codec registry interop so a committed *.md/*.json/… decodes to
+# frontmatter columns + body. We depend on the codec CONTRACT (the pure `bytes <-> rows`
+# trait) — the BlobFs read hands committed bytes to a Codec.
+cfs-codec = { path = "../codec" }
+# The async interpreter side: the SharedApplier marker + PlanApplierBridge that adapts this
+# driver's synchronous git applier so a plan over /git executes end-to-end. tokio stays
+# confined to cfs-runtime + leaf driver-impl consumers (this crate), keeping cfs-plan's
+# purity dep-closure test green.
+cfs-runtime = { path = "../runtime" }
+# Structured, secret-free GitError taxonomy (RFD §5, AI-consumable).
+thiserror = { workspace = true }
+# Structured lifecycle logging at debug (object/ref op counts; never object bytes).
+tracing = { workspace = true }
+
+[dev-dependencies]
+# End-to-end COMMIT tests drive the async interpreter through the bridge.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# The DESCRIBE golden test serialises the owned NodeDesc DTO to its `-json` wire shape.
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

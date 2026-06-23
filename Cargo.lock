@@ -295,6 +295,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfs-driver-git"
+version = "0.0.0"
+dependencies = [
+ "cfs-codec",
+ "cfs-driver",
+ "cfs-plan",
+ "cfs-runtime",
+ "cfs-types",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cfs-driver-github"
 version = "0.0.0"
 dependencies = [
