@@ -26,6 +26,10 @@ these boundaries without restructuring the workspace.
 | `parser` | `cfs-parser` | Parser front door skeleton; **filled by t02** (§2.2/§9). |
 | `pushdown` | `cfs-pushdown` | The pushdown planner (t14, Domain): `LogicalPlan`/`PhysicalPlan`/`ScanNode`/`PushedQuery`, `partition_by_source` (source-split + federation), AST→IR lowering (predicates sourced from the AST, O-t07-3), and `explain()`. Pure; no I/O (§6). |
 | `engine` | `cfs-engine` | The local combine engine (t14, Infrastructure): the `CombineEngine` seam + in-house `MiniEvaluator` running the cross-source residual (filter/project/hash-join/set-ops/aggregate/sort/limit/EXPAND). DuckDB rejected, ADR-0002; dependency-light + wasm-clean (§6/§9). |
+| `txn` | `cfs-txn` | The transactional correctness envelope (t11): `EffectKey` idempotency, `@version`/ETag preconditions, `CommitStrategy`, saga/ACID executors, audit ledger, `RecoveryReport`. **Pure orchestration** over `cfs-plan`/`cfs-types` — carries **no** tokio of its own (§6). |
+| `runtime` | `cfs-runtime` | The async effect interpreter (t10): `Interpreter::commit`, `ApplyDriver`/`DriverRegistry`, `EffectError` taxonomy, `CapabilitySet` gate, the sync→async `PlanApplierBridge`/`SharedApplier`. **tokio is CONFINED here** — the sole impure stage; nothing in the pure spine depends back onto it (§3/§5/§6). |
+| `driver-local` | `cfs-driver-local` | The **first concrete driver** (t16): a blob/namespace driver over the host filesystem mounted at `/local` (`ls cp mv rm` + `upsert`/`remove`), least-privilege sandbox, streaming reads, atomic temp+rename writes, copy→verify(size+hash)→[delete]. A **LEAF runtime consumer** — it bridges its synchronous `PlanApplier` to the async `ApplyDriver`; tokio dead-ends here (§5/§6/§10). |
+| `secrets` | `cfs-secrets` | The credential / secret store + multi-account resolution (t27): consumer-side, owned-DTO `Secrets` surface reusing the canonical `cfs_types::DriverId`. Depends on `cfs-types` only; `cfs-core` threads a `Secrets` handle into the driver-bind context (§10). |
 
 ## Dependency spine (acyclic, no back-edges)
 
@@ -52,12 +56,43 @@ cfs-engine → { cfs-pushdown, cfs-types }  (t14 local combine engine: the MiniE
                                 PhysicalPlan. Dependency closure = serde family only; wasm-clean.)
 cfs-core   → cfs-pushdown       (t14 integration seam: cfs_core::plan wires query AST → LogicalPlan
                                 → PhysicalPlan via the live MountRegistry; surfaces ScanNodes for T10.)
+cfs-secrets → cfs-types        (t27 credential/secret store + multi-account resolution: consumer-side,
+                                owned-DTO, reuses the canonical DriverId. LEAF over cfs-types — acyclic.)
+cfs-core   → cfs-secrets       (t27 bind-context credential surface: the Engine threads a Secrets
+                                handle into the driver-bind context; cfs-core re-exports it.)
+cfs-driver-local → { cfs-driver, cfs-plan, cfs-types, cfs-codec, cfs-runtime }  (t16 FIRST concrete
+                                driver; LEAF runtime consumer — bridges the synchronous PlanApplier →
+                                async ApplyDriver and registers it in the DriverRegistry. Nothing
+                                depends back onto it, so tokio dead-ends here and never re-enters the
+                                spine — the precedent the next 11 drivers follow.)
 cfs-types  → (serde only)      (LEAF: no workspace deps; the vendor-free type model, t05)
 ```
 
 Arrows point toward more-foundational crates. There are **no cycles** and **no
 back-edges**. Mechanically enforced by `crates/cmd/tests/dep_direction.rs` (a
 `cargo metadata` test).
+
+### tokio confinement — the generic runtime-leaf rule (t10/t16)
+
+`cfs-runtime` is the sole impure stage; tokio/futures live there and MUST NOT enter the
+pure spine's closure (the invariant that keeps `cfs-plan`'s purity dep-closure test green).
+`dep_direction.rs::runtime_is_confined_to_plan_and_types` enforces this in three parts:
+
+1. **(a) source pinned** — `cfs-runtime`'s own workspace deps are exactly `{cfs-plan,
+   cfs-types, cfs-txn}` (and `cfs-txn` is itself pure, carrying no tokio), so tokio's source
+   is one crate.
+2. **(b) generic leaf confinement** — **every** crate that depends on `cfs-runtime` must be a
+   **leaf**: no workspace crate may depend back onto it. This encodes *why* a runtime consumer
+   is safe (tokio dead-ends in a leaf and cannot transit back into the spine) rather than
+   *which* crates were waved through. A non-leaf gaining the edge (e.g. `cfs-core → cfs-runtime`)
+   fails automatically — **no per-driver test edit is needed** as the next 11 driver crates land.
+3. **(b') identity allowlist** — a small named allowlist (`cfs-driver-local`, `cfs`) pins the
+   *intent*: an unintended new runtime consumer is caught even if it happens to be a leaf today.
+   A new driver-impl leaf appends its name here (a one-line, reviewable signal); the generic
+   leaf check guarantees the append was safe.
+
+`cfs-driver-local` is the first such leaf consumer: it bridges its synchronous `PlanApplier`
+to the async `ApplyDriver` and registers it in the `DriverRegistry`.
 
 ### Decision D1 — where `CfsError` / `Path` live
 

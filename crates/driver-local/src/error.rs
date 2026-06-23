@@ -95,13 +95,23 @@ impl LocalError {
 
 impl From<LocalError> for EffectError {
     /// Map a local-FS failure into the runtime's structured per-effect error so the
-    /// interpreter's retry/ledger logic can branch on its class (RFD §6). Terminal classes
-    /// stop the branch; `Io` is retryable on a reversible leg.
+    /// interpreter's retry/ledger logic — and the audit ledger — can branch on its class
+    /// (RFD §5/§6). The discriminant is **preserved**, not collapsed: a sandbox-escape
+    /// (`OutsideSandbox`) maps to the dedicated [`EffectError::SandboxEscape`] (`code =
+    /// sandbox_escape`) and a capability denial (`CapabilityDenied`) maps to
+    /// [`EffectError::CapabilityDenied`] (`code = capability_denied`), so an operator triaging a
+    /// failed COMMIT can tell "I tried to escape the sandbox" from "I lacked permission" from
+    /// the ledger alone. The remaining terminal classes carry their secret-free reason; `Io`
+    /// is retryable on a reversible leg.
     fn from(err: LocalError) -> Self {
-        if err.is_retryable() {
-            EffectError::retryable(err.to_string())
-        } else {
-            EffectError::terminal(err.to_string())
+        match err {
+            LocalError::OutsideSandbox(path) => EffectError::sandbox_escape(path),
+            LocalError::CapabilityDenied { path, verb } => EffectError::CapabilityDenied {
+                driver: cfs_types::DriverId::new("local"),
+                verb: format!("{verb} at {path:?}"),
+            },
+            other if other.is_retryable() => EffectError::retryable(other.to_string()),
+            other => EffectError::terminal(other.to_string()),
         }
     }
 }

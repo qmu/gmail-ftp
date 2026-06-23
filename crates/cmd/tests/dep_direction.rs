@@ -276,21 +276,58 @@ fn runtime_is_confined_to_plan_and_types() {
         );
     }
 
-    // (b) no PURE-SPINE crate depends back up onto the runtime — tokio must never enter the
-    // spine's closure. Concrete driver-impl crates and the top-level binary are leaf consumers
-    // that legitimately bridge into the runtime (registering an ApplyDriver), and nothing
-    // depends back onto them, so they are explicitly admitted. Anything else depending on
-    // cfs-runtime is a confinement violation.
-    let runtime_consumers_allowed = ["cfs-driver-local", "cfs"];
-    for (pkg, deps) in &graph.direct_deps {
-        if pkg == "cfs-runtime" || runtime_consumers_allowed.contains(&pkg.as_str()) {
-            continue;
-        }
+    // (b) GENERIC LEAF CONFINEMENT — the durable invariant that scales to 11 more driver
+    // crates with NO per-driver edit. Every crate that depends on `cfs-runtime` (other than
+    // `cfs-runtime` itself) MUST be a leaf — no other workspace crate may depend back onto it.
+    // This encodes *why* a runtime consumer is safe (tokio dead-ends in a leaf and cannot
+    // transit back into the spine) rather than *which* crates we waved through. A non-leaf
+    // gaining the `→ cfs-runtime` edge (e.g. someone makes `cfs-core` depend on the runtime)
+    // fails automatically because `cfs-core` is a sink for the rest of the workspace. A new
+    // `cfs-driver-s3`/`-drive`/`-gmail` needs no edit here: as long as it is a leaf, the edge
+    // is admitted; the moment something depends back onto it, the leaf check fires.
+    let runtime_consumers: Vec<&String> = graph
+        .direct_deps
+        .iter()
+        .filter(|(pkg, deps)| {
+            pkg.as_str() != "cfs-runtime" && deps.iter().any(|d| d == "cfs-runtime")
+        })
+        .map(|(pkg, _)| pkg)
+        .collect();
+    assert!(
+        !runtime_consumers.is_empty(),
+        "expected at least one cfs-runtime consumer (the bridging driver-impl / binary); \
+         found none — the metadata view is likely wrong"
+    );
+    for consumer in &runtime_consumers {
+        let dependent = graph
+            .direct_deps
+            .iter()
+            .find(|(other, od)| {
+                other.as_str() != consumer.as_str() && od.iter().any(|d| d == *consumer)
+            })
+            .map(|(other, _)| other.clone());
         assert!(
-            !deps.iter().any(|d| d == "cfs-runtime"),
-            "confinement violation: {pkg} depends on cfs-runtime; tokio must stay confined to \
-             cfs-runtime + leaf driver-impl consumers ({runtime_consumers_allowed:?}), so no \
-             spine crate may depend back up onto it"
+            dependent.is_none(),
+            "confinement violation: {consumer} depends on cfs-runtime but is NOT a leaf — \
+             {dependent:?} depends back onto it, so tokio could transit out of the runtime, \
+             through {consumer}, and back into the spine. A cfs-runtime consumer MUST be a \
+             leaf (no workspace crate may depend onto it)."
+        );
+    }
+
+    // (b') Belt-and-suspenders: the named allowlist pins *identity* — the exact leaves we
+    // expect to bridge into the runtime today — so an UNINTENDED new runtime consumer is
+    // caught even if it happens to be a leaf at the moment it is added. The generic leaf
+    // check above (b) pins *safety*; this allowlist pins *intent*. A new driver crate appends
+    // its name here (a one-line, reviewable signal), and (b) guarantees the append was safe.
+    let runtime_consumers_allowed = ["cfs-driver-local", "cfs"];
+    for consumer in &runtime_consumers {
+        assert!(
+            runtime_consumers_allowed.contains(&consumer.as_str()),
+            "confinement violation: {consumer} depends on cfs-runtime but is not in the \
+             expected runtime-consumer allowlist ({runtime_consumers_allowed:?}). If this is a \
+             new driver-impl leaf bridging an ApplyDriver, add it to the allowlist; otherwise \
+             tokio must stay confined to cfs-runtime + leaf driver-impl consumers."
         );
     }
 }

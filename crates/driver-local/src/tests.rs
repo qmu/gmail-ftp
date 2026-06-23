@@ -187,6 +187,57 @@ fn copy_then_verify_preserves_source() {
 }
 
 #[test]
+fn copy_verify_with_hash_accepts_genuine_copy_and_keeps_source() {
+    // The size+hash verify must not break the happy path: a genuine copy of multi-buffer
+    // content (> COPY_BUF) is published, the source is preserved, and bytes are identical.
+    let (dir, sandbox) = fixture();
+    let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+    seed(&dir, "big.src", &payload);
+    let n = fs_core::copy_verify(&sandbox, "/local/big.src", "/local/big.dst").unwrap();
+    assert_eq!(n, payload.len() as u64);
+    assert_eq!(fs::read(dir.path().join("big.src")).unwrap(), payload);
+    assert_eq!(fs::read(dir.path().join("big.dst")).unwrap(), payload);
+}
+
+#[test]
+fn mv_with_verify_failure_does_not_delete_source() {
+    // Simulate a copy that fails verification: the destination resolves under a *path whose
+    // parent is itself a file*, so the copy's create/rename leg fails BEFORE any verify can
+    // publish. The Move arm calls copy_verify first and only unlinks the source on Ok, so the
+    // source MUST survive (no-data-loss). This exercises the verify→[delete] ordering: a copy
+    // that does not verify never triggers the source unlink.
+    let (dir, sandbox) = fixture();
+    seed(&dir, "keep.txt", b"do-not-lose-me");
+    // `blocker` is a regular file; treating it as a directory parent for the destination forces
+    // create_dir_all / create to fail, so copy_verify errors before publishing.
+    seed(&dir, "blocker", b"x");
+    let applier = LocalApplier::new(sandbox, false);
+    use cfs_plan::{DriverId, EffectKind, EffectNode, NodeId, Target, VfsPath};
+    use cfs_runtime::SharedApplier;
+    let node = EffectNode::new(
+        NodeId(0),
+        EffectKind::Upsert,
+        Target::new(
+            DriverId::new("local"),
+            VfsPath::new("/local/blocker/dst.txt"),
+        ),
+    )
+    .with_args(copy_move_args("/local/keep.txt"))
+    .irreversible(true);
+    let err = applier.apply_shared(&node).unwrap_err();
+    assert_eq!(err.code(), "terminal", "a failed copy is a terminal effect");
+    assert!(
+        dir.path().join("keep.txt").exists(),
+        "mv must NOT delete the source when the copy fails to verify/publish"
+    );
+    assert_eq!(
+        fs::read(dir.path().join("keep.txt")).unwrap(),
+        b"do-not-lose-me",
+        "the preserved source is byte-intact"
+    );
+}
+
+#[test]
 fn applier_move_deletes_source_only_after_verify() {
     let (dir, sandbox) = fixture();
     seed(&dir, "m.txt", b"move-me");
@@ -229,7 +280,10 @@ fn read_only_applier_denies_writes_and_touches_no_files() {
     )
     .with_args(blob_write_args(b"blocked".to_vec()));
     let err = applier.apply_shared(&node).unwrap_err();
-    assert_eq!(err.code(), "terminal");
+    // The discriminant is preserved through the bridge: a read_only write denial is the
+    // structured `capability_denied` class, not a generic `terminal` (the audit ledger
+    // distinguishes a denial from an escape from a torn copy).
+    assert_eq!(err.code(), "capability_denied");
     assert!(
         !dir.path().join("nope.txt").exists(),
         "no file written on denial"
@@ -252,6 +306,53 @@ fn remove_effect_deletes_a_blob() {
     let out = applier.apply_shared(&node).unwrap();
     assert_eq!(out.affected, 1);
     assert!(!dir.path().join("gone.txt").exists());
+}
+
+#[test]
+fn sandbox_escape_and_capability_denial_map_to_distinct_effect_codes() {
+    // The bridge must NOT collapse a sandbox-escape and a capability-denial into the same
+    // `terminal` code: the audit ledger has to tell "I tried to escape the sandbox" apart from
+    // "I lacked permission". The `From<LocalError> for EffectError` reduction preserves both
+    // discriminants.
+    use cfs_runtime::EffectError;
+
+    let escape: EffectError =
+        crate::error::LocalError::OutsideSandbox("/local/../../etc/passwd".to_string()).into();
+    let denial: EffectError = crate::error::LocalError::CapabilityDenied {
+        path: "/local/x".to_string(),
+        verb: "UPSERT",
+    }
+    .into();
+
+    assert_eq!(escape.code(), "sandbox_escape");
+    assert_eq!(denial.code(), "capability_denied");
+    assert_ne!(
+        escape.code(),
+        denial.code(),
+        "the two failure classes must remain distinct through the bridge"
+    );
+    // Neither is retryable (both are terminal security classes).
+    assert!(!escape.is_retryable());
+    assert!(!denial.is_retryable());
+}
+
+#[test]
+fn read_only_capability_denial_through_bridge_is_capability_denied_not_terminal() {
+    // End-to-end through the SharedApplier surface: a read_only mount denying a write now
+    // surfaces `capability_denied` (the structured discriminant), not a generic `terminal`.
+    let (dir, sandbox) = fixture();
+    let applier = LocalApplier::new(sandbox, true);
+    use cfs_plan::{DriverId, EffectKind, EffectNode, NodeId, Target, VfsPath};
+    use cfs_runtime::SharedApplier;
+    let node = EffectNode::new(
+        NodeId(0),
+        EffectKind::Upsert,
+        Target::new(DriverId::new("local"), VfsPath::new("/local/nope.txt")),
+    )
+    .with_args(blob_write_args(b"blocked".to_vec()));
+    let err = applier.apply_shared(&node).unwrap_err();
+    assert_eq!(err.code(), "capability_denied");
+    assert!(!dir.path().join("nope.txt").exists());
 }
 
 #[test]

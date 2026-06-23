@@ -47,6 +47,11 @@ pub struct EffectInput {
     /// Whether this leg is irreversible (the runtime already vetoed retries; the driver
     /// may use it for its own safety checks).
     pub irreversible: bool,
+    /// The planner's honest affected-row estimate (`Exact`/`AtMost`/`Unknown`). Carried
+    /// through so the reconstructed node is faithful — a driver that pre-sizes a batch buffer
+    /// or surfaces a progress estimate inside `apply_one` sees the planner's estimate, not a
+    /// degraded one. The applier still reports the *true* affected count back on completion.
+    pub est_affected: cfs_plan::Affected,
 }
 
 impl EffectInput {
@@ -59,6 +64,7 @@ impl EffectInput {
             target: node.target.clone(),
             args: node.args.clone(),
             irreversible: node.irreversible,
+            est_affected: node.est_affected,
         }
     }
 }

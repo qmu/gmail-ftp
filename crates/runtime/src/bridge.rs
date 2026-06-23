@@ -28,7 +28,7 @@
 
 use std::sync::Arc;
 
-use cfs_plan::{Affected, EffectNode};
+use cfs_plan::EffectNode;
 
 use crate::driver::{ApplyCx, ApplyDriver, EffectInput};
 use crate::error::EffectError;
@@ -77,13 +77,20 @@ impl<A: SharedApplier> PlanApplierBridge<A> {
 /// Reconstruct the owned [`EffectNode`] a [`SharedApplier`] expects from the runtime's
 /// [`EffectInput`] projection. The runtime flattened the node into an input for batching;
 /// the bridge rebuilds the node so the synchronous apply leg sees the same shape the
-/// pure-side planner produced. The affected estimate is honest: an `Exact` count from the
-/// row batch when present, otherwise `Unknown` (the applier reports the true count back).
+/// pure-side planner produced — including the planner's **`est_affected`**, carried through
+/// [`EffectInput::est_affected`] so the reconstruction is faithful (a future driver that
+/// pre-sizes a batch buffer or surfaces a progress estimate inside `apply_one` sees the
+/// planner's honest estimate, not a degraded one). The applier still reports the *true*
+/// affected count back on completion.
 fn node_from_input(input: &EffectInput) -> EffectNode {
     let node = EffectNode::new(input.id, input.kind.clone(), input.target.clone())
-        .irreversible(input.irreversible);
+        .irreversible(input.irreversible)
+        // Carry the planner's estimate first; `with_args` only refines `Unknown`, so an
+        // explicit estimate set here is preserved while a literal row batch still derives an
+        // exact count when the planner left it `Unknown`.
+        .with_affected(input.est_affected);
     if input.args.rows.is_empty() {
-        node.with_affected(Affected::Unknown)
+        node
     } else {
         node.with_args(input.args.clone())
     }
@@ -171,6 +178,35 @@ mod tests {
         let bridge = PlanApplierBridge::new(Arc::new(Inspect));
         bridge
             .apply_one(&input(3, EffectKind::Remove), &ApplyCx::default())
+            .await
+            .unwrap();
+    }
+
+    /// The planner's `est_affected` is carried through `EffectInput` and faithfully
+    /// reconstructed onto the node the synchronous leg sees — not degraded to `Unknown`.
+    #[tokio::test]
+    async fn node_reconstruction_preserves_est_affected() {
+        use cfs_plan::Affected;
+        struct Inspect;
+        impl SharedApplier for Inspect {
+            fn apply_shared(&self, node: &EffectNode) -> Result<EffectOutput, EffectError> {
+                assert_eq!(
+                    node.est_affected,
+                    Affected::AtMost(42),
+                    "the planner's honest estimate must survive the bridge round-trip"
+                );
+                Ok(EffectOutput::new(node.id, 0))
+            }
+        }
+        // Build an input from a node carrying an explicit AtMost estimate (a filter-driven
+        // REMOVE whose true count is unknown until apply, but the planner bounds it).
+        let target = Target::new(DriverId::new("local"), VfsPath::new("/local/x"));
+        let node = EffectNode::new(NodeId(9), EffectKind::Remove, target)
+            .with_affected(Affected::AtMost(42));
+        let einput = EffectInput::from_node(&node);
+        let bridge = PlanApplierBridge::new(Arc::new(Inspect));
+        bridge
+            .apply_one(&einput, &ApplyCx::default())
             .await
             .unwrap();
     }

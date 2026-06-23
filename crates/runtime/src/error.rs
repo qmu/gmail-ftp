@@ -58,6 +58,18 @@ pub enum EffectError {
         /// The version the world currently holds (secret-free, opaque token).
         version: String,
     },
+    /// A driver's sandbox / least-privilege boundary rejected a path that resolved **outside**
+    /// the permitted root (`..` traversal, an absolute jump, or a symlink canonicalising out of
+    /// the mount; RFD §10). This is a distinct, security-relevant discriminant from a plain
+    /// capability denial: the audit ledger must distinguish an attempted *sandbox-escape* from
+    /// "I lacked permission". **No I/O is performed** on the rejected path. Never retried —
+    /// terminal for the leg.
+    #[error("sandbox escape rejected for {path:?} (resolved outside the permitted root)")]
+    SandboxEscape {
+        /// The offending path (secret-free; the path is intended to surface, file contents
+        /// never are).
+        path: String,
+    },
 }
 
 impl EffectError {
@@ -71,6 +83,7 @@ impl EffectError {
             EffectError::CapabilityDenied { .. } => "capability_denied",
             EffectError::TimedOut { .. } => "timed_out",
             EffectError::Conflict { .. } => "conflict",
+            EffectError::SandboxEscape { .. } => "sandbox_escape",
         }
     }
 
@@ -106,6 +119,14 @@ impl EffectError {
         EffectError::Conflict {
             version: version.into(),
         }
+    }
+
+    /// Construct a sandbox-escape rejection carrying the offending path — the security-relevant
+    /// discriminant the audit ledger uses to distinguish an attempted escape from a plain
+    /// capability denial.
+    #[must_use]
+    pub fn sandbox_escape(path: impl Into<String>) -> Self {
+        EffectError::SandboxEscape { path: path.into() }
     }
 }
 

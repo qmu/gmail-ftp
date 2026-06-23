@@ -249,6 +249,11 @@ fn map_effect_error(e: EffectError, precondition: &Precondition) -> LegOutcome {
                 driver.as_str()
             )))
         }
+        // A sandbox-escape is a terminal security failure for the leg — preserve the distinct
+        // reason so the audit ledger keeps it apart from a plain capability denial.
+        EffectError::SandboxEscape { path } => LegOutcome::Failed(TxnError::terminal(format!(
+            "sandbox escape rejected for {path:?}"
+        ))),
         EffectError::TimedOut { millis } => LegOutcome::Failed(TxnError::retryable(format!(
             "effect timed out after {millis}ms"
         ))),
