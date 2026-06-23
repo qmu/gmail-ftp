@@ -1,9 +1,9 @@
 ---
 instruction: "[night /trip — empty instruction; recorded assumption] Develop and build the cfs foundation (epic E0 of the RFD-0001 Rust rebuild): ticket t01 (Rust workspace + single-binary scaffold, CLI+server, typed module/registry/trait seams, lints+CI+cross-compile), and gated on it, ticket t02 (parser-library decision spike: winnow vs chumsky, ADR + thin parser-skeleton crate). Scope fixed at invocation; do not expand."
-phase: complete
-step: done
+phase: coding
+step: coding/concurrent-launch
 iteration: 0
-updated_at: 2026-06-23T00:15:00+09:00
+updated_at: 2026-06-23T12:30:10+09:00
 ---
 
 # Trip Plan
@@ -181,3 +181,20 @@ revision required):
 
 ### SESSION PAUSE (Lead, 2026-06-23) — user requested stop after t23
 Driver of work paused at t23 per user instruction. Trip remains at coding phase, NOT complete.
+
+### RESUME (Lead, 2026-06-23T12:30 JST) — `/trip over remaining tickets`
+User resumed the trip in **interactive (normal) mode** to drive the remaining 17 tickets to
+completion. Corrected stale frontmatter (`complete/done` was the original t01/t02 scope; the
+team has since landed 24 tickets through E1–E3, E5, and most of E4) back to `coding`.
+Green baseline re-confirmed before resuming: full `cargo test --workspace` exit 0, no failures
+(552 green from t23 acceptance holds).
+
+**Remaining ticket order (dependency-aware):**
+1. **Finish E4 drivers** — t22 (S3/R2 object storage), t24 (GitHub), t25 (Slack), t26 (git object model).
+2. **E6 CLI** — t29 (one-shot + output; also wires the SELECT read-path execution the t20 carry-over flagged as missing), t28 (interactive shell).
+3. **E7 server** — t30 (runtime + self-config driver), t31 (binding DDL), t32 (HTTP endpoints), t33 (scheduler/jobs), t34 (event bus/webhooks/watchers), t35 (policy/access control).
+4. **E8 + cross-cutting** — t36 (deployment targets), t38 (test harness + golden + live E2E), t37 (security threat model), t39 (AI operating procedure/skill), t40 (docs + distribution).
+
+Each ticket runs the full per-ticket cycle: Constructor implements + internal tests → Architect
+analytical review → Planner E2E → Lead accept (or iteration). Per-ticket carry-overs are folded
+forward as the prior session did. Beginning with **t22**.
