@@ -159,6 +159,56 @@ pub struct CommitInput {
     pub files: BTreeMap<String, Vec<u8>>,
 }
 
+impl CommitInput {
+    /// Construct a commit input from the fields a valid commit requires (the supported
+    /// out-of-crate entry point for `INSERT INTO /git/<repo>/commits`). Because the struct is
+    /// `#[non_exhaustive]`, an external caller cannot use a struct literal (E0639) — this
+    /// constructor + the `with_*` builders are the supported path, mirroring the crate's existing
+    /// `ProcSig::new`/`RepoResolver::with_repo`/`GitApplier::with_store` idioms.
+    ///
+    /// `time` defaults to `0` (set it with [`CommitInput::at_time`]) and the staged tree starts
+    /// empty (add files with [`CommitInput::with_file`]/[`CommitInput::with_files`]). `branch` is
+    /// the ref to move (e.g. `refs/heads/main`); `author`/`committer` are git identity lines
+    /// (`Name <email>`).
+    #[must_use]
+    pub fn new(
+        branch: impl Into<String>,
+        author: impl Into<String>,
+        committer: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            branch: branch.into(),
+            author: author.into(),
+            committer: committer.into(),
+            time: 0,
+            message: message.into(),
+            files: BTreeMap::new(),
+        }
+    }
+
+    /// Builder: set the commit's epoch seconds (author + committer time).
+    #[must_use]
+    pub fn at_time(mut self, time: i64) -> Self {
+        self.time = time;
+        self
+    }
+
+    /// Builder: stage one file (path → blob bytes) into the commit's flat tree.
+    #[must_use]
+    pub fn with_file(mut self, path: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
+        self.files.insert(path.into(), bytes.into());
+        self
+    }
+
+    /// Builder: stage the whole flat tree at once (path → blob bytes), replacing any staged set.
+    #[must_use]
+    pub fn with_files(mut self, files: BTreeMap<String, Vec<u8>>) -> Self {
+        self.files = files;
+        self
+    }
+}
+
 /// The result of planning a commit: the pure [`Plan`] + the new commit oid (for PREVIEW display
 /// and the caller's assertion).
 #[derive(Debug, Clone)]

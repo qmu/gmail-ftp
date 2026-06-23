@@ -9,7 +9,6 @@
 //! rejection, conflicting git.merge plan-build error with zero effects, parse-time capability
 //! rejection, forced-ref-move reflog recovery, DESCRIBE golden.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use cfs_codec::MarkdownFrontmatterCodec;
@@ -285,21 +284,58 @@ fn reflog_tail_read_newest_first() {
 // Write planning (pure plans) + COMMIT
 // ---------------------------------------------------------------------------------------------
 
+/// The **supported public commit-creation entry point**: build `CommitInput` via the public
+/// `new` + `with_*` builders (NOT a struct literal — that path is unavailable to out-of-crate
+/// callers because the struct is `#[non_exhaustive]`, E0639) and feed it through
+/// `plan_insert_commit` to a PREVIEW plan. This guards the reachability of the `INSERT INTO
+/// /commits` write path through the supported API. (An out-of-crate compile-reachability proof
+/// lives in `tests/commit_input_public_api.rs`.)
+#[test]
+fn commit_input_public_constructor_drives_insert_plan() {
+    let fx = build_fixture();
+    let repo = fx.driver.repos().repo("fixture").unwrap();
+
+    let input = CommitInput::new(
+        "refs/heads/main",
+        "Carol <carol@example.com>",
+        "Carol <carol@example.com>",
+        "Built via the public constructor",
+    )
+    .at_time(1_700_000_300)
+    .with_file("NEW.txt", b"new file\n".to_vec());
+
+    let planned = plan_insert_commit("fixture", repo, &input).unwrap();
+    // The constructor produced a valid plan: blob + tree + commit + ref (+ reflog), CAS old = c2,
+    // and nothing applied (PREVIEW).
+    assert!(planned.plan.nodes().len() >= 4);
+    assert_eq!(
+        planned.old_commit.as_ref().unwrap().as_str(),
+        fx.c2.as_str()
+    );
+    assert_eq!(
+        fx.driver
+            .git_applier()
+            .ref_oid("fixture", "refs/heads/main")
+            .unwrap()
+            .as_str(),
+        fx.c2.as_str(),
+        "PREVIEW via the public constructor still applies nothing"
+    );
+}
+
 #[tokio::test]
 async fn insert_commit_preview_applies_nothing_then_commit_moves_branch_and_reflog() {
     let fx = build_fixture();
     let repo = fx.driver.repos().repo("fixture").unwrap();
 
-    let mut files = BTreeMap::new();
-    files.insert("NEW.txt".to_string(), b"new file\n".to_vec());
-    let input = CommitInput {
-        branch: "refs/heads/main".to_string(),
-        author: "Carol <carol@example.com>".to_string(),
-        committer: "Carol <carol@example.com>".to_string(),
-        time: 1_700_000_300,
-        message: "Third commit".to_string(),
-        files,
-    };
+    let input = CommitInput::new(
+        "refs/heads/main",
+        "Carol <carol@example.com>",
+        "Carol <carol@example.com>",
+        "Third commit",
+    )
+    .at_time(1_700_000_300)
+    .with_file("NEW.txt", b"new file\n".to_vec());
     let planned = plan_insert_commit("fixture", repo, &input).unwrap();
 
     // PREVIEW: the plan is a DAG of WriteLooseObject + UpdateRef effects, CAS old = c2, and it
