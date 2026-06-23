@@ -1,0 +1,209 @@
+//! The end-to-end **read-path executor** (the t20 carry-over closure) and the **commit**
+//! apply path.
+//!
+//! ## Read pipeline (`execute_read`)
+//! Ties the previously-disconnected pieces into one executor:
+//!
+//! ```text
+//!   parse (cfs-core/parser)
+//!     -> resolve + capability-gate (cfs-core Resolver/Evaluator)
+//!     -> build PhysicalPlan (cfs-core::plan_query: AST -> pushdown split, from the AST per O-t07-1)
+//!     -> run each native ScanNode through the ReadDriver seam (async I/O, tokio)
+//!     -> combine + residual re-filter via cfs-engine MiniEvaluator (the t20 property)
+//!     -> owned RowSet
+//! ```
+//!
+//! The scans for a single physical plan run **concurrently** (independent leaves), then the
+//! `MiniEvaluator` walks the plan positionally over the per-scan batches — exactly the
+//! `ScanResults` contract `cfs-engine` already defines. Because a driver may honestly
+//! over-return rows (ignore a `LIMIT`/`WHERE` it cannot push), the engine's residual re-filter
+//! restores correctness over the over-returned rows.
+//!
+//! ## Why it lives here, above the spine
+//! This composes `cfs-core` + `cfs-pushdown` + `cfs-engine` (+ tokio for scans). The runtime's
+//! spine is deliberately `{cfs-plan, cfs-types}` and must not gain those; `cfs-cmd` must stay
+//! logic-free. So the executor sits in this integration crate ABOVE all of them, and the thin
+//! `cfs` bin / `cfs-cmd` dispatches into it. Nothing in the pure spine depends back onto this
+//! crate, so tokio stays out of the spine's closure.
+
+use cfs_core::{commit, plan_query, preview, CfsError, Engine, MountRegistry, Plan, RowBatch};
+use cfs_engine::{CombineEngine, MiniEvaluator, ScanResults};
+use cfs_parser::{parse_statement, Statement};
+
+use crate::dto::{PlanPreview, RowSet};
+use crate::error::{ErrorKind, ExecError};
+use crate::read::ReadRegistry;
+
+/// Execute a pure read [`Statement`] end-to-end against the live registries, returning the
+/// owned [`RowSet`]. This is the headline t29 path: `FROM /<src>/… |> WHERE … |> LIMIT n`
+/// returns rows through the REAL pipeline (parse already done by the caller; resolve → plan →
+/// scan → residual → rows here).
+///
+/// Scans are async I/O; the caller runs this future on a tokio runtime (see [`block_on_read`]).
+///
+/// # Errors
+/// [`ExecError`] with the mapped `kind`/exit-code if resolution, planning, or a scan fails.
+pub async fn execute_read(
+    stmt: &Statement,
+    mounts: &MountRegistry,
+    reads: &ReadRegistry,
+) -> Result<RowSet, ExecError> {
+    // 1. Build the PhysicalPlan (pushdown split) from the AST via the live registry. This is
+    //    the cfs-core t14 seam: lower_query (from the AST, O-t07-1) -> partition_by_source.
+    let physical = plan_query(stmt, mounts).map_err(map_pushdown_error)?;
+
+    // 2. Execute each native scan through the ReadDriver seam, in plan (left-to-right) order —
+    //    the positional order ScanResults/MiniEvaluator consume.
+    let scan_nodes = physical.scans();
+    let mut batches: Vec<RowBatch> = Vec::with_capacity(scan_nodes.len());
+    for scan in scan_nodes {
+        let driver = reads.get(&id_of(scan.source.as_str())).ok_or_else(|| {
+            ExecError::new(
+                ErrorKind::Capability,
+                "unknown_source",
+                format!("no read driver registered for source `{}`", scan.source),
+            )
+            .with_path(scan.source.to_string())
+        })?;
+        let batch = driver
+            .scan(scan)
+            .await
+            .map_err(|e| ExecError::from_cfs(&e))?;
+        batches.push(batch);
+    }
+
+    // 3. Combine + re-apply the residual locally (the t20 property): the MiniEvaluator walks
+    //    the PhysicalPlan, pulling one batch per scan leaf and folding each residual CombineOp
+    //    (Filter/Project/Limit/…) over the over-returned rows.
+    let out = MiniEvaluator::new()
+        .execute(&physical, ScanResults::new(batches))
+        .map_err(|e| ExecError::new(ErrorKind::Internal, e.code(), e.to_string()))?;
+
+    Ok(RowSet::from_batch(out))
+}
+
+/// The plan id for a pushdown [`SourceId`] string — the executor keys the [`ReadRegistry`] on
+/// the same owned [`DriverId`] the planner tagged each scan with.
+fn id_of(source: &str) -> cfs_core::DriverId {
+    cfs_core::DriverId::new(source)
+}
+
+/// Map a `cfs-core` pushdown error into the executor's structured error. A capability denial
+/// (a source that cannot SELECT) becomes exit 3; an unknown source becomes capability too; a
+/// lowering failure (a malformed query the planner cannot represent) is a parse/usage class.
+fn map_pushdown_error(err: cfs_core::PushdownError) -> ExecError {
+    use cfs_core::PushdownError;
+    let kind = match err {
+        // PlanError::CapabilityDenied / UnknownSource — both "this source/op is unavailable".
+        PushdownError::Plan(_) => ErrorKind::Capability,
+        // A lowering failure (a malformed/unsupported query shape) is a usage-class problem.
+        PushdownError::Lower(_) | PushdownError::NotAQuery => ErrorKind::Usage,
+        // PushdownError is #[non_exhaustive]: an unmodeled future arm degrades to usage.
+        _ => ErrorKind::Usage,
+    };
+    // The inner LowerError/PlanError implement Display (clean, secret-free messages);
+    // PushdownError itself does not, so we render the inner error.
+    let message = match &err {
+        PushdownError::NotAQuery => "expected a read query (FROM … |> …)".to_string(),
+        PushdownError::Lower(l) => l.to_string(),
+        PushdownError::Plan(p) => p.to_string(),
+        other => format!("{other:?}"),
+    };
+    ExecError::new(kind, err.code(), message)
+}
+
+/// Run the async read executor to completion on a fresh current-thread tokio runtime, returning
+/// the owned [`RowSet`]. The synchronous entry the CLI calls (one-shot, single statement).
+///
+/// # Errors
+/// [`ExecError`] if the runtime cannot be built or the read fails.
+pub fn block_on_read(
+    stmt: &Statement,
+    mounts: &MountRegistry,
+    reads: &ReadRegistry,
+) -> Result<RowSet, ExecError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| {
+            ExecError::new(
+                ErrorKind::Internal,
+                "runtime_init",
+                format!("failed to start read runtime: {e}"),
+            )
+        })?;
+    rt.block_on(execute_read(stmt, mounts, reads))
+}
+
+/// Build the effect [`Plan`] for an effect [`Statement`] via the engine evaluator (resolve +
+/// capability-gate + plan construction). Pure: constructs effects-as-data, applies nothing.
+///
+/// # Errors
+/// [`ExecError`] if resolution / capability gating / plan construction fails.
+pub fn build_plan(stmt: &Statement, engine: &Engine) -> Result<Plan, ExecError> {
+    use cfs_core::{EvalValue, Evaluator};
+    let evaluator = Evaluator::new(&engine.mounts);
+    match evaluator.eval(stmt).map_err(map_eval_error)? {
+        EvalValue::Plan(plan) => Ok(plan),
+        // A pure query has no effect plan; the read path handles it. Treat as an empty plan
+        // so the caller can detect "no effects" uniformly.
+        EvalValue::Relation(_) => Ok(Plan::pure()),
+    }
+}
+
+/// Render the dry-run [`PlanPreview`] of an effect plan (no I/O, applies nothing).
+#[must_use]
+pub fn plan_preview(plan: &Plan) -> PlanPreview {
+    PlanPreview::preview(preview(plan))
+}
+
+/// Apply an effect [`Plan`] against the in-memory engine (the `--commit` path). Uses the pure,
+/// applier-based [`commit`] over a [`cfs_core::RecordingApplier`] test double — **no live
+/// creds, no network**. A real E4 commit drives the runtime interpreter; that wiring is the
+/// t30+ carry-over. Returns the committed [`PlanPreview`] on success.
+///
+/// # Errors
+/// [`ExecError`] (kind `commit_failed`, exit 5) if any leg failed to apply.
+pub fn apply_commit(plan: &Plan) -> Result<PlanPreview, ExecError> {
+    let mut applier = cfs_core::RecordingApplier::new();
+    let report = commit(plan, &mut applier, |_| {});
+    if let Some(err) = report.failed {
+        return Err(ExecError::new(
+            ErrorKind::CommitFailed,
+            "commit_failed",
+            err.to_string(),
+        ));
+    }
+    Ok(PlanPreview::committed(preview(plan)))
+}
+
+/// Parse one statement, mapping a parser failure into the executor's structured parse error
+/// (kind `parse`, exit 2) carrying the parser's stable code in `detail`.
+///
+/// # Errors
+/// [`ExecError`] (kind `parse`) on any lex/parse failure.
+pub fn parse(src: &str) -> Result<Statement, ExecError> {
+    parse_statement(src)
+        .map_err(|e| ExecError::parse(e.message.clone()).with_detail(e.code.as_str().to_string()))
+}
+
+/// Map a `cfs-core` evaluation error into the executor's structured error.
+fn map_eval_error(err: cfs_core::EvalError) -> ExecError {
+    use cfs_core::EvalError;
+    let kind = match &err {
+        // A resolve-time capability denial / unknown driver / unknown proc is exit 3.
+        EvalError::Resolve(_) => ErrorKind::Capability,
+        EvalError::UnroutedPath { .. } => ErrorKind::Capability,
+        // A type error in the query is a usage-class problem.
+        EvalError::Type(_) | EvalError::Fn(_) => ErrorKind::Usage,
+        _ => ErrorKind::Internal,
+    };
+    // EvalError has no Display; its owned, secret-free Debug is the machine-facing message.
+    ExecError::new(kind, err.code(), format!("{err:?}"))
+}
+
+/// Re-map a [`CfsError`] through [`ExecError::from_cfs`] (re-exported for the CLI).
+#[must_use]
+pub fn map_cfs_error(err: &CfsError) -> ExecError {
+    ExecError::from_cfs(err)
+}

@@ -9,11 +9,14 @@ repository.workspace = true
 description = "cfs command layer (RFD-0001 §7): clap-derive argv parsing dispatching run/serve/interactive shell into cfs-core. Logic-free w.r.t. the engine."
 
 [dependencies]
-# C4 / G5: cmd depends on cfs-core (the hub) and cfs-server (the serve arm) ONLY.
-# It must NOT depend on cfs-lang / cfs-plan / cfs-driver / cfs-codec / cfs-parser
-# directly — enforced by tests/dep_direction.rs.
+# C4 / G5: cmd depends on cfs-core (the hub), cfs-server (the serve arm), and cfs-exec (the
+# execution/integration layer, t29) ONLY. It must NOT depend on cfs-lang / cfs-plan /
+# cfs-driver / cfs-codec / cfs-parser directly — enforced by tests/dep_direction.rs. cfs-exec
+# is the t29 home for the SELECT read-path executor + one-shot orchestration; cmd stays
+# logic-free, dispatching into it.
 cfs-core = { path = "../core" }
 cfs-server = { path = "../server" }
+cfs-exec = { path = "../exec" }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

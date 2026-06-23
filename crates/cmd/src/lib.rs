@@ -44,10 +44,28 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Run one statement and exit (one-shot; absolute paths, no cwd).
+    ///
+    /// Exactly one statement source: a positional `cfs run '<stmt>'`, `-e <stmt>`, or `-`
+    /// (read the statement from stdin). PREVIEW by default; `--commit` (or a trailing
+    /// `COMMIT`) applies an effect plan.
     Run {
-        /// The statement to execute, e.g. `FROM /mail/inbox |> SELECT subject`.
-        #[arg(short = 'e', long = "stmt")]
-        stmt: String,
+        /// The statement to execute positionally, e.g. `FROM /mail/inbox |> SELECT subject`.
+        /// Use `-` to read the statement from stdin. Mutually exclusive with `-e`.
+        stmt: Option<String>,
+        /// The statement to execute (the `-e <stmt>` form). Mutually exclusive with the
+        /// positional form and stdin.
+        #[arg(short = 'e', long = "expr")]
+        expr: Option<String>,
+        /// Output format: `json` or `table`. Default: `table` on a TTY, `json` when piped.
+        #[arg(long = "format", value_name = "FORMAT")]
+        format: Option<String>,
+        /// Apply an effect plan (default is PREVIEW). A trailing `COMMIT` keyword has the
+        /// same effect; this is only the apply switch (the CLI adds zero keywords).
+        #[arg(long = "commit")]
+        commit: bool,
+        /// Suppress progress output; never suppresses the error body.
+        #[arg(long = "quiet", short = 'q')]
+        quiet: bool,
     },
     /// Start the server from a `.cfs` config file (RFD-0001 §8).
     Serve {
@@ -133,8 +151,33 @@ where
     let mut session = Session::new();
     session.output = output;
 
+    // `cfs run` owns its own exit-code contract (t29), so it is dispatched separately: the
+    // execution layer (cfs-exec) renders rows/plan to stdout and the structured error to
+    // stderr, returning the stable exit code directly.
+    if let Some(Command::Run {
+        stmt,
+        expr,
+        format,
+        commit,
+        quiet,
+    }) = &cli.cmd
+    {
+        return dispatch_run(
+            &engine,
+            RunOpts {
+                stmt: stmt.clone(),
+                expr: expr.clone(),
+                format: format.clone(),
+                json: cli.json,
+                commit: *commit,
+                quiet: *quiet,
+            },
+        );
+    }
+
     let outcome = match cli.cmd {
-        Some(Command::Run { stmt }) => dispatch_run(&engine, &session, &stmt),
+        // Handled above; unreachable here but kept total.
+        Some(Command::Run { .. }) => Ok(()),
         Some(Command::Serve { config }) => cfs_server::serve(&config),
         Some(Command::Account { verb }) => dispatch_account(&engine, &session, &verb),
         None => dispatch_shell(&engine, &session),
@@ -149,10 +192,90 @@ where
     }
 }
 
-/// Dispatch `cfs run '<stmt>'`. E0: structured not-implemented (no domain logic).
-fn dispatch_run(_engine: &Engine, _session: &Session, stmt: &str) -> Result<(), CfsError> {
-    tracing::debug!(target: "cfs::cmd", %stmt, "dispatch run (stub)");
-    Err(CfsError::NotImplemented { feature: "run" })
+/// The resolved options for one `cfs run` invocation.
+struct RunOpts {
+    stmt: Option<String>,
+    expr: Option<String>,
+    format: Option<String>,
+    json: bool,
+    commit: bool,
+    quiet: bool,
+}
+
+/// Dispatch `cfs run` (t29): resolve the single statement source (positional / `-e` / `-`
+/// stdin), choose the output format (explicit flag wins; else `table` on a TTY, `json` when
+/// piped), and hand off to the execution layer, which renders the result and returns the
+/// stable exit code. Logic-free: all execution lives in `cfs-exec`.
+fn dispatch_run(engine: &Engine, opts: RunOpts) -> i32 {
+    use std::io::IsTerminal;
+
+    // Resolve the statement source. A positional `-` means "read from stdin".
+    let (positional, stdin_src) = match opts.stmt.as_deref() {
+        Some("-") => (None, Some(read_stdin())),
+        Some(s) => (Some(s.to_string()), None),
+        None => (None, None),
+    };
+    let source = match cfs_exec::resolve_source(positional, opts.expr.clone(), stdin_src) {
+        Ok(s) => s,
+        Err(err) => return render_run_error(&err, &resolve_format(&opts, false)),
+    };
+
+    // Format: explicit `--format`/`--json` always wins; else default by TTY of stdout.
+    let stdout_is_tty = std::io::stdout().is_terminal();
+    let fmt = resolve_format(&opts, stdout_is_tty);
+
+    // The read-driver registry. At the cmd boundary it is empty: real driver registration
+    // (read facet) is the E4/bootstrap seam this consumes read-only. With no read driver a
+    // `FROM /x` resolves to a structured capability error (exit 3) rather than a panic.
+    let reads = cfs_exec::ReadRegistry::new();
+    let ctx = cfs_exec::ExecCtx {
+        engine,
+        reads: &reads,
+    };
+
+    let _ = opts.quiet; // `--quiet` suppresses progress; the renderers emit no progress yet.
+
+    let mut out = std::io::stdout();
+    let mut err = std::io::stderr();
+    let mut streams = cfs_exec::Streams {
+        out: &mut out,
+        err: &mut err,
+    };
+    cfs_exec::run_oneshot(&source, &ctx, fmt, opts.commit, &mut streams).code()
+}
+
+/// Resolve the output format: an explicit `--format json|table` (or the `--json` alias) always
+/// wins; otherwise `table` on a TTY, `json` when piped (deterministic for scripts).
+fn resolve_format(opts: &RunOpts, stdout_is_tty: bool) -> cfs_exec::OutputFormat {
+    if opts.json {
+        return cfs_exec::OutputFormat::Json;
+    }
+    match opts.format.as_deref() {
+        Some("json") => cfs_exec::OutputFormat::Json,
+        Some("table") => cfs_exec::OutputFormat::Table,
+        // Unknown/absent: fall back to the TTY default (an unknown value is treated as the
+        // default rather than erroring; clap could restrict this with a value_parser later).
+        _ if stdout_is_tty => cfs_exec::OutputFormat::Table,
+        _ => cfs_exec::OutputFormat::Json,
+    }
+}
+
+/// Render a `cfs run` error that occurred before the executor (e.g. bad statement source) and
+/// return its exit code.
+fn render_run_error(err: &cfs_exec::ExecError, fmt: &cfs_exec::OutputFormat) -> i32 {
+    let renderer = fmt.renderer();
+    let mut stderr = std::io::stderr();
+    let _ = renderer.error(err, &mut stderr);
+    err.exit_code().code()
+}
+
+/// Read the whole statement from stdin (`cfs run -`). On a read error, returns an empty
+/// string, which the parser rejects with a structured parse error (no panic).
+fn read_stdin() -> String {
+    use std::io::Read;
+    let mut buf = String::new();
+    let _ = std::io::stdin().read_to_string(&mut buf);
+    buf
 }
 
 /// Dispatch the interactive shell. E0: structured not-implemented (no domain logic).
@@ -237,11 +360,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_subcommand_dispatch_is_not_implemented() {
+    fn run_dispatch_resolves_single_statement_source() {
+        // t29: `cfs run` now dispatches into the execution layer. Resolving exactly one
+        // statement source is a usage gate; zero sources is exit 2 (usage).
         let engine = Engine::new();
-        let session = Session::new();
-        let err = dispatch_run(&engine, &session, "FROM /mail").unwrap_err();
-        assert!(matches!(err, CfsError::NotImplemented { feature: "run" }));
+        let code = dispatch_run(
+            &engine,
+            RunOpts {
+                stmt: None,
+                expr: None,
+                format: Some("json".into()),
+                json: true,
+                commit: false,
+                quiet: false,
+            },
+        );
+        assert_eq!(code, 2, "no statement source is a usage error (exit 2)");
     }
 
     #[test]
@@ -253,10 +387,25 @@ mod tests {
     }
 
     #[test]
-    fn run_returns_exit_code_one_on_not_implemented() {
-        // `cfs run -e 'anything'` reaches a structured error, not a panic; exit 1.
+    fn run_bad_syntax_is_parse_error_exit_two() {
+        // `cfs run -e 'anything'` reaches a structured parse error (exit 2), not a panic.
         let code = run(["cfs", "run", "-e", "anything"]);
-        assert_eq!(code, 1);
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn run_relative_path_is_usage_error_exit_two() {
+        // A relative-path address in one-shot mode is rejected with a usage error (exit 2).
+        let code = run(["cfs", "run", "-e", "FROM mail/inbox |> LIMIT 1"]);
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn run_unknown_source_is_capability_exit_three() {
+        // With no read driver registered, an absolute `FROM /x` resolves to a structured
+        // capability error (exit 3) — never a panic.
+        let code = run(["cfs", "run", "-e", "FROM /mail/inbox |> LIMIT 1", "--json"]);
+        assert_eq!(code, 3);
     }
 
     #[test]
@@ -319,6 +468,28 @@ mod tests {
     fn help_exits_zero_without_panic() {
         let code = run(["cfs", "--help"]);
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn run_help_snapshot_pins_the_oneshot_surface() {
+        // Render `cfs run --help` and assert the stable t29 contract surface is present. A
+        // brittle full-text snapshot is avoided; instead pin the load-bearing flags/args an
+        // agent scripts against, so a rename/removal fails CI.
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let help = cmd
+            .find_subcommand_mut("run")
+            .expect("run subcommand exists")
+            .render_long_help()
+            .to_string();
+        for needle in [
+            "[STMT]", "--expr", "--format", "--commit", "--quiet", "stdin", "PREVIEW",
+        ] {
+            assert!(
+                help.contains(needle),
+                "`cfs run --help` lost the stable surface `{needle}`:\n{help}"
+            );
+        }
     }
 
     #[test]

@@ -197,6 +197,7 @@ name = "cfs-cmd"
 version = "0.0.0"
 dependencies = [
  "cfs-core",
+ "cfs-exec",
  "cfs-server",
  "clap",
  "serde_json",
@@ -437,6 +438,20 @@ dependencies = [
  "cfs-pushdown",
  "cfs-types",
  "serde_json",
+]
+
+[[package]]
+name = "cfs-exec"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "cfs-core",
+ "cfs-engine",
+ "cfs-parser",
+ "cfs-pushdown",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
