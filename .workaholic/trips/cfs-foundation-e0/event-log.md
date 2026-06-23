@@ -85,3 +85,4 @@
 | 2026-06-23T09:06:07+09:00 | Planner | e2e-testing | t16 | E2E-validated t16 fs driver: scan, codec read, end-to-end commit, capability + sandbox enforcement all PASS (E2E approved) |
 | 2026-06-23T09:16:12+09:00 | Constructor | implementation | t16-refine | Generic runtime-leaf confinement, size+hash cp/mv verify, bridge error discriminant, ARCHITECTURE catch-up |
 | 2026-06-23T09:17:12+09:00 | Lead | ticket-accepted | t16 | FS driver accepted; pattern locked |
+| 2026-06-23T09:33:26+09:00 | Constructor | implementation | t18 | Implemented cfs-driver-http: generic REST Driver at /rest/<api> (verbs->HTTP methods), http.get TVF, auth-via-secrets (redacted), codec decode, pagination; 23 tests (mock + loopback wire), 422 total green |
