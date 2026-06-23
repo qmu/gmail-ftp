@@ -105,3 +105,4 @@
 | 2026-06-23T11:02:24+09:00 | Planner | e2e-testing | t21 | E2E-approved: all 7 items PASS via external mock-Drive consumer; trash-not-delete and token-canary gates clear, COMMIT ledger + recorded calls verified |
 | 2026-06-23T11:03:19+09:00 | Lead | ticket-accepted | t21 | Drive driver accepted |
 | 2026-06-23T11:16:28+09:00 | Constructor | implementation | t41 | Implemented cfs-driver-ga: GA4 read-only relational driver (runReport compiler with truthful WHERE residual, SELECT-only gate + reject-all applier, mocked-API tests; +25 tests, 516 total green) |
+| 2026-06-23T11:19:53+09:00 | Architect | code-review | t41 | Approve with minor suggestions; filter residual truthful + read-only enforced both layers; single-sided date bound gap |
