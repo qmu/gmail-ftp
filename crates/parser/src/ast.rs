@@ -25,7 +25,7 @@
 //! effect.
 
 use cfs_lang::Span;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Serialize a `cfs_lang::Span` as a `[start, end]` byte-range pair.
 ///
@@ -44,6 +44,20 @@ where
     t.end()
 }
 
+/// Deserialize a `cfs_lang::Span` from a `[start, end]` byte-range pair (the inverse
+/// of [`serialize_span`]). The AST owns this projection because `cfs_lang::Span` is
+/// serde-free (the lexer crate stays zero-dep). This makes the owned AST a fully
+/// round-trippable serializable value: the server-DDL deferred body (t31
+/// `StatementSpec`/`PlanSpec`) is rehydrated from its serialized form WITHOUT
+/// re-running the parser — so the runtime cannot hit a parse error at fire time.
+fn deserialize_span<'de, D>(de: D) -> Result<Span, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let [start, end] = <[u32; 2]>::deserialize(de)?;
+    Ok(Span::new(start, end))
+}
+
 /// An identifier name (a path segment, a driver/action name, a column, a codec
 /// format). Always a raw string — names are *registry* concerns resolved in a later
 /// semantic phase (E2), never grammar (RFD §3).
@@ -52,7 +66,7 @@ pub type Ident = String;
 /// The top-level statement sum type (RFD §3). **Closed core**: exactly these four
 /// forms. Not `#[non_exhaustive]` — the governance test locks this variant set so a
 /// later ticket cannot smuggle in a per-driver statement form.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Statement {
     /// `FROM <source> |> op |> op …` — a pure read pipeline.
     Query(Pipeline),
@@ -65,19 +79,22 @@ pub enum Statement {
 }
 
 /// A `PREVIEW`/`COMMIT` wrapper around an inner statement (RFD §3 plan keywords).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlanWrap {
     /// `true` for `COMMIT`, `false` for `PREVIEW`.
     pub commit: bool,
     /// The wrapped statement.
     pub inner: Box<Statement>,
     /// Source span of the `PREVIEW`/`COMMIT` keyword.
-    #[serde(serialize_with = "serialize_span")]
+    #[serde(
+        serialize_with = "serialize_span",
+        deserialize_with = "deserialize_span"
+    )]
     pub span: Span,
 }
 
 /// A read pipeline: a source followed by zero or more `|>`-separated ops.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Pipeline {
     /// What the pipeline reads from.
     pub source: Source,
@@ -87,7 +104,7 @@ pub struct Pipeline {
 
 /// The source of a pipeline (RFD §2.2). Either a `/driver/...` path, an inline
 /// `VALUES` block, or a parenthesised sub-pipeline.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Source {
     /// `FROM /driver/seg/seg` (the open path registry).
     Path(PathExpr),
@@ -104,7 +121,7 @@ pub enum Source {
 /// registry, [`PipeOp::Call`] = procedure registry). There is deliberately **no**
 /// per-action variant (no `Send`, no `Merge`): those are pure registry functions
 /// that desugar to `CALL` (RFD §3). The governance test locks this variant set.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PipeOp {
     /// `WHERE <expr>`
     Where(Expr),
@@ -145,7 +162,7 @@ pub enum PipeOp {
 }
 
 /// A `JOIN <source> ON <expr>` operation.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JoinOp {
     /// The joined relation.
     pub source: Source,
@@ -154,7 +171,7 @@ pub struct JoinOp {
 }
 
 /// One `ORDER BY` sort key.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OrderKey {
     /// The sort expression.
     pub expr: Expr,
@@ -164,7 +181,7 @@ pub struct OrderKey {
 
 /// One `SELECT`/`AGGREGATE` projection: an expression with an optional `AS` alias,
 /// or a bare `*`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Projection {
     /// `*` — project everything.
     Star,
@@ -178,7 +195,7 @@ pub enum Projection {
 }
 
 /// One `EXTEND`/`SET` assignment: `<name> = <expr>`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Assignment {
     /// The target column name.
     pub name: Ident,
@@ -188,7 +205,7 @@ pub struct Assignment {
 
 /// An effect statement (RFD §3 effects). `INSERT`/`UPSERT` are kept distinct via
 /// [`EffectVerb`] so the runtime can choose a retry-safe verb (RFD §6).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EffectStmt {
     /// Which effect verb (`INSERT`/`UPSERT`/`UPDATE`/`REMOVE`).
     pub verb: EffectVerb,
@@ -201,7 +218,7 @@ pub struct EffectStmt {
 }
 
 /// The effect verb. `Insert` and `Upsert` are distinct (idempotency, RFD §6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectVerb {
     /// `INSERT INTO`
     Insert,
@@ -214,7 +231,7 @@ pub enum EffectVerb {
 }
 
 /// The data portion of an effect statement.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EffectBody {
     /// `VALUES (..),(..)` — inline literal rows.
     Values(Values),
@@ -230,7 +247,7 @@ pub enum EffectBody {
 }
 
 /// An inline `VALUES` relation: an optional column list plus one or more rows.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Values {
     /// Optional explicit column names: `VALUES (a, b) (1, 2)`.
     pub columns: Option<Vec<Ident>>,
@@ -241,7 +258,7 @@ pub struct Values {
 /// A server-DDL statement (RFD §8). Each form is **sugar** that desugars downstream
 /// to `INSERT INTO /server/...`; the [`ServerDdl::target`] records that path. The
 /// parser only validates shape — desugaring lives in a later epic.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServerDdl {
     /// Which DDL kind (`ENDPOINT`/`TRIGGER`/`JOB`/`VIEW`/…).
     pub kind: DdlKind,
@@ -260,7 +277,7 @@ pub struct ServerDdl {
 }
 
 /// The kind of a server-DDL statement (RFD §8). Frozen, driver-agnostic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DdlKind {
     /// `CREATE ENDPOINT`
     Endpoint,
@@ -281,7 +298,7 @@ pub enum DdlKind {
 /// An expression (RFD §3 operators, frozen). The boolean structure (`AND`/`OR`/
 /// `NOT`) and comparison/predicate forms are all closed core; the only open seam is
 /// [`Expr::Fn`] (the function registry) and column/path references.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
     /// A literal value.
     Lit(Literal),
@@ -343,7 +360,7 @@ pub enum Expr {
 
 /// The frozen operator set (RFD §3). No operator can be added without editing this
 /// enum (and the keyword/operator freeze tests in `cfs-lang`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
     /// `=`
     Eq,
@@ -370,7 +387,7 @@ pub enum Op {
 }
 
 /// A literal value (RFD §4 data model).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Literal {
     /// A string literal.
     Str(String),
@@ -401,19 +418,22 @@ pub enum Literal {
 /// A `/driver/seg/seg` path expression — the open path/mount registry seam (RFD §3,
 /// §4). Driver and segments are raw strings; `@version` / `AS OF` are temporal
 /// coordinates (RFD §4).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PathExpr {
     /// The path segments (raw text; first is conventionally the driver).
     pub segments: Vec<PathSegment>,
     /// An optional `AS OF '<ts>'` temporal coordinate (RFD §4).
     pub as_of: Option<String>,
     /// Source span of the whole path.
-    #[serde(serialize_with = "serialize_span")]
+    #[serde(
+        serialize_with = "serialize_span",
+        deserialize_with = "deserialize_span"
+    )]
     pub span: Span,
 }
 
 /// One segment of a [`PathExpr`].
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PathSegment {
     /// The raw segment name.
     pub name: Ident,
@@ -429,7 +449,7 @@ pub type PathRef = Vec<Ident>;
 
 /// A `CALL driver.action(args)` reference — the procedure registry seam (RFD §3).
 /// All names are strings resolved later; the parser validates *shape* only.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CallRef {
     /// The driver namespace (e.g. `mail`).
     pub driver: Ident,
@@ -438,12 +458,15 @@ pub struct CallRef {
     /// The named/positional arguments.
     pub args: Vec<NamedArg>,
     /// Source span of the call.
-    #[serde(serialize_with = "serialize_span")]
+    #[serde(
+        serialize_with = "serialize_span",
+        deserialize_with = "deserialize_span"
+    )]
     pub span: Span,
 }
 
 /// One argument to a [`CallRef`]: either positional or `name => value`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NamedArg {
     /// The argument name, if given as `name => value`.
     pub name: Option<Ident>,
@@ -453,23 +476,29 @@ pub struct NamedArg {
 
 /// A `fn(args)` registry function reference — the function registry seam (RFD §3).
 /// The name is a string resolved later (receiver-typed alias resolution is E2).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FnRef {
     /// The function name.
     pub name: Ident,
     /// The positional arguments.
     pub args: Vec<Expr>,
     /// Source span of the call.
-    #[serde(serialize_with = "serialize_span")]
+    #[serde(
+        serialize_with = "serialize_span",
+        deserialize_with = "deserialize_span"
+    )]
     pub span: Span,
 }
 
 /// A `DECODE fmt` / `ENCODE fmt` codec reference — the codec registry seam (RFD §4).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Codec {
     /// The codec format name (`json`/`yaml`/`csv`/…), resolved later.
     pub fmt: Ident,
     /// Source span of the codec format token.
-    #[serde(serialize_with = "serialize_span")]
+    #[serde(
+        serialize_with = "serialize_span",
+        deserialize_with = "deserialize_span"
+    )]
     pub span: Span,
 }

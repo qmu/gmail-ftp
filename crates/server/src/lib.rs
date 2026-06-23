@@ -48,7 +48,10 @@ pub use driver::{
     SERVER_MOUNT,
 };
 pub use error::ServerError;
-pub use lower::{config_row_batch, lower_statement, server_write_plan, ConfigRow};
+pub use lower::lower_statement;
+// The canonical config-row / plan-build primitives now live in closed core (t31); re-export
+// them from `cfs-core` so the server's public surface is unchanged for consumers.
+pub use cfs_core::{config_row_batch, server_write_plan, ConfigRow};
 pub use runtime::{Runtime, ServerConfigApplier};
 pub use state::{
     EndpointDef, JobDef, PolicyDef, ServerState, StatementSource, TriggerDef, ViewDef, WebhookDef,

@@ -24,12 +24,20 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod ddl;
 mod eval;
 mod plan;
 mod registry;
 mod resolve;
 mod stdlib;
 
+pub use ddl::server::{
+    binding_config_row, config_row_batch, desugar_to_insert, from_server_ddl, normalize_spans,
+    parse_server_binding_ddl, server_node_schema, server_write_plan, ConfigRow,
+    DdlError as ServerDdlError, DesugarToInsert, EndpointDecl, EventRef, HttpMethod, Interval,
+    JobDecl, PlanSpec, PolicyRef, Route, ServerBindingDdl, StatementSpec, TriggerDecl, ViewDecl,
+    WebhookDecl, CREATE_WRITE_OP,
+};
 pub use eval::{call_proc_id, effect_kind_for, EvalError, EvalValue, Evaluator, PlanSource};
 pub use plan::{plan_pipeline, plan_query, source_registry, PushdownError};
 pub use registry::{CodecRegistry, MountRegistry, ProcRegistry};

@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::sync::RwLock;
 
 use cfs_core::{
-    Archetype, Capabilities, CfsError, Column, ColumnType, Driver, NodeDesc, Path, PlanApplier,
-    PushdownProfile, Schema, ServerNode, ServerWriteOp, Value,
+    Archetype, Capabilities, CfsError, Driver, NodeDesc, Path, PlanApplier, PushdownProfile,
+    Schema, ServerNode, ServerWriteOp, Value,
 };
 
 use crate::state::{
@@ -84,44 +84,12 @@ pub fn server_node_capabilities() -> Capabilities {
 }
 
 /// The typed [`Schema`] of a `/server/...` config node — what `DESCRIBE /server/<node>`
-/// returns. Pure data; no live backend. Each schema mirrors the owned DTO in
-/// [`crate::state`] so `DESCRIBE` and the stored rows agree.
+/// returns. Pure data; no live backend. The schema is owned by **closed core** (t31:
+/// [`cfs_core::server_node_schema`]) so `DESCRIBE`, the stored rows, and the DDL desugar all
+/// read one source of truth and cannot drift; this re-exports it.
 #[must_use]
 pub fn server_node_schema(node: ServerNode) -> Schema {
-    let col = |name: &str, ty: ColumnType, nullable: bool| Column::new(name, ty, nullable);
-    match node {
-        ServerNode::Endpoints => Schema::new(vec![
-            col("name", ColumnType::Text, false),
-            col("method", ColumnType::Text, true),
-            col("route", ColumnType::Text, true),
-            col("query", ColumnType::Text, true),
-        ]),
-        ServerNode::Triggers => Schema::new(vec![
-            col("name", ColumnType::Text, false),
-            col("on", ColumnType::Text, true),
-            col("plan", ColumnType::Text, true),
-        ]),
-        ServerNode::Jobs => Schema::new(vec![
-            col("name", ColumnType::Text, false),
-            col("every", ColumnType::Text, true),
-            col("plan", ColumnType::Text, true),
-            col("last_run", ColumnType::Timestamp, true),
-        ]),
-        ServerNode::Views => Schema::new(vec![
-            col("name", ColumnType::Text, false),
-            col("query", ColumnType::Text, true),
-            col("materialized", ColumnType::Bool, false),
-        ]),
-        ServerNode::Policies => Schema::new(vec![
-            col("name", ColumnType::Text, false),
-            col("handler", ColumnType::Text, true),
-            col("allow", ColumnType::Array(Box::new(ColumnType::Text)), true),
-        ]),
-        ServerNode::Webhooks => Schema::new(vec![
-            col("name", ColumnType::Text, false),
-            col("route", ColumnType::Text, true),
-        ]),
-    }
+    cfs_core::server_node_schema(node)
 }
 
 impl Driver for ServerDriver {

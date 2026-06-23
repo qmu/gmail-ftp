@@ -30,6 +30,12 @@ cfs-pushdown = { path = "../pushdown" }
 # the one trait, and re-exports the secrets surface so consumers depend on cfs-core only.
 # Acyclic: cfs-core → cfs-secrets → cfs-types (a leaf).
 cfs-secrets = { path = "../secrets" }
+# The server-binding DDL (t31) stores the deferred body (`AS <query>` / `DO <plan>`) as a
+# fully-parsed, serializable `StatementSpec`/`PlanSpec`: serde derives over the owned AST,
+# serialized to a canonical span-normalised form. serde is pure-Rust / wasm-clean and adds
+# no driver/vendor type (the AST is already vendor-free).
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

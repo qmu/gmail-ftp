@@ -29,7 +29,8 @@
 //!  2. Deterministic `ServerState` snapshot: per-collection counts + byte-stable serde.
 //!  3. Idempotent re-apply: booting the same file twice is a no-op (UPSERT converges).
 //!  4. CREATE === INSERT body-less sugar equivalence: identical STORED rows.
-//!  5. PROBE: the body-bearing `DO <plan>` equivalence gap (CO-t30-2/3) — characterization.
+//!  5. CREATE === INSERT body-BEARING equivalence: the canonical-spec body matches its INSERT
+//!     twin (t31 closed the t30 gap CO-t30-2/3; the former inequality tripwire is now flipped).
 //!  6. Unsupported-verb rejection at PLAN time (structured error, no panic, no COMMIT).
 //!  7. `DESCRIBE /server/triggers` returns the trigger schema with no live backend.
 //!  8. Binding reconcile invoked exactly once per committed `/server` mutation.
@@ -275,11 +276,14 @@ fn create_bodyless_equals_insert_sugar_equivalence_via_stored_row() {
 }
 
 #[test]
-fn probe_body_bearing_equivalence_gap_is_present() {
-    // Scenario 5 — CHARACTERIZATION PROBE (not a pass/fail gate). The Architect (CO-t30-2/3)
-    // predicts the body-BEARING form does NOT match its hand-written INSERT twin: the DO body
-    // is stored as an AST `Debug` projection, the INSERT body is the literal string. We
-    // confirm this end-to-end by COMMITting both and comparing the STORED `plan` body.
+fn body_bearing_create_equals_its_insert_twin_via_canonical_spec() {
+    // Scenario 5 — t31 CLOSED the t30 body-storage gap (CO-t30-2/3). Originally a tripwire that
+    // asserted INEQUALITY: t30 stored a body-bearing `DO <plan>` as an AST `Debug` projection
+    // while the INSERT twin stored the literal source string, so the two STORED `plan` bodies
+    // differed. t31 stores the body as a canonical, span-normalised `StatementSpec`/`PlanSpec`
+    // (a serialized PARSED AST) AND parses the INSERT's `plan` STRING column into the SAME
+    // canonical spec — so the two now genuinely normalise to ONE byte-identical body. The
+    // tripwire is flipped from `assert_ne!` to `assert_eq!` to lock in the achieved equivalence.
     let create_body = apply_one("CREATE JOB x EVERY '1h' DO REMOVE /tmp WHERE age > 7")
         .jobs
         .get("x")
@@ -297,20 +301,17 @@ fn probe_body_bearing_equivalence_gap_is_present() {
     .as_str()
     .to_string();
 
-    // The documented limitation: the bodies differ. Asserted as PRESENT so a future fix that
-    // closes the gap makes this test fail loudly (a tripwire), not silently regress.
-    assert_ne!(
-        create_body, insert_body,
-        "documented gap: body-bearing CREATE stores an AST Debug projection, the INSERT twin \
-         stores the literal string — they are not equal (CO-t30-2/3)"
-    );
-    assert!(
-        create_body.contains("EffectStmt") && create_body.contains("Remove"),
-        "CREATE DO-body is the AST Debug projection: {create_body:?}"
-    );
+    // Equivalence now holds: the body-bearing CREATE and its INSERT twin store the identical
+    // canonical spec (t31 closed CO-t30-2/3).
     assert_eq!(
-        insert_body, "REMOVE /tmp WHERE age > 7",
-        "INSERT body is the literal source string"
+        create_body, insert_body,
+        "body-bearing CREATE ≡ INSERT: both normalise to one canonical span-normalised spec (t31)"
+    );
+    // The stored body is the canonical serialized spec (a parsed Statement), not raw source
+    // text and not an AST Debug projection.
+    assert!(
+        create_body.contains("Effect") && create_body.contains("Remove"),
+        "stored body is the canonical serialized spec: {create_body:?}"
     );
 }
 

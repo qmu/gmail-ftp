@@ -237,6 +237,8 @@ dependencies = [
  "cfs-pushdown",
  "cfs-secrets",
  "cfs-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

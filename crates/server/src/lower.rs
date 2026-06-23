@@ -3,115 +3,58 @@
 //! This is the single desugaring seam that makes the closed-core thesis hold for the
 //! server: a `CREATE JOB … EVERY … DO …` and the equivalent `INSERT INTO /server/jobs …`
 //! lower to **identical** [`EffectKind::ServerConfigWrite`](cfs_core::EffectKind::ServerConfigWrite)
-//! plan nodes. Both paths normalise into the same canonical named-field row
-//! ([`ConfigRow`]) and build the same [`cfs_core::RowBatch`] (columns in the node's schema
-//! order), so the frozen `CREATE …` DDL is provably **sugar** over the `/server` write
-//! (acceptance: golden plan equivalence).
+//! plan nodes. Both paths normalise into the same canonical named-field row and build the
+//! same [`cfs_core::RowBatch`] (columns in the node's schema order), so the frozen `CREATE …`
+//! DDL is provably **sugar** over the `/server` write (acceptance: golden plan equivalence).
+//!
+//! ## The canonical desugar lives in `cfs-core` (t31)
+//! The five frozen `CREATE …` binding forms and the desugar to `INSERT INTO /server/*` are
+//! owned by closed core ([`cfs_core::ddl::server`]) because the keywords are frozen and
+//! shared. This module is the **server-side adapter**: it routes a parsed `Statement` to the
+//! core desugar (`CREATE`) or normalises an explicit `INSERT INTO /server/…` into the same
+//! canonical row (the INSERT twin), so the two converge on one plan node.
+//!
+//! ## Deferred bodies as fully-parsed specs (t31, closes the t30 gap CO-t30-2/3)
+//! `AS <query>` / `DO <plan>` are stored as a canonical, span-normalised
+//! [`cfs_core::StatementSpec`]/[`cfs_core::PlanSpec`] — a *parsed* AST serialized to a stable
+//! form, NOT the AST `Debug` projection t30 used as a stopgap. The `/server/*` `plan`/`query`
+//! STRING column the INSERT twin supplies is **parsed into the same canonical spec**, so a
+//! body-bearing `CREATE … DO <plan>` and its `INSERT INTO /server/jobs` twin now store the
+//! IDENTICAL body — genuine CREATE ≡ INSERT equivalence.
 //!
 //! Lowering is **pure**: it constructs a [`cfs_core::Plan`] and mutates **nothing** — the
 //! interpreter mutates [`ServerState`](crate::ServerState) only at `COMMIT`.
 
-use std::collections::BTreeMap;
-
 use cfs_core::{
-    Affected, Column, EffectKind, EffectNode, Plan, PlanBuilder, Row, RowBatch, ServerNode,
-    ServerWriteOp, Target, Value, VfsPath,
+    binding_config_row, config_row_batch, from_server_ddl, server_write_plan, ConfigRow, Plan,
+    PlanSpec, ServerNode, ServerWriteOp, StatementSpec, Value, CREATE_WRITE_OP,
 };
 use cfs_parser::{
-    DdlKind, EffectBody, EffectStmt, EffectVerb, Expr, Literal, ServerDdl, Statement, Values,
+    parse_statement, DdlKind, EffectBody, EffectStmt, EffectVerb, Expr, Literal, ServerDdl,
+    Statement, Values,
 };
-
-use crate::driver::{server_node_schema, SERVER_MOUNT};
-
-/// The canonical, normalised config row both lowering paths produce: a name-keyed map of
-/// field → value. Keyed/sorted by name so the resulting [`RowBatch`] is deterministic and
-/// the CREATE-vs-INSERT equivalence is exact (byte-identical plan nodes).
-#[derive(Debug, Clone, Default)]
-pub struct ConfigRow {
-    fields: BTreeMap<String, Value>,
-}
-
-impl ConfigRow {
-    fn set(&mut self, key: &str, value: Value) {
-        self.fields.insert(key.to_string(), value);
-    }
-
-    fn set_text(&mut self, key: &str, text: impl Into<String>) {
-        self.fields
-            .insert(key.to_string(), Value::Text(text.into()));
-    }
-}
-
-/// The driver id `/server` writes route to (the mount stripped of its leading `/`).
-fn server_driver_id() -> cfs_core::DriverId {
-    cfs_core::DriverId::new(SERVER_MOUNT.trim_start_matches('/'))
-}
-
-/// Build the canonical [`RowBatch`] for `node` from a normalised [`ConfigRow`], emitting
-/// columns in the node's schema order (the single source of truth shared with `DESCRIBE`),
-/// filling absent fields with `Null`. This canonical ordering is what makes the CREATE and
-/// INSERT lowerings produce identical batches.
-#[must_use]
-pub fn config_row_batch(node: ServerNode, row: &ConfigRow) -> RowBatch {
-    let schema = server_node_schema(node);
-    let mut cols = Vec::with_capacity(schema.columns.len());
-    let mut values = Vec::with_capacity(schema.columns.len());
-    for col in &schema.columns {
-        let v = row.fields.get(&col.name).cloned().unwrap_or(Value::Null);
-        cols.push(Column::new(col.name.clone(), col.ty.clone(), col.nullable));
-        values.push(v);
-    }
-    RowBatch::new(cfs_core::Schema::new(cols), vec![Row::new(values)])
-}
-
-/// Assemble a one-node `/server` write [`Plan`] (the pure effect node). `irreversible =
-/// false` (config writes are reversible, RFD §6); the affected estimate is `Exact(1)` (one
-/// config row). Building this mutates nothing — the COMMIT-time apply is the only impure op.
-#[must_use]
-pub fn server_write_plan(node: ServerNode, op: ServerWriteOp, args: RowBatch) -> Plan {
-    let mut builder = PlanBuilder::new();
-    let target = Target::new(server_driver_id(), VfsPath::new(node.path()));
-    let effect = EffectNode::new(
-        builder.next_id(),
-        EffectKind::ServerConfigWrite { node, op },
-        target,
-    )
-    .with_args(args)
-    .with_affected(Affected::Exact(1));
-    builder.push(effect);
-    builder.build()
-}
-
-/// The kind of write a parsed statement lowers to, plus the normalised row — the seam both
-/// `CREATE` and `INSERT` resolve into before building the (identical) plan.
-struct Lowered {
-    node: ServerNode,
-    op: ServerWriteOp,
-    row: ConfigRow,
-}
 
 /// Lower a parsed [`Statement`] to a `/server` config write plan, or `Ok(None)` if the
 /// statement is not a server-config statement (the caller decides whether that is an error).
 ///
 /// Handles both forms:
-/// - `Statement::Ddl(CREATE …)` — the frozen DDL **sugar**;
+/// - `Statement::Ddl(CREATE …)` — the frozen DDL **sugar** (desugars through `cfs-core`);
 /// - `Statement::Effect(INSERT/UPSERT/UPDATE/REMOVE INTO /server/<node> …)` — the explicit
 ///   write the sugar desugars to.
 ///
-/// Both normalise into the same [`Lowered`] and so produce **identical** plan nodes.
+/// Both normalise into the same canonical row and so produce **identical** plan nodes.
 ///
 /// # Errors
 /// A secret-free detail string if the statement targets `/server` but is malformed (bad
-/// node segment, unsupported verb, non-literal values).
+/// node segment, unsupported verb, non-literal values, or an unparseable embedded body).
 pub fn lower_statement(stmt: &Statement) -> Result<Option<Plan>, String> {
-    let lowered = match stmt {
-        Statement::Ddl(ddl) => Some(lower_ddl(ddl)?),
-        Statement::Effect(effect) if targets_server(effect) => Some(lower_effect(effect)?),
+    match stmt {
+        Statement::Ddl(ddl) => Ok(Some(lower_ddl(ddl)?)),
+        Statement::Effect(effect) if targets_server(effect) => Ok(Some(lower_effect(effect)?)),
         // A `PREVIEW`/`COMMIT` wrapper around a server statement unwraps transparently.
-        Statement::Plan(wrap) => return lower_statement(&wrap.inner),
-        _ => None,
-    };
-    Ok(lowered.map(|l| server_write_plan(l.node, l.op, config_row_batch(l.node, &l.row))))
+        Statement::Plan(wrap) => lower_statement(&wrap.inner),
+        _ => Ok(None),
+    }
 }
 
 /// Whether an effect statement targets the `/server/...` mount.
@@ -123,73 +66,50 @@ fn targets_server(effect: &EffectStmt) -> bool {
         .is_some_and(|s| s.name == "server")
 }
 
-/// Lower a `CREATE … DDL` to the normalised config write. This is the **desugar**: each DDL
-/// clause maps onto the canonical config field, identical to what the equivalent
-/// `INSERT INTO /server/<node>` carries.
-fn lower_ddl(ddl: &ServerDdl) -> Result<Lowered, String> {
-    let node = ddl_node(ddl.kind);
+/// Lower a `CREATE … DDL` to its `/server` write plan via the **canonical core desugar**
+/// ([`cfs_core::from_server_ddl`] → [`cfs_core::desugar_to_insert`]). The deferred bodies are
+/// stored as canonical span-normalised specs by core; this is the single source of truth the
+/// INSERT twin reproduces.
+fn lower_ddl(ddl: &ServerDdl) -> Result<Plan, String> {
+    // POLICY is NOT a t31 binding form (it is the t34 capability-gating concern). t30 already
+    // stores a POLICY row; the t31 core binding layer covers only the five frozen forms. So
+    // POLICY is desugared here in the server adapter, not through the core binding layer.
+    if matches!(ddl.kind, DdlKind::Policy) {
+        return Ok(lower_policy(ddl));
+    }
+    let binding = from_server_ddl(ddl).map_err(|e| e.to_string())?;
+    let node = binding.node();
+    let row = binding_config_row(&binding);
+    let args = config_row_batch(node, &row).map_err(|e| e.to_string())?;
+    // CREATE is a declarative "make this exist" — UPSERT-by-name (the boot/replay-safe verb,
+    // RFD §6 idempotency), coherent with t30.
+    Ok(server_write_plan(node, CREATE_WRITE_OP, args))
+}
+
+/// Desugar `CREATE POLICY <name>` to a `/server/policies` UPSERT (t30 behavior; the policy's
+/// `allow`/`handler` semantics are t34). The handler rides in the `ON` operand; `allow` is an
+/// empty array until t34 wires capability grants.
+fn lower_policy(ddl: &ServerDdl) -> Plan {
     let mut row = ConfigRow::default();
     row.set_text("name", ddl.name.clone());
-
-    match ddl.kind {
-        DdlKind::Endpoint => {
-            // `ON 'METHOD /route'` → method + route; `AS <query>` → query source text.
-            let (method, route) = split_method_route(ddl.on.as_deref().unwrap_or(""));
-            row.set_text("method", method);
-            row.set_text("route", route);
-            row.set_text("query", statement_src(ddl.as_query.as_deref()));
-        }
-        DdlKind::Trigger => {
-            row.set_text("on", ddl.on.clone().unwrap_or_default());
-            row.set_text("plan", statement_src(ddl.do_plan.as_deref()));
-        }
-        DdlKind::Job => {
-            row.set_text("every", ddl.every.clone().unwrap_or_default());
-            row.set_text("plan", statement_src(ddl.do_plan.as_deref()));
-        }
-        DdlKind::View => {
-            row.set_text("query", statement_src(ddl.as_query.as_deref()));
-            row.set("materialized", Value::Bool(false));
-        }
-        DdlKind::MaterializedView => {
-            row.set_text("query", statement_src(ddl.as_query.as_deref()));
-            row.set("materialized", Value::Bool(true));
-        }
-        DdlKind::Policy => {
-            row.set_text("handler", ddl.on.clone().unwrap_or_default());
-            row.set("allow", Value::Array(Vec::new()));
-        }
-        DdlKind::Webhook => {
-            row.set_text("route", ddl.on.clone().unwrap_or_default());
-        }
-    }
-
-    // CREATE is a declarative "make this exist" — its retry/replay-safe verb is UPSERT
-    // (RFD §6 idempotency), which is exactly what a boot replay needs.
-    Ok(Lowered {
-        node,
-        op: ServerWriteOp::Upsert,
-        row,
-    })
+    row.set_text("handler", ddl.on.clone().unwrap_or_default());
+    row.set("allow", Value::Array(Vec::new()));
+    // config_row_batch is total for a schema-valid row; policies has name/handler/allow.
+    let args = config_row_batch(ServerNode::Policies, &row).unwrap_or_else(|_| {
+        // Unreachable: the row only sets declared columns. Build an empty-row fallback.
+        config_row_batch(ServerNode::Policies, &ConfigRow::default()).unwrap_or_else(|_| {
+            cfs_core::RowBatch::new(cfs_core::Schema::new(Vec::new()), Vec::new())
+        })
+    });
+    server_write_plan(ServerNode::Policies, CREATE_WRITE_OP, args)
 }
 
-/// Map a [`DdlKind`] to its [`ServerNode`]. `MaterializedView` and `View` share the
-/// `views` collection (a materialized view is a view row with `materialized = true`).
-fn ddl_node(kind: DdlKind) -> ServerNode {
-    match kind {
-        DdlKind::Endpoint => ServerNode::Endpoints,
-        DdlKind::Trigger => ServerNode::Triggers,
-        DdlKind::Job => ServerNode::Jobs,
-        DdlKind::View | DdlKind::MaterializedView => ServerNode::Views,
-        DdlKind::Policy => ServerNode::Policies,
-        DdlKind::Webhook => ServerNode::Webhooks,
-    }
-}
-
-/// Lower an explicit `INSERT/UPSERT/UPDATE/REMOVE INTO /server/<node> …` to the normalised
+/// Lower an explicit `INSERT/UPSERT/UPDATE/REMOVE INTO /server/<node> …` to the canonical
 /// config write. The `/server/<node>` segment selects the collection; `VALUES (cols)(vals)`
-/// (or `SET`) carries the named fields.
-fn lower_effect(effect: &EffectStmt) -> Result<Lowered, String> {
+/// (or `SET`) carries the named fields. The body-bearing columns (`plan`/`query`) are
+/// **parsed into the same canonical [`PlanSpec`]/[`StatementSpec`]** the CREATE form stores,
+/// so the INSERT twin and the CREATE sugar converge on one byte-identical body (t31).
+fn lower_effect(effect: &EffectStmt) -> Result<Plan, String> {
     let segments: Vec<&str> = effect
         .target
         .segments
@@ -218,11 +138,15 @@ fn lower_effect(effect: &EffectStmt) -> Result<Lowered, String> {
 
     match &effect.body {
         EffectBody::Values(values) => {
-            collect_values_row(values, &mut row)?;
+            collect_values_row(node, values, &mut row)?;
         }
         EffectBody::SetWhere { set, .. } => {
             for assignment in set {
-                row.set(&assignment.name, literal_value(&assignment.value)?);
+                let v = literal_value(&assignment.value)?;
+                row.set(
+                    &assignment.name,
+                    normalize_body_column(node, &assignment.name, v),
+                );
             }
         }
         EffectBody::Pipeline(_) => {
@@ -230,13 +154,18 @@ fn lower_effect(effect: &EffectStmt) -> Result<Lowered, String> {
         }
     }
 
-    Ok(Lowered { node, op, row })
+    let args = config_row_batch(node, &row).map_err(|e| e.to_string())?;
+    Ok(server_write_plan(node, op, args))
 }
 
-/// Collect a single-row `VALUES (col, …)(val, …)` into the normalised [`ConfigRow`]. Only a
+/// Collect a single-row `VALUES (col, …)(val, …)` into the canonical [`ConfigRow`]. Only a
 /// single literal row is supported (a config write names one row); explicit column names are
 /// required so the mapping to named fields is unambiguous.
-fn collect_values_row(values: &Values, row: &mut ConfigRow) -> Result<(), String> {
+fn collect_values_row(
+    node: ServerNode,
+    values: &Values,
+    row: &mut ConfigRow,
+) -> Result<(), String> {
     let columns = values.columns.as_ref().ok_or_else(|| {
         "/server INSERT requires explicit column names, e.g. VALUES (name, every) (...)".to_string()
     })?;
@@ -252,9 +181,49 @@ fn collect_values_row(values: &Values, row: &mut ConfigRow) -> Result<(), String
         ));
     }
     for (col, expr) in columns.iter().zip(first) {
-        row.set(col, literal_value(expr)?);
+        let v = literal_value(expr)?;
+        row.set(col, normalize_body_column(node, col, v));
     }
     Ok(())
+}
+
+/// Normalise a `/server` column value: a body-bearing column (`plan`/`query`) carrying a
+/// non-empty source STRING is **parsed into the canonical span-normalised spec** the CREATE
+/// form stores, so the INSERT twin and the CREATE sugar converge on one byte-identical body
+/// (t31 CREATE ≡ INSERT). All other columns (and an empty body) pass through unchanged.
+///
+/// Equivalence holds whenever the INSERT supplies genuine cfs source (the realistic
+/// boot-replay case): the body parses to the same spec the CREATE form built. A body that is
+/// **not** parseable cfs source (a placeholder, an opaque marker) is kept **verbatim** rather
+/// than rejected — an explicit `INSERT INTO /server/…` may legitimately carry a non-cfs
+/// marker string, and rejecting it would break the explicit-write path. So this never errors.
+fn normalize_body_column(node: ServerNode, col: &str, value: Value) -> Value {
+    if !is_body_column(node, col) {
+        return value;
+    }
+    match value {
+        // An empty body stays empty (the body-less CREATE stores an empty string too).
+        Value::Text(s) if s.is_empty() => Value::Text(s),
+        Value::Text(src) => match parse_statement(&src) {
+            // `plan` columns are effect-plan bodies (PlanSpec); `query` columns are queries
+            // (StatementSpec). Both canonicalise the same way (PlanSpec wraps StatementSpec),
+            // so the stored string is identical to the CREATE form's.
+            Ok(stmt) if col == "plan" => Value::Text(PlanSpec::from_statement(stmt).canonical()),
+            Ok(stmt) => Value::Text(StatementSpec::from_statement(stmt).canonical()),
+            // Not parseable cfs source: keep the literal verbatim (an opaque marker).
+            Err(_) => Value::Text(src),
+        },
+        other => other,
+    }
+}
+
+/// Whether `col` on `node` holds a deferred body (an `AS <query>` / `DO <plan>` spec).
+fn is_body_column(node: ServerNode, col: &str) -> bool {
+    matches!(
+        (node, col),
+        (ServerNode::Endpoints | ServerNode::Views, "query")
+            | (ServerNode::Triggers | ServerNode::Jobs, "plan")
+    )
 }
 
 /// Extract a [`Value`] from a literal expression. Server-config writes carry only literals
@@ -290,33 +259,5 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::Between { .. } => "BETWEEN",
         Expr::Like { .. } => "LIKE",
         Expr::AnyOp { .. } => "ANY",
-    }
-}
-
-/// Render an optional inner statement (`AS <query>` / `DO <plan>`) back to canonical source
-/// text — the plan body the binding (E7) re-parses and lowers when it fires. Stored as text
-/// so [`ServerState`] stays `Serialize`/snapshot-stable.
-fn statement_src(stmt: Option<&Statement>) -> String {
-    stmt.map(render_statement).unwrap_or_default()
-}
-
-/// A minimal, deterministic source rendering of a statement body. This is intentionally a
-/// small, stable projection (not a full pretty-printer): the E7 bindings re-parse it; the
-/// CREATE-vs-INSERT equivalence test compares the *plan node*, where the equivalent INSERT
-/// supplies the same source text literally, so the two match.
-fn render_statement(stmt: &Statement) -> String {
-    // The parser does not ship a Display/round-trip renderer; for the bodies the server
-    // stores (`AS <query>` / `DO <plan>`) we keep the structured debug as a stable,
-    // deterministic textual key. Equivalence tests supply the same literal on both sides.
-    format!("{stmt:?}")
-}
-
-/// Split an endpoint `ON` token of the form `'METHOD /route'` into `(method, route)`.
-/// A bare route (`/route`) yields an empty method.
-fn split_method_route(on: &str) -> (String, String) {
-    let trimmed = on.trim();
-    match trimmed.split_once(char::is_whitespace) {
-        Some((method, route)) => (method.trim().to_uppercase(), route.trim().to_string()),
-        None => (String::new(), trimmed.to_string()),
     }
 }
