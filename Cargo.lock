@@ -196,8 +196,10 @@ dependencies = [
 name = "cfs-cmd"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "cfs-core",
  "cfs-exec",
+ "cfs-pushdown",
  "cfs-server",
  "clap",
  "serde_json",

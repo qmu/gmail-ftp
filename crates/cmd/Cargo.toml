@@ -23,6 +23,13 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# Planner E2E (t29): the headline read-path-with-rows scenario drives the cfs-exec black-box
+# API against a Planner-owned in-memory fake driver (the binary's read registry is empty by
+# design at this stage). cfs-pushdown supplies `ScanNode` for the fake `ReadDriver`; async-trait
+# its async `scan`. cfs-pushdown is NOT in cfs-cmd's C4 forbidden set (lang/plan/driver/codec/
+# parser), so this dev-only edge does not violate the dependency-direction guard.
+cfs-pushdown = { path = "../pushdown" }
+async-trait = { workspace = true }
 
 [lints]
 workspace = true
