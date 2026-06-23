@@ -84,3 +84,4 @@
 | 2026-06-23T09:04:10+09:00 | Architect | code-review | t16 | Approve with minor suggestions: confinement narrowing correct (harden to leaf-property assertion), spawn_blocking bridge right adapter, verify-before-delete sound (suggest content hash) |
 | 2026-06-23T09:06:07+09:00 | Planner | e2e-testing | t16 | E2E-validated t16 fs driver: scan, codec read, end-to-end commit, capability + sandbox enforcement all PASS (E2E approved) |
 | 2026-06-23T09:16:12+09:00 | Constructor | implementation | t16-refine | Generic runtime-leaf confinement, size+hash cp/mv verify, bridge error discriminant, ARCHITECTURE catch-up |
+| 2026-06-23T09:17:12+09:00 | Lead | ticket-accepted | t16 | FS driver accepted; pattern locked |
