@@ -98,3 +98,4 @@
 | 2026-06-23T10:30:58+09:00 | Architect | code-review | t20 | Request revision: query.rs drops residual on lossy from/to/subject Eq+LIKE pushdown (returns wrong rows); token safety, MIME, multi-account, runtime-leaf spine sound |
 | 2026-06-23T10:35:55+09:00 | Planner | e2e-testing | t20 | E2E-validated Gmail driver: q= pushdown+local residual, REMOVE→trash (no delete), well-formed MIME raw, multi-account isolation, canary token absent everywhere, COMMIT+ledger; 10/10 green; E2E approved |
 | 2026-06-23T10:41:57+09:00 | Constructor | implementation | t20-fix | Keep truthful local residual for lossy Gmail q= pushdown so WHERE never returns wrong rows |
+| 2026-06-23T10:44:02+09:00 | Architect | code-review | t20-rereview | Revision accepted: e4ffab3 keeps exact-predicate residual for all lossy q= terms; no WHERE returns wrong rows |

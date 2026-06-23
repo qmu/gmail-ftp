@@ -166,3 +166,56 @@ stated over-fetch-then-filter invariant. The fix is local — keep those predica
 while still pushing the `q=` pre-filter — and one test expectation flips with it. Address that,
 add the attachment-bytes / smoke-test parks explicitly and the ARCHITECTURE row, and this is an
 approve.
+
+## Re-review (fix e4ffab3)
+
+**Revision accepted.** The pushdown-residual defect is resolved correctly and completely.
+
+### Verdict on each required check
+
+**Every lossy mapping now keeps a residual.** `lower_cmp` (`query.rs` 135–164) tags lossy
+mappings `Lowered::PreFilter` and `lower` (103–116) pushes the `q=` term **and** returns
+`Some(p.clone())` for every `PreFilter`. Confirmed for all five lossy classes:
+- `from`/`to`/`subject` `Eq` and `Match` → `PreFilter` (141–143).
+- `LIKE` on `from`/`to`/`subject` → pushed + `Some(p.clone())` (117–125), handled directly in
+  `lower` (no `lower_cmp` round-trip), correct.
+- `date` `Gt|Ge` → `after:` and `Lt|Le` → `before:` → `PreFilter` (156–161).
+No lossy arm can now reach `None`, so no WHERE can return over-fetched non-exact rows.
+
+**Only genuinely-exact mappings drop to `None`, and they are exact.** Exactly two: `label = v`
+→ `label:v` (exact label-id membership, 145–147) and `is_unread = b` → `is:unread`/`is:read`
+(exact UNREAD-label membership, 149–152). Both are exact set-membership on Gmail's own label
+model, not substring/address heuristics — dropping their residual is sound. The bare-label scope
+term (`build_query` 64–66) is the same exact `label:` membership, also correct to not residualize.
+
+**The `Match`-as-lossy decision is correct.** `CmpOp::Match` is `~` **regex** match
+(`crates/types/src/predicate.rs` 57). Gmail `from:`/`subject:` are address/substring operators
+with no regex semantics, so mapping `~` to them is strictly looser — `PreFilter` (push + keep
+residual) is the only correct choice. Folding `Match` into the same arm as `Eq` (141) is right.
+
+**The doc-comment no longer lies.** The module header (1–34) now states the two-class discipline
+explicitly: **Exact** drops residual, **Pre-filter (lossy)** is "pushed ... but the original
+predicate is kept as residual ... over-fetch then filter — never wrong rows," and names each
+lossy case. `build_query` (53–60) and `Lowered` (78–85) repeat the invariant accurately. The
+prior false "emitted only when Gmail can express it exactly → residual always re-checked → never
+wrong" claim is gone; the text now matches the code.
+
+**The corrected tests pin the right semantics.** `where_lowers_to_gmail_query_with_residual_kept_local`
+(tests.rs 164–224) now asserts the 3-way conjunction keeps `And(from_eq, subject_eq)` as residual
+with only `is_unread` dropping out — I traced the `And` residual reconstruction (`lower` 94–101)
+by hand and it produces exactly that tree. `exact_predicates_push_fully_with_no_residual`
+(227–250) pins `label`+`is_unread` → `residual.is_none()`. `lossy_predicate_returns_residual_so_engine_refilters`
+(253–312) pins `from`/`subject` `Eq`, `LIKE`, and a `date` bound each pushing the loose term
+**and** returning the exact predicate as residual. These three pin the correct boundary between
+the Exact and Pre-filter classes; the old test that froze the buggy `residual.is_none()` is gone.
+
+**No new defect introduced.** `Ne` and other unmapped ops fall through `lower_cmp`'s `_ => None`
+and become wholly residual via `lower` (115) — safe. `OR`/`NOT`/`IN`/`BETWEEN` stay wholly
+residual (128) — unchanged and still asserted (215–217). The push-but-keep change only ever
+*adds* a residual that was previously (wrongly) dropped, so it cannot newly lose a row; worst case
+is a redundant re-check of an already-exact row, which is correct-but-cheap, not wrong. The
+coherence note from the original review (no residual-application stage found in
+`cfs-runtime`/`cfs-plan`) still stands as a separate t10-SELECT wiring item, but the driver's
+obligation — report the residual truthfully — is now met.
+
+Decision: **Revision accepted.**
