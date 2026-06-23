@@ -45,8 +45,30 @@ fn each_wasm_gated_leaf_has_a_tokio_free_no_default_features_closure() {
         .map(|p| (p["name"].as_str().expect("name"), p))
         .collect();
 
+    // POSITIVE CONTROL (the load-bearing self-check): run the SAME closure-walk on `cfs-http`,
+    // a NON-gated leaf whose tokio is non-optional + unconditional (crates/http/Cargo.toml has no
+    // `[features]` and `tokio = { ..., optional = false }`). Its --no-default-features closure MUST
+    // contain a `tokio` match. If this fails, the closure walk is computing nothing / the wrong set
+    // (e.g. a cargo-metadata schema change emptied it), which would let every negative assertion
+    // below pass VACUOUSLY — so this control is what proves the guard actually bites.
+    let control = no_default_features_closure("cfs-http", "<none>", &pkg_by_name);
+    assert!(
+        control.iter().any(|dep| dep.contains("tokio")),
+        "positive control failed: the closure walk did not find `tokio` in `cfs-http`'s \
+         non-optional dependency closure — the walk is vacuous, so the negative (tokio-absent) \
+         assertions below cannot be trusted. Closure was: {control:?}"
+    );
+
+    // NEGATIVE assertions: each gated leaf's --no-default-features closure is tokio-free.
     for (leaf, gate) in GATED_LEAVES {
         let closure = no_default_features_closure(leaf, gate, &pkg_by_name);
+        // The walk is non-vacuous for the gated leaves too: each pulls the pure spine (cfs-core
+        // etc.), so an empty closure would itself be a walk bug — guard against it explicitly.
+        assert!(
+            !closure.is_empty(),
+            "closure walk for gated leaf `{leaf}` is empty — the walk is vacuous, not a real \
+             tokio-free result"
+        );
         for dep in &closure {
             for bad in FORBIDDEN {
                 assert!(
