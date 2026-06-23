@@ -30,7 +30,7 @@ pub enum Builtin {
     Cat,
     /// `cp <src> <dst>` — copy (desugars to `UPSERT INTO <dst> FROM <src>`).
     Cp,
-    /// `mv <src> <dst>` — move (desugars to copy→delete: `INSERT … FROM …` then `REMOVE <src>`).
+    /// `mv <src> <dst>` — move (desugars to copy→delete: `UPSERT … FROM …` then `REMOVE <src>`).
     Mv,
     /// `rm <path>…` — remove (desugars each arg to `REMOVE <path>`).
     Rm,
@@ -177,7 +177,7 @@ pub fn desugar(verb: Builtin, args: &[String], cwd: &VfsPath) -> Result<Desugare
         }
         Builtin::Mv => {
             // Cross-source `mv` lowers to copy→verify→delete (RFD §6 recovery): the copy is an
-            // ordinary `INSERT … FROM …` (the local driver's applier does the streaming
+            // ordinary `UPSERT … FROM …` (the local driver's applier does the streaming
             // copy+verify), then the source is removed. Two statements, both dry-runnable; the
             // shell previews BOTH affected counts and applies nothing until COMMIT.
             let (src, dst) = two_args(args, "mv <src> <dst>")?;

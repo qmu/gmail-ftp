@@ -4,9 +4,13 @@
 //!
 //! It owns no async and no `cfs-exec` dependency (keeping the driver crate off the integration
 //! layer per the t29 topology guard): it is a pure, synchronous `VFS path -> RowBatch` over the
-//! existing [`fs_core`](crate::fs_core) scan primitives. The async [`cfs_exec::ReadDriver`]
-//! adapter that drives this lives one layer up (in `cfs-cmd`, which may see both seams), so the
-//! confinement guards stay green.
+//! existing [`fs_core`](crate::fs_core) scan primitives. The async `cfs_exec::ReadDriver` adapter
+//! that drives this lives in the **`cfs` binary crate** (`crates/cfs/src/shell.rs`) — the
+//! shell's composition root. It cannot live in `cfs-cmd`: this driver crate is a `cfs-runtime`
+//! consumer, so a `cfs-cmd -> cfs-driver-local` edge would make cfs-cmd a non-leaf runtime
+//! consumer and trip the runtime-leaf-confinement guard. The binary is the one node that is BOTH
+//! an allowlisted runtime consumer AND a terminal sink (nothing depends on it, so tokio
+//! dead-ends there), which is why the adapter lives there and the confinement guards stay green.
 //!
 //! ## Pushdown honesty (t20)
 //! The local driver declares `Partial { project: true }`: it can honour a projection but not a

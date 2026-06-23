@@ -108,6 +108,44 @@ fn nothing_depends_on_cmd() {
 }
 
 #[test]
+fn nothing_depends_on_the_cfs_binary_so_it_is_a_terminal_sink() {
+    // t28 (C1): the `cfs` BINARY is the workspace's terminal sink — NOTHING depends on it. This
+    // is the property the two t28 guard relaxations RELY ON, so we assert it explicitly (fail
+    // closed) rather than leaving it implicit:
+    //
+    //   * `runtime_is_confined_to_plan_and_types` exempts the binary as a permitted dependent of
+    //     a `cfs-runtime` consumer (`cfs -> cfs-driver-local -> cfs-runtime`). That exemption is
+    //     ONLY safe because tokio dead-ends in the binary: a runtime consumer must be a leaf, and
+    //     the binary is the leaf that consumes it. If something ever depended on the binary,
+    //     tokio could transit THROUGH it back into the spine, and the exemption would be unsound.
+    //   * `binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root` lets the binary
+    //     reach UP into cfs-exec / cfs-core / cfs-driver-local (the shell composition root). That
+    //     is a layer inversion ONLY if the binary is itself depended upon; as a terminal sink it
+    //     is the composition root, which is allowed to reach up.
+    //
+    // So this test is the load-bearing precondition of BOTH relaxations: it converts "the binary
+    // is a sink" from an assumption into a mechanically enforced invariant. NOTE: a Cargo
+    // `[[bin]]` package exposes no lib target, so a reverse-dep on it is not even expressible in
+    // a Cargo.toml today — making a real violation hard to construct. We assert the property
+    // anyway as fail-closed documentation: should the binary ever gain a lib target (or a future
+    // crate find a way to depend on it), this guard fires immediately.
+    let graph = load_graph();
+    for (pkg, deps) in &graph.direct_deps {
+        if pkg == "cfs" {
+            continue;
+        }
+        assert!(
+            !deps.iter().any(|d| d == "cfs"),
+            "terminal-sink violation: {pkg} depends on the `cfs` binary. The binary MUST remain a \
+             terminal sink (nothing depends on it) — that is the precondition that makes the t28 \
+             runtime-leaf exemption sound (tokio dead-ends in the binary) and the binary's \
+             reach-up into cfs-exec/cfs-core a composition root rather than a layer inversion. If \
+             this fires, the two t28 guard relaxations are no longer safe and must be revisited."
+        );
+    }
+}
+
+#[test]
 fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
     // The `cfs` binary forwards argv to `cfs-cmd` and, since t28, ALSO hosts the interactive
     // shell's composition root: the runtime-coupled local read facet (`cfs-driver-local`) and the
