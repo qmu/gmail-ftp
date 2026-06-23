@@ -165,3 +165,8 @@ revision required):
 ### t21 ACCEPTED (Lead, 2026-06-23)
 - **[Constructor]** `cfs-driver-gdrive` (mount /drive, My+Shared Drives, export, trash-not-delete, multi-account, token-safe) — applied t20 residual lesson on first pass. +23 tests, 491 green. **[Architect]** Approve with minor suggestions (residual truthfulness PASS, token-safety PASS). **[Planner]** E2E approved (canary absent, trash-not-delete clear).
 - **Carry-overs**: add `HttpMethod::Patch` to `cfs-http-core` (shared enum) + switch gdrive `modify_file/trash/update_content` from PUT→PATCH (Drive v3 needs PATCH; latent live-only bug, no test hits it; GitHub t24 will also need PATCH). Cross-account bearer audit belongs in t19 E2E. download drops `@rev` on live URL.
+
+### t41 ACCEPTED (Lead, 2026-06-23) — Google trio + GA complete
+- **[Constructor]** `cfs-driver-ga` (GA4 read-only relational, runReport mapping, WHERE→filter pushdown truthful residual, read-only enforced at gate+applier, multi-account, token-safe). +25 tests, 516 green. **[Architect]** Approve with minor suggestions (residual truthful, read-only genuine). **[Planner]** E2E approved (no mutation possible, no token leak).
+- **Carry-over**: single-sided `date >= x` bound → empty endDate (GA 400) — validate range / fill open side + structured error. IN→inListFilter documented but residual (not emitted).
+- **E4 progress**: done t16,t18,t19,t20,t21,t41. Remaining: t17 sql, t22 s3, t23 d1, t24 github, t25 slack, t26 git.
