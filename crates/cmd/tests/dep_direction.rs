@@ -320,7 +320,12 @@ fn runtime_is_confined_to_plan_and_types() {
     // caught even if it happens to be a leaf at the moment it is added. The generic leaf
     // check above (b) pins *safety*; this allowlist pins *intent*. A new driver crate appends
     // its name here (a one-line, reviewable signal), and (b) guarantees the append was safe.
-    let runtime_consumers_allowed = ["cfs-driver-local", "cfs-driver-http", "cfs"];
+    let runtime_consumers_allowed = [
+        "cfs-driver-local",
+        "cfs-driver-http",
+        "cfs-driver-gmail",
+        "cfs",
+    ];
     for consumer in &runtime_consumers {
         assert!(
             runtime_consumers_allowed.contains(&consumer.as_str()),

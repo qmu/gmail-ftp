@@ -242,6 +242,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfs-driver-gmail"
+version = "0.0.0"
+dependencies = [
+ "cfs-codec",
+ "cfs-driver",
+ "cfs-google-auth",
+ "cfs-http-core",
+ "cfs-plan",
+ "cfs-runtime",
+ "cfs-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cfs-driver-http"
 version = "0.0.0"
 dependencies = [
