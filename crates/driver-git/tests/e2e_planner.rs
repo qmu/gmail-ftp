@@ -36,9 +36,9 @@ use cfs_runtime::SharedApplier;
 use cfs_types::Value;
 
 use cfs_driver_git::{
-    blobfs, plan_checkout, plan_merge, plan_rebase, plan_tag, plan_update_ref, relational,
-    GitApplier, GitDriver, LooseObjectDb, ObjectDb, ObjectKind, Oid, Repo, RepoResolver, RepoStore,
-    Tree, TreeEntry,
+    blobfs, git_apply_driver, plan_checkout, plan_insert_commit, plan_merge, plan_rebase, plan_tag,
+    plan_update_ref, relational, CommitInput, GitApplier, GitDriver, LooseObjectDb, ObjectDb,
+    ObjectKind, Oid, Repo, RepoResolver, RepoStore, Tree, TreeEntry,
 };
 
 // =================================================================================================
@@ -328,37 +328,145 @@ fn relational_reflog_tail_newest_first() {
 // 3. Write plans — PREVIEW vs COMMIT
 // =================================================================================================
 
-// BLOCKER (E2E, external surface) — scenarios 3 (PREVIEW vs COMMIT) and 8 (keyword-clash via
-// INSERT) cannot be driven from OUTSIDE the crate. The write entry point is
-// `plan_insert_commit(repo_name, repo, &CommitInput)`, but `CommitInput` (planner.rs:146) is
-// `#[non_exhaustive]` with NO public constructor or builder, so an out-of-crate caller (the
-// engine wiring an `INSERT INTO /git/<repo>/commits`, or this black-box harness) cannot construct
-// the argument:
-//
-//     let input = CommitInput { branch: …, author: …, … };   // E0639: cannot create
-//                                                             // non-exhaustive struct
-//
-// The Constructor's internal `src/tests.rs` builds `CommitInput` directly — but `#[non_exhaustive]`
-// does not apply within the defining crate, so the unit tests pass while the public surface is
-// uncallable. This is precisely the gap a black-box harness exists to catch: the INSERT-INTO-commits
-// write path (the RFD §3 COMMIT-keyword-clash centerpiece, plus PREVIEW/COMMIT and the runtime
-// bridge over a real commit) has no reachable external entry point.
-//
-// Fix is the Constructor's (planner.rs) — out of the Planner's lane: add a public constructor or a
-// `#[must_use]` builder for `CommitInput` (e.g. `CommitInput::new(branch, author, committer, time,
-// message).with_files(map)`), mirroring the builder pattern the rest of the crate's owned DTOs use
-// (`ProcSig`/`RepoStore`-via-`with_store`/`RepoResolver::with_repo`).
-//
-// The write planner's OUTPUT DTO `CommitPlan` is fine — its fields are readable across the boundary
-// (only struct-literal CONSTRUCTION is blocked by `#[non_exhaustive]`, not field reads), so once
-// `CommitInput` is constructible the PREVIEW assertions (`planned.new_commit`, `planned.old_commit`,
-// `planned.plan.nodes()`) and the COMMIT-through-`apply_shared` path would all be reachable.
-//
-// The `write_*` tests for these scenarios are therefore intentionally absent here pending the fix;
-// see `.workaholic/trips/cfs-foundation-e0/reviews/round-t26-planner-e2e.md`. The CAS/forced-move
-// write paths (scenarios 4 and 7) ARE reachable — `plan_update_ref` takes plain `Oid` args, not
-// `CommitInput` — and are validated below, so the effects-as-data write/apply/CAS/reflog substrate
-// is exercised end-to-end; only the INSERT-commit-building DTO ergonomics block scenarios 3/8.
+// Re-test gate (round 2): the Constructor's commit `74b7ad9` added the additive public builder
+// `CommitInput::new(branch, author, committer, message).at_time(t).with_file(path, bytes)` /
+// `.with_files(map)` (mirroring `ProcSig::new`/`RepoResolver::with_repo`/`GitApplier::with_store`),
+// keeping `#[non_exhaustive]` and the `CommitInput`/`CommitPlan` shapes unchanged. The previously
+// uncallable INSERT-INTO-commits write path is now reachable from OUTSIDE the crate — scenarios 3
+// and 8's plan half are closed below through that public constructor.
+
+/// Build the round-2 `CommitInput` purely through the public builder (no struct literal).
+fn changelog_input() -> CommitInput {
+    CommitInput::new(
+        "refs/heads/main",
+        "Linus T <linus@demo.test>",
+        "Linus T <linus@demo.test>",
+        "Add changelog",
+    )
+    .at_time(1_700_001_000)
+    .with_file("CHANGELOG.md", b"# 1.0\n".to_vec())
+}
+
+#[test]
+fn write_insert_commit_preview_is_side_effect_free() {
+    let fx = build_fixture();
+    let repo = fx.repo();
+    let input = changelog_input();
+
+    let planned = plan_insert_commit("demo", repo, &input).unwrap();
+
+    // PREVIEW shape: blob + tree + commit WriteLooseObject, a CAS UpdateRef, a reflog entry —
+    // i.e. a DAG of WriteLooseObject + UpdateRef effects (the acceptance-criteria plan assertion).
+    assert!(
+        planned.plan.nodes().len() >= 4,
+        "blob+tree+commit+ref(+reflog), got {}",
+        planned.plan.nodes().len()
+    );
+    let kinds: Vec<&EffectKind> = planned.plan.nodes().iter().map(|n| &n.kind).collect();
+    assert!(
+        kinds.iter().any(|k| matches!(k, EffectKind::Insert)),
+        "PREVIEW plan has WriteLooseObject (Insert) effects"
+    );
+    assert!(
+        kinds.iter().any(|k| matches!(k, EffectKind::Update)),
+        "PREVIEW plan has an UpdateRef (Update) effect"
+    );
+    // Correct CAS old-oid = the current branch tip (c2); new-commit oid is content-addressed.
+    assert_eq!(
+        planned.old_commit.as_ref().unwrap().as_str(),
+        fx.c2.as_str(),
+        "PREVIEW old-oid = current branch tip"
+    );
+    assert_ne!(planned.new_commit.as_str(), fx.c2.as_str(), "a new commit");
+
+    // Genuinely side-effect-free: the apply-store branch still points at c2, no reflog growth, and
+    // the new commit object is NOT present in the apply store (PREVIEW applies NOTHING).
+    let applier = fx.driver.git_applier();
+    assert_eq!(
+        applier.ref_oid("demo", "refs/heads/main").unwrap(),
+        fx.c2,
+        "PREVIEW must not move the branch"
+    );
+    assert!(
+        applier.reflog("demo", "refs/heads/main").is_empty(),
+        "PREVIEW must not append a reflog entry"
+    );
+    // Re-planning yields the SAME content-addressed new-commit oid AND still applies nothing — a
+    // strong determinism + purity signal.
+    let planned2 = plan_insert_commit("demo", repo, &input).unwrap();
+    assert_eq!(planned2.new_commit, planned.new_commit);
+    assert_eq!(applier.ref_oid("demo", "refs/heads/main").unwrap(), fx.c2);
+}
+
+#[tokio::test]
+async fn write_commit_moves_branch_and_writes_reflog() {
+    let fx = build_fixture();
+    let planned = plan_insert_commit("demo", fx.repo(), &changelog_input()).unwrap();
+
+    // COMMIT: drive the applier through the SharedApplier seam in plan node order (deps satisfied).
+    let applier = fx.driver.git_applier().clone();
+    for node in planned.plan.nodes() {
+        applier.apply_shared(node).unwrap();
+    }
+
+    // After COMMIT the branch points at the new commit; the reflog records the move FROM c2.
+    assert_eq!(
+        applier.ref_oid("demo", "refs/heads/main").unwrap(),
+        planned.new_commit,
+        "branch now points at the new commit"
+    );
+    let reflog = applier.reflog("demo", "refs/heads/main");
+    assert_eq!(reflog.first().unwrap().new, planned.new_commit);
+    assert_eq!(reflog.first().unwrap().old, fx.c2, "reflog entry exists");
+
+    // Idempotency of the CONTENT-ADDRESSED object writes: re-applying a WriteLooseObject for an oid
+    // already present is a no-op (affected = 0), not an error. (The CAS UpdateRef is deliberately
+    // NOT idempotent on replay — re-applying its now-stale `old` correctly conflicts; that is the
+    // safety property scenario 4 exercises, so we re-apply only the Insert/object-write effects.)
+    for node in planned.plan.nodes() {
+        if matches!(node.kind, EffectKind::Insert) {
+            let out = applier.apply_shared(node).unwrap();
+            assert_eq!(
+                out.affected, 0,
+                "re-writing an existing content-addressed object is a no-op"
+            );
+        }
+    }
+    // The branch is unchanged by the object-write replay.
+    assert_eq!(
+        applier.ref_oid("demo", "refs/heads/main").unwrap(),
+        planned.new_commit
+    );
+}
+
+#[tokio::test]
+async fn write_commit_runtime_bridge_constructs_over_a_real_commit_plan() {
+    // The locked driver pattern: the synchronous applier wrapped by the runtime bridge is the
+    // surface the t10 interpreter executes a /git plan through. We confirm the bridge constructs,
+    // build a real commit plan via the public constructor, and apply it through the same shared
+    // applier the bridge wraps (moving the world the bridge would drive under COMMIT).
+    let fx = build_fixture();
+    let _bridge = git_apply_driver(&fx.driver);
+
+    let input = CommitInput::new(
+        "refs/heads/main",
+        "Bridge <bridge@demo.test>",
+        "Bridge <bridge@demo.test>",
+        "Tag version file",
+    )
+    .at_time(1_700_002_000)
+    .with_file("VERSION", b"1.0.0\n".to_vec());
+    let planned = plan_insert_commit("demo", fx.repo(), &input).unwrap();
+
+    let applier = fx.driver.git_applier().clone();
+    for node in planned.plan.nodes() {
+        applier.apply_shared(node).unwrap();
+    }
+    assert_eq!(
+        applier.ref_oid("demo", "refs/heads/main").unwrap(),
+        planned.new_commit
+    );
+}
 
 // =================================================================================================
 // 4. CAS ref update — stale old-oid is rejected, not clobbered
@@ -634,15 +742,11 @@ fn reflog_forced_move_is_recoverable() {
 
 #[test]
 fn keyword_clash_commit_creation_is_insert_not_the_commit_keyword() {
-    // Scenario 8 from the OUTSIDE. The plan-shape half ("the commit-creation effect kinds are
-    // INSERT/UPDATE, never the frozen COMMIT keyword") sits behind the same `CommitInput`
-    // `#[non_exhaustive]` blocker recorded in the Section-3 banner — `plan_insert_commit` is the
-    // only commit builder and its input is unconstructible out-of-crate. But the AI-facing
-    // CAPABILITY surface — the actual mechanism that resolves the keyword clash, RFD §3 — IS
-    // reachable and is asserted here: a git commit is created with INSERT on `/commits`, and the
-    // UPDATE verb a `COMMIT`-keyword model might imply is structurally rejected. So the
-    // clash-resolution contract the AI consumes is validated end-to-end from the outside; only the
-    // plan-node-kind cross-check is gated by the DTO blocker.
+    // Scenario 8 from the OUTSIDE, now fully reachable (round 2). Two halves:
+    //
+    // (a) The AI-facing CAPABILITY surface — the mechanism that resolves the keyword clash, RFD §3:
+    //     a git commit is created with INSERT on `/commits`; the UPDATE verb a `COMMIT`-keyword
+    //     model might imply is structurally rejected; SELECT is the read half.
     let fx = build_fixture();
     let commits = Path::new("/git/demo/commits");
     assert!(
@@ -653,8 +757,29 @@ fn keyword_clash_commit_creation_is_insert_not_the_commit_keyword() {
         check_capability(&fx.driver, &commits, Verb::Update).is_err(),
         "UPDATE /commits (which a COMMIT-keyword model might imply) is rejected — the clash is avoided"
     );
-    // SELECT is the read half; the frozen `COMMIT` plan keyword is never a node verb here.
     assert!(check_capability(&fx.driver, &commits, Verb::Select).is_ok());
+
+    // (b) The PLAN-NODE cross-check (previously DTO-blocked, now reachable via the public
+    //     `CommitInput` constructor): a real commit-creation plan is built ENTIRELY from
+    //     INSERT (object writes) + UPDATE (ref/reflog) effect kinds. The frozen `COMMIT` plan
+    //     keyword is never an effect-node verb here — it remains exclusively the interpreter's
+    //     apply verb, never required or shadowed by commit creation.
+    let input = CommitInput::new(
+        "refs/heads/main",
+        "A <a@demo.test>",
+        "A <a@demo.test>",
+        "make a commit",
+    )
+    .at_time(1_700_003_000)
+    .with_file("NEW.txt", b"x\n".to_vec());
+    let planned = plan_insert_commit("demo", fx.repo(), &input).unwrap();
+    for node in planned.plan.nodes() {
+        assert!(
+            matches!(node.kind, EffectKind::Insert | EffectKind::Update),
+            "commit-creation effect must be INSERT/UPDATE (never COMMIT), got {:?}",
+            node.kind
+        );
+    }
 }
 
 #[test]
