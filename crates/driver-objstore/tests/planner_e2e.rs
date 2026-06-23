@@ -24,8 +24,8 @@ use cfs_types::{
 };
 
 use cfs_driver_objstore::{
-    r2_apply_driver, s3_apply_driver, Bucket, MockObjectBackend, MultipartPolicy,
-    ObjApplier, ObjDriver, ObjError, ObjNode, ObjRegistry, PutResult, R2Driver, S3Driver, Scheme,
+    r2_apply_driver, s3_apply_driver, Bucket, MockObjectBackend, MultipartPolicy, ObjApplier,
+    ObjDriver, ObjError, ObjNode, ObjRegistry, PutResult, R2Driver, S3Driver, Scheme,
 };
 use cfs_driver_objstore::{ListPage, ObjectMeta, RecordedCall};
 
@@ -88,13 +88,20 @@ fn s1_upsert_remove_and_read_plan_shapes() {
         Target::new(PlanDriverId::new("s3"), VfsPath::new("/s3/archive/doc@v9")),
     );
     assert_eq!(remove.kind, EffectKind::Remove);
-    assert!(remove.irreversible, "REMOVE must be inherently irreversible");
+    assert!(
+        remove.irreversible,
+        "REMOVE must be inherently irreversible"
+    );
 
     // The driver decodes the @version off the path into the Delete effect (the version_id survives).
     let decoded = cfs_driver_objstore::ObjEffect::from_node(&remove).unwrap();
     match decoded {
         cfs_driver_objstore::ObjEffect::Delete { version_id, .. } => {
-            assert_eq!(version_id.as_deref(), Some("v9"), "the @v9 coordinate threads in");
+            assert_eq!(
+                version_id.as_deref(),
+                Some("v9"),
+                "the @v9 coordinate threads in"
+            );
         }
         other => panic!("expected Delete, got {other:?}"),
     }
@@ -148,14 +155,20 @@ fn s3_ls_returns_paged_rows_and_common_prefixes() {
     let d = obj(backend.clone());
 
     let pd = ObjDriver::plan_ls(
-        Some(&Predicate::Like(ColRef::col("key"), Pattern("logs/%".into()))),
+        Some(&Predicate::Like(
+            ColRef::col("key"),
+            Pattern("logs/%".into()),
+        )),
         Some("/"),
     );
     let (result, residual) = d.ls(&Path::new("/s3/assets"), &pd, None).unwrap();
     assert_eq!(result.objects.len(), 2);
     assert_eq!(result.common_prefixes, vec!["logs/2026/".to_string()]);
     assert!(result.has_more(), "next_token drives pagination");
-    assert!(residual.is_none(), "an exact-prefix LIKE drops the residual");
+    assert!(
+        residual.is_none(),
+        "an exact-prefix LIKE drops the residual"
+    );
 
     // ObjectMeta projects to the declared listing row order.
     let rows = result.to_rows();
@@ -163,8 +176,10 @@ fn s3_ls_returns_paged_rows_and_common_prefixes() {
     assert_eq!(rows[0].values[1], Value::Int(10));
 
     let calls = backend.recorded();
-    assert!(matches!(&calls[0], RecordedCall::List { prefix, delimiter, .. }
-        if prefix.as_deref() == Some("logs/") && delimiter.as_deref() == Some("/")));
+    assert!(
+        matches!(&calls[0], RecordedCall::List { prefix, delimiter, .. }
+        if prefix.as_deref() == Some("logs/") && delimiter.as_deref() == Some("/"))
+    );
 }
 
 #[test]
@@ -173,9 +188,16 @@ fn s3_get_streams_single_and_ranged() {
     let backend = Arc::new(MockObjectBackend::new().with_get_body(body.clone()));
     let d = obj(backend.clone());
 
-    assert_eq!(d.get(&Path::new("/s3/assets/k"), None).unwrap().into_bytes(), body);
     assert_eq!(
-        d.get(&Path::new("/s3/assets/k"), Some((4, 7))).unwrap().into_bytes(),
+        d.get(&Path::new("/s3/assets/k"), None)
+            .unwrap()
+            .into_bytes(),
+        body
+    );
+    assert_eq!(
+        d.get(&Path::new("/s3/assets/k"), Some((4, 7)))
+            .unwrap()
+            .into_bytes(),
         b"4567",
         "an inclusive range pushdown returns exactly the requested bytes"
     );
@@ -195,7 +217,11 @@ fn s3_upsert_below_threshold_is_one_put_above_is_multipart_complete() {
             EffectKind::Upsert,
             "s3",
             "/s3/assets/small.txt",
-            one_row(vec![("body", ColumnType::Text, Value::Text("hello".into()))]),
+            one_row(vec![(
+                "body",
+                ColumnType::Text,
+                Value::Text("hello".into()),
+            )]),
         ))
         .unwrap();
     let calls = small2.recorded();
@@ -210,19 +236,31 @@ fn s3_upsert_below_threshold_is_one_put_above_is_multipart_complete() {
         EffectKind::Upsert,
         "s3",
         "/s3/assets/big.bin",
-        one_row(vec![("body", ColumnType::Bytes, Value::Bytes(vec![7u8; 10]))]),
+        one_row(vec![(
+            "body",
+            ColumnType::Bytes,
+            Value::Bytes(vec![7u8; 10]),
+        )]),
     ))
     .unwrap();
     let calls = big.recorded();
     assert!(matches!(calls[0], RecordedCall::CreateMultipart { .. }));
     assert_eq!(
-        calls.iter().filter(|c| matches!(c, RecordedCall::UploadPart { .. })).count(),
+        calls
+            .iter()
+            .filter(|c| matches!(c, RecordedCall::UploadPart { .. }))
+            .count(),
         3,
         "10 bytes / 4 = 3 parts"
     );
-    assert!(matches!(calls.last().unwrap(), RecordedCall::CompleteMultipart { .. }));
+    assert!(matches!(
+        calls.last().unwrap(),
+        RecordedCall::CompleteMultipart { .. }
+    ));
     assert!(
-        !calls.iter().any(|c| matches!(c, RecordedCall::AbortMultipart { .. })),
+        !calls
+            .iter()
+            .any(|c| matches!(c, RecordedCall::AbortMultipart { .. })),
         "a clean multipart must NOT abort"
     );
 }
@@ -238,7 +276,11 @@ fn s3_mid_multipart_failure_triggers_abort() {
             EffectKind::Upsert,
             "s3",
             "/s3/assets/big.bin",
-            one_row(vec![("body", ColumnType::Bytes, Value::Bytes(vec![7u8; 10]))]),
+            one_row(vec![(
+                "body",
+                ColumnType::Bytes,
+                Value::Bytes(vec![7u8; 10]),
+            )]),
         ))
         .unwrap_err();
     assert!(
@@ -248,12 +290,16 @@ fn s3_mid_multipart_failure_triggers_abort() {
     let calls = backend.recorded();
     assert!(matches!(calls[0], RecordedCall::CreateMultipart { .. }));
     assert!(
-        calls.iter().any(|c| matches!(c, RecordedCall::AbortMultipart { .. })),
+        calls
+            .iter()
+            .any(|c| matches!(c, RecordedCall::AbortMultipart { .. })),
         "a mid-multipart failure MUST abort to free orphan parts: {calls:?}"
     );
     // And no complete must have fired after the failure.
     assert!(
-        !calls.iter().any(|c| matches!(c, RecordedCall::CompleteMultipart { .. })),
+        !calls
+            .iter()
+            .any(|c| matches!(c, RecordedCall::CompleteMultipart { .. })),
         "a failed multipart must NOT complete"
     );
 }
@@ -291,23 +337,36 @@ fn s4_version_id_get_and_remove_round_trip_with_etag() {
     let calls = backend.recorded();
     assert!(matches!(&calls[0], RecordedCall::Get { version_id, .. }
         if version_id.as_deref() == Some("v7")));
-    assert!(matches!(&calls[1], RecordedCall::Delete { key, version_id, .. }
-        if key == "doc.txt" && version_id.as_deref() == Some("v3")));
+    assert!(
+        matches!(&calls[1], RecordedCall::Delete { key, version_id, .. }
+        if key == "doc.txt" && version_id.as_deref() == Some("v3"))
+    );
 
     // ETag surfaced for optimistic concurrency: the copy/verify leg compares ETags.
     let copied = applier.copy_leg("assets", "s.txt", "d.txt").unwrap();
     assert_eq!(copied.etag, "\"etag-77\"");
     assert!(ObjApplier::verify_leg(&copied, "\"etag-77\"").is_ok());
     assert_eq!(
-        ObjApplier::verify_leg(&copied, "\"other\"").unwrap_err().code(),
+        ObjApplier::verify_leg(&copied, "\"other\"")
+            .unwrap_err()
+            .code(),
         "conflict",
         "a mismatched ETag is a structured conflict"
     );
 
     // version_support reflects the bucket's versioning.
-    assert_eq!(d.version_support(&Path::new("/s3/archive/x")), VersionSupport::Versioned);
-    assert_eq!(d.version_support(&Path::new("/s3/assets/x")), VersionSupport::Snapshot);
-    assert_eq!(d.version_support(&Path::new("/s3/nope/x")), VersionSupport::None);
+    assert_eq!(
+        d.version_support(&Path::new("/s3/archive/x")),
+        VersionSupport::Versioned
+    );
+    assert_eq!(
+        d.version_support(&Path::new("/s3/assets/x")),
+        VersionSupport::Snapshot
+    );
+    assert_eq!(
+        d.version_support(&Path::new("/s3/nope/x")),
+        VersionSupport::None
+    );
 }
 
 // =================================================================================================
@@ -321,13 +380,25 @@ fn s5_unsupported_verb_on_bucket_root_is_structurally_rejected() {
     // A bucket root admits ls/select/upsert/cp/mv but NOT a keyless REMOVE/RM/UPDATE.
     for bad in [Verb::Update, Verb::Remove, Verb::Rm] {
         let err = check_capability(&d, &Path::new("/s3/assets"), bad).unwrap_err();
-        assert_eq!(err.code(), "unsupported_verb", "verb {bad:?} must be rejected");
+        assert_eq!(
+            err.code(),
+            "unsupported_verb",
+            "verb {bad:?} must be rejected"
+        );
         match err {
-            cfs_driver::CfsError::UnsupportedVerb { path, supported, .. } => {
+            cfs_driver::CfsError::UnsupportedVerb {
+                path, supported, ..
+            } => {
                 assert_eq!(path, "/s3/assets", "the error names the node");
-                assert!(supported.contains(&"LS"), "names allowed verbs: {supported:?}");
+                assert!(
+                    supported.contains(&"LS"),
+                    "names allowed verbs: {supported:?}"
+                );
                 assert!(supported.contains(&"UPSERT"));
-                assert!(!supported.contains(&"RM"), "RM is NOT allowed on a bucket root");
+                assert!(
+                    !supported.contains(&"RM"),
+                    "RM is NOT allowed on a bucket root"
+                );
             }
             other => panic!("expected UnsupportedVerb, got {other:?}"),
         }
@@ -335,8 +406,19 @@ fn s5_unsupported_verb_on_bucket_root_is_structurally_rejected() {
 
     // A key node admits the full blob verb set.
     let key = Path::new("/s3/assets/k");
-    for ok in [Verb::Ls, Verb::Select, Verb::Upsert, Verb::Remove, Verb::Cp, Verb::Mv, Verb::Rm] {
-        assert!(check_capability(&d, &key, ok).is_ok(), "key node must allow {ok:?}");
+    for ok in [
+        Verb::Ls,
+        Verb::Select,
+        Verb::Upsert,
+        Verb::Remove,
+        Verb::Cp,
+        Verb::Mv,
+        Verb::Rm,
+    ] {
+        assert!(
+            check_capability(&d, &key, ok).is_ok(),
+            "key node must allow {ok:?}"
+        );
     }
 
     // An unregistered bucket has the empty capability set (everything rejected).
@@ -357,20 +439,36 @@ fn s5_unsupported_verb_on_bucket_root_is_structurally_rejected() {
 fn s6_residual_is_kept_whenever_the_prefix_is_a_strict_superset() {
     // (a) key = 'logs/exact.json' → prefix "logs/exact.json" is a SUPERSET (also matches
     //     "logs/exact.jsonX"), so the exact `=` MUST be a residual.
-    let eq = Predicate::Cmp(ColRef::col("key"), CmpOp::Eq, Literal::Text("logs/exact.json".into()));
+    let eq = Predicate::Cmp(
+        ColRef::col("key"),
+        CmpOp::Eq,
+        Literal::Text("logs/exact.json".into()),
+    );
     let pd = ObjDriver::plan_ls(Some(&eq), None);
     assert_eq!(pd.prefix.as_deref(), Some("logs/exact.json"));
-    assert_eq!(pd.residual.as_ref(), Some(&eq), "= MUST keep an exact residual");
+    assert_eq!(
+        pd.residual.as_ref(),
+        Some(&eq),
+        "= MUST keep an exact residual"
+    );
 
     // (b) AND(key LIKE 'img/%', size > 1000) → push "img/" but KEEP the whole predicate (the size
     //     conjunct still constrains; dropping it would return oversized AND undersized rows).
     let and = Predicate::And(
         Box::new(Predicate::Like(ColRef::col("key"), Pattern("img/%".into()))),
-        Box::new(Predicate::Cmp(ColRef::col("size"), CmpOp::Gt, Literal::Int(1000))),
+        Box::new(Predicate::Cmp(
+            ColRef::col("size"),
+            CmpOp::Gt,
+            Literal::Int(1000),
+        )),
     );
     let pd = ObjDriver::plan_ls(Some(&and), None);
     assert_eq!(pd.prefix.as_deref(), Some("img/"));
-    assert_eq!(pd.residual.as_ref(), Some(&and), "AND MUST keep the whole predicate");
+    assert_eq!(
+        pd.residual.as_ref(),
+        Some(&and),
+        "AND MUST keep the whole predicate"
+    );
 
     // (c) BETWEEN 'apple' AND 'apricot' → common prefix "ap" is a superset (also "april"), residual
     //     MUST stay.
@@ -381,15 +479,27 @@ fn s6_residual_is_kept_whenever_the_prefix_is_a_strict_superset() {
     );
     let pd = ObjDriver::plan_ls(Some(&between), None);
     assert_eq!(pd.prefix.as_deref(), Some("ap"));
-    assert_eq!(pd.residual.as_ref(), Some(&between), "BETWEEN MUST keep the residual");
+    assert_eq!(
+        pd.residual.as_ref(),
+        Some(&between),
+        "BETWEEN MUST keep the residual"
+    );
 
     // (d) key >= 'm' → an ordering bound is NOT a prefix; pushing "m" would EXCLUDE "z..." rows the
     //     predicate keeps. The driver must push NOTHING and keep the whole residual (the
     //     correctness-over-cleverness call). This is the row-EXCLUSION trap, the inverse danger.
     let ge = Predicate::Cmp(ColRef::col("key"), CmpOp::Ge, Literal::Text("m".into()));
     let pd = ObjDriver::plan_ls(Some(&ge), None);
-    assert!(pd.prefix.is_none(), "an ordering bound must NOT be pushed as a prefix: {:?}", pd.prefix);
-    assert_eq!(pd.residual.as_ref(), Some(&ge), ">= MUST keep the whole residual");
+    assert!(
+        pd.prefix.is_none(),
+        "an ordering bound must NOT be pushed as a prefix: {:?}",
+        pd.prefix
+    );
+    assert_eq!(
+        pd.residual.as_ref(),
+        Some(&ge),
+        ">= MUST keep the whole residual"
+    );
 
     // (e) a predicate over a NON-key column only → push nothing, keep everything.
     let nonkey = Predicate::Cmp(ColRef::col("size"), CmpOp::Gt, Literal::Int(5));
@@ -410,7 +520,11 @@ fn s6_residual_is_kept_whenever_the_prefix_is_a_strict_superset() {
         "a NOT must NOT push the negated prefix (it would return the excluded rows): {:?}",
         pd.prefix
     );
-    assert_eq!(pd.residual.as_ref(), Some(&neg), "NOT MUST keep the full predicate");
+    assert_eq!(
+        pd.residual.as_ref(),
+        Some(&neg),
+        "NOT MUST keep the full predicate"
+    );
 
     // (g) OR: key LIKE 'a/%' OR key LIKE 'b/%' — neither single prefix covers the union; pushing
     //     one ("a/") would DROP all "b/..." rows. The driver must not push a single-branch prefix
@@ -424,7 +538,11 @@ fn s6_residual_is_kept_whenever_the_prefix_is_a_strict_superset() {
         // If a prefix IS pushed for an OR, it would silently drop the other branch's rows. Fail loud.
         panic!("OR pushed prefix {p:?} — this DROPS the other branch's rows (a wrong-rows bug)");
     }
-    assert_eq!(pd.residual.as_ref(), Some(&or), "OR MUST keep the whole predicate");
+    assert_eq!(
+        pd.residual.as_ref(),
+        Some(&or),
+        "OR MUST keep the whole predicate"
+    );
 }
 
 /// The OTHER half of the property: a residual is dropped ONLY for a predicate that is EXACTLY a
@@ -435,7 +553,10 @@ fn s6_residual_is_dropped_only_for_an_exact_prefix_like() {
     let exact = Predicate::Like(ColRef::col("key"), Pattern("logs/2026/%".into()));
     let pd = ObjDriver::plan_ls(Some(&exact), None);
     assert_eq!(pd.prefix.as_deref(), Some("logs/2026/"));
-    assert!(pd.residual.is_none(), "a tail-anchored LIKE is exactly the prefix list");
+    assert!(
+        pd.residual.is_none(),
+        "a tail-anchored LIKE is exactly the prefix list"
+    );
 
     // A LIKE with an EMBEDDED wildcard is NOT a pure prefix → must not drop the residual.
     let mid = Predicate::Like(ColRef::col("key"), Pattern("logs/%/2026".into()));
@@ -448,13 +569,21 @@ fn s6_residual_is_dropped_only_for_an_exact_prefix_like() {
     );
     // Specifically: if any prefix is pushed it must be a superset with the residual kept.
     if pd.prefix.is_some() {
-        assert_eq!(pd.residual.as_ref(), Some(&mid), "embedded-wildcard LIKE keeps the residual");
+        assert_eq!(
+            pd.residual.as_ref(),
+            Some(&mid),
+            "embedded-wildcard LIKE keeps the residual"
+        );
     }
 
     // A LIKE with a leading wildcard ('%foo') is NOT a prefix → no prefix, residual kept.
     let lead = Predicate::Like(ColRef::col("key"), Pattern("%foo".into()));
     let pd = ObjDriver::plan_ls(Some(&lead), None);
-    assert!(pd.prefix.is_none(), "a leading-wildcard LIKE has no prefix: {:?}", pd.prefix);
+    assert!(
+        pd.prefix.is_none(),
+        "a leading-wildcard LIKE has no prefix: {:?}",
+        pd.prefix
+    );
     assert_eq!(pd.residual.as_ref(), Some(&lead));
 
     // No predicate at all → no prefix, no residual.
@@ -476,12 +605,20 @@ fn s6_returned_residual_actually_filters_the_over_returned_rows() {
     let backend = Arc::new(MockObjectBackend::new().with_list_page(page));
     let d = obj(backend);
 
-    let eq = Predicate::Cmp(ColRef::col("key"), CmpOp::Eq, Literal::Text("logs/exact.json".into()));
+    let eq = Predicate::Cmp(
+        ColRef::col("key"),
+        CmpOp::Eq,
+        Literal::Text("logs/exact.json".into()),
+    );
     let pd = ObjDriver::plan_ls(Some(&eq), None);
     let (result, residual) = d.ls(&Path::new("/s3/assets"), &pd, None).unwrap();
 
     // The native prefix list over-returned 3 rows.
-    assert_eq!(result.objects.len(), 3, "the native prefix list over-returns");
+    assert_eq!(
+        result.objects.len(),
+        3,
+        "the native prefix list over-returns"
+    );
     // The driver HANDED BACK the exact `=` residual, so the engine can re-filter to exactly 1.
     let residual = residual.expect("the residual MUST be present to re-filter");
     let surviving: Vec<&ObjectMeta> = result
@@ -489,7 +626,11 @@ fn s6_returned_residual_actually_filters_the_over_returned_rows() {
         .iter()
         .filter(|o| eval_residual(&residual, o))
         .collect();
-    assert_eq!(surviving.len(), 1, "re-filtering the residual yields exactly the exact match");
+    assert_eq!(
+        surviving.len(),
+        1,
+        "re-filtering the residual yields exactly the exact match"
+    );
     assert_eq!(surviving[0].key, "logs/exact.json");
 }
 
@@ -514,13 +655,32 @@ fn eval_residual(pred: &Predicate, obj: &ObjectMeta) -> bool {
 fn s7_no_canary_in_any_error_display_or_debug() {
     // Drive every public ObjError arm through Debug + Display; the canary must be nowhere.
     let errors = vec![
-        ObjError::InvalidPath { path: "/s3/x".into(), reason: "bad" },
-        ObjError::CapabilityDenied { path: "/s3/b/k".into(), verb: "UPDATE" },
-        ObjError::Api { op: "put_object", status: 500 },
-        ObjError::Decode { op: "list_objects_v2", reason: "not xml".into() },
-        ObjError::Transport { reason: "connection failed".into() },
-        ObjError::MultipartAborted { part: 2, reason: "part failed".into() },
-        ObjError::Conflict { version: "\"etag\"".into() },
+        ObjError::InvalidPath {
+            path: "/s3/x".into(),
+            reason: "bad",
+        },
+        ObjError::CapabilityDenied {
+            path: "/s3/b/k".into(),
+            verb: "UPDATE",
+        },
+        ObjError::Api {
+            op: "put_object",
+            status: 500,
+        },
+        ObjError::Decode {
+            op: "list_objects_v2",
+            reason: "not xml".into(),
+        },
+        ObjError::Transport {
+            reason: "connection failed".into(),
+        },
+        ObjError::MultipartAborted {
+            part: 2,
+            reason: "part failed".into(),
+        },
+        ObjError::Conflict {
+            version: "\"etag\"".into(),
+        },
     ];
     for e in &errors {
         let dbg = format!("{e:?}");
@@ -528,7 +688,10 @@ fn s7_no_canary_in_any_error_display_or_debug() {
         assert!(!dbg.contains(CANARY), "canary leaked in Debug: {dbg}");
         assert!(!disp.contains(CANARY), "canary leaked in Display: {disp}");
         assert!(!dbg.contains("cafef00d"), "canary fragment leaked: {dbg}");
-        assert!(!dbg.contains("secret"), "the literal 'secret' must not ride in an error: {dbg}");
+        assert!(
+            !dbg.contains("secret"),
+            "the literal 'secret' must not ride in an error: {dbg}"
+        );
     }
 }
 
@@ -537,7 +700,11 @@ fn s7_no_canary_in_list_results_plan_or_recorded_calls() {
     // Even though credentials never enter the DTO/plan/recorded surfaces by construction, drive a
     // full round and serialize every observable artifact, asserting the canary is absent.
     let page = ListPage::new(vec![ObjectMeta::new("k", 1).with_etag("\"e\"")]);
-    let backend = Arc::new(MockObjectBackend::new().with_list_page(page).with_get_body(b"x".to_vec()));
+    let backend = Arc::new(
+        MockObjectBackend::new()
+            .with_list_page(page)
+            .with_get_body(b"x".to_vec()),
+    );
     let d = obj(backend.clone());
 
     let pd = ObjDriver::plan_ls(
@@ -557,7 +724,10 @@ fn s7_no_canary_in_list_results_plan_or_recorded_calls() {
 
     // The recorded backend calls — secret-free by construction.
     let calls_dbg = format!("{:?}", backend.recorded());
-    assert!(!calls_dbg.contains(CANARY), "canary in recorded calls: {calls_dbg}");
+    assert!(
+        !calls_dbg.contains(CANARY),
+        "canary in recorded calls: {calls_dbg}"
+    );
     assert!(!calls_dbg.contains("cafef00d"));
 }
 
@@ -579,7 +749,11 @@ async fn e2e_commit_upsert_and_remove_through_the_s3_bridge() {
         EffectKind::Upsert,
         "s3",
         "/s3/assets/k1",
-        one_row(vec![("body", ColumnType::Text, Value::Text("payload".into()))]),
+        one_row(vec![(
+            "body",
+            ColumnType::Text,
+            Value::Text("payload".into()),
+        )]),
     ));
     b.push(EffectNode::new(
         NodeId(1),
@@ -590,11 +764,16 @@ async fn e2e_commit_upsert_and_remove_through_the_s3_bridge() {
         .grant(PlanDriverId::new("s3"), &EffectKind::Upsert)
         .grant(PlanDriverId::new("s3"), &EffectKind::Remove);
     let outcome = interp.commit(b.build(), &caps).await.unwrap();
-    assert!(outcome.is_complete(), "both effects must apply: {outcome:?}");
+    assert!(
+        outcome.is_complete(),
+        "both effects must apply: {outcome:?}"
+    );
 
     let calls = backend.recorded();
     assert!(calls.iter().any(|c| matches!(c, RecordedCall::Put { .. })));
-    assert!(calls.iter().any(|c| matches!(c, RecordedCall::Delete { version_id, .. }
+    assert!(calls
+        .iter()
+        .any(|c| matches!(c, RecordedCall::Delete { version_id, .. }
         if version_id.as_deref() == Some("v1"))));
 }
 
@@ -602,7 +781,11 @@ async fn e2e_commit_upsert_and_remove_through_the_s3_bridge() {
 async fn e2e_r2_commits_through_its_own_bridge_id() {
     let backend = Arc::new(MockObjectBackend::new());
     let driver = R2Driver::new(registry(backend.clone()));
-    assert_eq!(driver.id(), PlanDriverId::new("r2"), "R2 derives its own driver id");
+    assert_eq!(
+        driver.id(),
+        PlanDriverId::new("r2"),
+        "R2 derives its own driver id"
+    );
     let bridge = r2_apply_driver(&driver);
     let registry = DriverRegistry::new().with(driver.id(), Arc::new(bridge));
     let interp = Interpreter::with_defaults(registry);
@@ -617,8 +800,14 @@ async fn e2e_r2_commits_through_its_own_bridge_id() {
     ));
     let caps = CapabilitySet::none().grant(PlanDriverId::new("r2"), &EffectKind::Upsert);
     let outcome = interp.commit(b.build(), &caps).await.unwrap();
-    assert!(outcome.is_complete(), "the r2 upsert must apply: {outcome:?}");
-    assert!(backend.recorded().iter().any(|c| matches!(c, RecordedCall::Put { .. })));
+    assert!(
+        outcome.is_complete(),
+        "the r2 upsert must apply: {outcome:?}"
+    );
+    assert!(backend
+        .recorded()
+        .iter()
+        .any(|c| matches!(c, RecordedCall::Put { .. })));
 }
 
 // =================================================================================================
@@ -637,13 +826,25 @@ fn x_path_parse_and_pushdown_profile() {
             version_id: Some("v7".into()),
         }
     );
-    assert_eq!(ObjNode::parse_str("/mail/inbox").unwrap_err().code(), "invalid_path");
+    assert_eq!(
+        ObjNode::parse_str("/mail/inbox").unwrap_err().code(),
+        "invalid_path"
+    );
 
     // The declared pushdown profile is Partial with where_/project/limit on, no join/aggregate.
     let d = obj(Arc::new(MockObjectBackend::new()));
     match d.pushdown() {
-        PushdownProfile::Partial { where_, project, join, aggregate, .. } => {
-            assert!(*where_ && *project, "predicate + projection pushdown advertised");
+        PushdownProfile::Partial {
+            where_,
+            project,
+            join,
+            aggregate,
+            ..
+        } => {
+            assert!(
+                *where_ && *project,
+                "predicate + projection pushdown advertised"
+            );
             assert!(!*join && !*aggregate, "no join/aggregate pushdown");
         }
         other => panic!("expected Partial pushdown, got {other:?}"),

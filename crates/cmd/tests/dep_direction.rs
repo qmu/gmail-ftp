@@ -329,6 +329,7 @@ fn runtime_is_confined_to_plan_and_types() {
         "cfs-driver-sql",
         "cfs-driver-cf",
         "cfs-driver-objstore",
+        "cfs-driver-github",
         "cfs",
     ];
     for consumer in &runtime_consumers {

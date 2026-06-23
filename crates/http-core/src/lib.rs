@@ -64,9 +64,10 @@ pub fn is_sensitive_header(name: &str) -> bool {
 
 /// The HTTP method a universal verb maps onto **internally** (RFD §3 "the path is the type": the
 /// DSL has no HTTP-verb keywords — this mapping is config/driver-internal). A **closed**,
-/// `#[non_exhaustive]` set: `SELECT→GET`, `INSERT→POST`, `UPSERT→PUT`, `REMOVE→DELETE`. The
-/// OAuth flow uses only `Get` (userinfo) and `Post` (token endpoint); the REST driver uses all
-/// four — one reconciled enum serves both.
+/// `#[non_exhaustive]` set: `SELECT→GET`, `INSERT→POST`, `UPSERT→PUT`, `REMOVE→DELETE`, and the
+/// partial-update `PATCH` (`UPDATE … SET …`). The OAuth flow uses only `Get` (userinfo) and
+/// `Post` (token endpoint); the REST driver uses GET/POST/PUT/DELETE; the GitHub (t24) and
+/// Drive (t21) drivers also use `Patch` for partial field edits — one reconciled enum serves all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum HttpMethod {
@@ -77,27 +78,33 @@ pub enum HttpMethod {
     Post,
     /// `PUT` — an idempotent create-or-update (`UPSERT`). Retry-safe with an idempotency key.
     Put,
+    /// `PATCH` — a partial update (`UPDATE … SET …`, e.g. GitHub `state='closed'`, a Drive
+    /// metadata rename). Per RFC 7231 `PATCH` is **not** guaranteed idempotent, so it is treated
+    /// as **not** retry-safe (a timed-out PATCH may have applied; RFD §6 — do not auto-retry).
+    Patch,
     /// `DELETE` — a removal (`REMOVE`). Irreversible (RFD §10) but idempotent on the wire.
     Delete,
 }
 
 impl HttpMethod {
-    /// The uppercase wire token (`GET`/`POST`/`PUT`/`DELETE`).
+    /// The uppercase wire token (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             HttpMethod::Get => "GET",
             HttpMethod::Post => "POST",
             HttpMethod::Put => "PUT",
+            HttpMethod::Patch => "PATCH",
             HttpMethod::Delete => "DELETE",
         }
     }
 
-    /// Whether this method is safe to retry on a transient failure. `POST` is **not** retry-safe
-    /// (a timed-out POST may have landed; RFD §6 — never auto-retry POST).
+    /// Whether this method is safe to retry on a transient failure. `POST` and `PATCH` are
+    /// **not** retry-safe (a timed-out POST may have landed; a `PATCH` is not guaranteed
+    /// idempotent — RFD §6, never auto-retry either).
     #[must_use]
     pub const fn is_retry_safe(self) -> bool {
-        !matches!(self, HttpMethod::Post)
+        !matches!(self, HttpMethod::Post | HttpMethod::Patch)
     }
 }
 
@@ -271,12 +278,16 @@ mod tests {
         assert_eq!(HttpMethod::Get.as_str(), "GET");
         assert_eq!(HttpMethod::Post.as_str(), "POST");
         assert_eq!(HttpMethod::Put.as_str(), "PUT");
+        assert_eq!(HttpMethod::Patch.as_str(), "PATCH");
         assert_eq!(HttpMethod::Delete.as_str(), "DELETE");
         assert!(HttpMethod::Get.is_retry_safe());
         assert!(HttpMethod::Put.is_retry_safe());
         assert!(HttpMethod::Delete.is_retry_safe());
         assert!(!HttpMethod::Post.is_retry_safe());
+        // PATCH is not guaranteed idempotent → not retry-safe (RFD §6).
+        assert!(!HttpMethod::Patch.is_retry_safe());
         assert_eq!(format!("{}", HttpMethod::Delete), "DELETE");
+        assert_eq!(format!("{}", HttpMethod::Patch), "PATCH");
     }
 
     #[test]

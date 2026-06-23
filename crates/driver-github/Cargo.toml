@@ -1,0 +1,58 @@
+[package]
+name = "cfs-driver-github"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "cfs GitHub driver (RFD-0001 §5, E4 t24): the object-graph + workflow Driver mounted at /github/{owner}/{repo}/... over the REST v3 API. Maps issues/pulls/comments/reviews/runs/releases/files/branches to per-node Archetype::ObjectGraphWorkflow nodes with typed schemas powering DESCRIBE. Implements the t13 Driver contract (describe/capabilities/procedures/pushdown/applier) and reuses the t18 cfs-driver-http reusable HTTP seam through a GitHubClient adapter: Bearer (PAT) injection, RFC-5988 Link-header pagination, and 429/Retry-After bounded retry on idempotent GETs only — all over the shared cfs_http_core HTTP DTOs + the single SENSITIVE_HEADERS redaction authority (no hand-rolled HTTP DTOs; the t19 redaction-drift token leak stays closed). Universal CRUD: SELECT (list/get + pagination), INSERT (open issue/PR, post comment, create release/branch), UPDATE (close via SET state='closed', edit title/body/labels → PATCH), REMOVE (delete comment/release/branch). Procedures via CALL github.merge/dispatch/review build HTTP-call effect nodes; merge/dispatch are marked irreversible. Owned DTOs only (IssueDto/PullDto/CommentDto/ReviewDto/RunDto/ReleaseDto/BranchDto) with From<_> for Row — no octocrab/vendor type ever crosses the boundary. Pushdown is TRUTHFUL with residual (the t20 lesson): WHERE state/labels/assignee → REST query params, any predicate not exactly expressible keeps the exact residual for local re-filtering. The PAT is a cfs_secrets::Secret read only at plan-apply, never logged, never in any DTO/error/serialized plan. Bridges its synchronous PlanApplier to the runtime async ApplyDriver via cfs-runtime's PlanApplierBridge (a runtime leaf). Tests use mocks/fakes/golden — NO live GitHub API, NO live token (live E2E parked for t38)."
+
+[features]
+# Exposes test-only DTO constructors so a downstream consumer can fabricate the otherwise
+# `#[non_exhaustive]` DTOs to seed the public `MockGitHubClient` in their own integration tests.
+test-util = []
+
+[dependencies]
+# The introspective Driver contract (t13): trait, archetype/capability/pushdown DTOs,
+# the shared CfsError, and the Path boundary adapter.
+cfs-driver = { path = "../driver" }
+# The effect substrate (t06/t09): EffectKind/EffectNode/Target/VfsPath + the synchronous
+# PlanApplier seam the runtime bridge drives.
+cfs-plan = { path = "../plan" }
+# The canonical typed row model + Schema/DriverId (t05) the describe schema and the
+# decoded GitHub rows speak.
+cfs-types = { path = "../types" }
+# The async interpreter side: the ApplyDriver/DriverRegistry the bridge registers into and
+# the PlanApplierBridge that adapts this driver's synchronous applier. tokio is confined to
+# cfs-runtime + leaf driver-impl consumers (this crate), so cfs-plan's purity dep-closure
+# test stays green.
+cfs-runtime = { path = "../runtime" }
+# The credential / secret store (t27): the PAT is resolved from a `Secret` at commit time via
+# the `Secrets` trait; the raw token never enters a DTO, Debug, error, or log.
+cfs-secrets = { path = "../secrets" }
+# The shared pure HTTP DTO + redaction leaf (t19): the single source of truth for
+# HttpMethod/HttpRequest/HttpResponse and the SENSITIVE_HEADERS redaction set. This driver trades
+# ONLY in these DTOs across the local HttpTransport seam — no hand-rolled HTTP DTOs (the
+# redaction-drift token leak stays closed). The driver does NOT depend on cfs-driver-http: a
+# cfs-runtime consumer must stay a leaf (the dep-direction confinement test), so the GitHub
+# transport seam is a local structural twin of t18's HttpClient over the SAME http-core DTOs.
+cfs-http-core = { path = "../http-core" }
+# Owned DTOs (de)serialize from the GitHub JSON; no octocrab/vendor type ever crosses the boundary.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Structured, secret-free GitHubError taxonomy (RFD §5, AI-consumable).
+thiserror = { workspace = true }
+# Structured request/lifecycle logging at debug, with token values redacted by the
+# HttpRequest Debug.
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Tests drive the synchronous machinery + the async bridge against an in-memory mock
+# GitHubClient (scripted GitHub JSON + recorded requests) and an InMemoryStore — no live
+# GitHub, no network. End-to-end COMMIT tests drive the async interpreter through #[tokio::test].
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

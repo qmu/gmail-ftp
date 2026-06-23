@@ -340,7 +340,9 @@ impl GDriveClient for GoogleApiDriveClient {
             meta.insert("name".to_string(), serde_json::Value::String(n.to_string()));
         }
         let url = format!("{API_BASE}/files/{id}?{}", params.join("&"));
-        let req = Self::json_req(HttpMethod::Put, op, url, &serde_json::Value::Object(meta))?;
+        // A metadata rename/re-parent is a partial field update — Drive `files.update` is PATCH
+        // semantics (shared `HttpMethod::Patch`, reconciled with the GitHub t24 driver).
+        let req = Self::json_req(HttpMethod::Patch, op, url, &serde_json::Value::Object(meta))?;
         self.send(op, &req)?;
         Ok(())
     }
@@ -365,7 +367,8 @@ impl GDriveClient for GoogleApiDriveClient {
         let op = "files.trash";
         let body = serde_json::json!({ "trashed": true });
         let url = format!("{API_BASE}/files/{id}?supportsAllDrives=true");
-        let req = Self::json_req(HttpMethod::Put, op, url, &body)?;
+        // Setting `trashed=true` is a partial field update — PATCH (shared `HttpMethod::Patch`).
+        let req = Self::json_req(HttpMethod::Patch, op, url, &body)?;
         self.send(op, &req)?;
         Ok(())
     }
