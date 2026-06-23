@@ -45,6 +45,12 @@ cfs-cron = { path = "../cron" }
 cfs-watchtower = { path = "../watchtower" }
 # The shared secrets surface the watchtower resolves webhook signing secrets from (by handle).
 cfs-secrets = { path = "../secrets" }
+# t36 deployment host-adapter seam: the binary composes the daemon's TokioHost: RuntimeHost,
+# REUSING the existing cfs-http/cfs-cron/cfs-watchtower serve composition behind the trait, and
+# wires the fsync'd FileDurableStore + the on-disk AuditLedger. `host-daemon` is the EC2/Linux
+# build feature (mutually exclusive with `host-workers`); it pulls cfs-host's cfs-server-backed
+# conversion + daemon primitives. cfs-host is a leaf consumed only by this terminal binary.
+cfs-host = { path = "../host", features = ["host-daemon"] }
 # The serve composition builds a tokio runtime to drive the async listener + supervised wait.
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "signal", "macros"] }
 async-trait = { workspace = true }

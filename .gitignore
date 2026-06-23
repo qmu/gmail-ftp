@@ -14,3 +14,4 @@ token.json
 *.swp
 .DS_Store
 .cargo/config.toml
+.cfs-state/

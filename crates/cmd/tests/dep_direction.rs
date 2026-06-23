@@ -204,6 +204,13 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         // the binary's composition root builds + injects into the WatchtowerBinding. cfs-secrets is
         // a pure leaf (confined to cfs-types) — depending on it adds no runtime/driver coupling.
         "cfs-secrets",
+        // t36: the binary ALSO composes the deployment host (cfs-host, the one RuntimeHost seam, a
+        // leaf consuming cfs-server only behind `host-daemon`). The binary builds the daemon's
+        // TokioHost: RuntimeHost — REUSING the existing cfs-http/cfs-cron/cfs-watchtower serve
+        // composition behind the trait — and wires the fsync'd FileDurableStore + on-disk
+        // AuditLedger. cfs-host's feature-gated coupling dead-ends in the terminal binary; cfs-cmd
+        // stays off it. Same composition-root rationale as the t32/t33/t34 binding leaves.
+        "cfs-host",
     ];
     let workspace_prefixed: Vec<&String> =
         bin_deps.iter().filter(|d| d.starts_with("cfs")).collect();
@@ -975,6 +982,110 @@ fn crypto_core_is_a_pure_leaf_single_sourcing_the_three_vendored_copies() {
             "single-source violation: {crate_name} must depend on cfs-crypto-core for the shared \
              SHA-256/HMAC-SHA256/constant_time_eq (t34) rather than vendoring a private copy. \
              Deps were: {deps:?}"
+        );
+    }
+}
+
+#[test]
+fn host_is_the_only_deployment_seam_and_a_leaf() {
+    // t36 (the deployment host-adapter topology): `cfs-host` is the ONE seam that abstracts what
+    // causes a plan to run over the EC2 daemon + the CF Worker. The placement decision rests on
+    // structural facts this guard pins so they cannot silently invert:
+    //
+    //   (a) cfs-host's NON-optional (wasm-clean core) workspace deps are EMPTY among workspace
+    //       crates — the traits + owned DTOs + binding-set derivation + wrangler generator + the
+    //       MockHost carry NO workspace coupling, so the core builds for wasm32-unknown-unknown.
+    //       cfs-server is an OPTIONAL dep gated behind `host-daemon` (it pulls tokio `signal`,
+    //       no-wasm) — the conversion SOURCE for the BindingSet, never re-exported. The
+    //       load-bearing wasm fence is the ABSENCE of `host-daemon` (cfs-server is `optional`),
+    //       not a marker (the t25/cron lesson).
+    //   (b) cfs-host is a LEAF: nothing depends on it except the terminal `cfs` binary (the serve
+    //       composition root). The daemon's TokioHost: RuntimeHost is composed in the binary,
+    //       REUSING the existing cfs-http/cfs-cron/cfs-watchtower serve composition behind the
+    //       trait — so any feature-gated coupling dead-ends in the binary, exactly as the t32/t33/
+    //       t34 binding leaves do.
+    //   (c) cfs-host does NOT depend on cfs-runtime (it never drives the COMMIT interpreter — the
+    //       hosts attach causes that drive the SAME injected committers the binding leaves use), so
+    //       the runtime-leaf-confinement guard is untouched (cfs-host never appears in its allowlist).
+    let graph = load_graph();
+
+    // (a) With `--no-deps`, optional deps still appear in the manifest dependency list; assert the
+    // ONLY workspace dep cfs-host declares is cfs-server (the optional host-daemon conversion source).
+    let workspace_crates = [
+        "cfs-cmd",
+        "cfs-core",
+        "cfs-server",
+        "cfs-lang",
+        "cfs-plan",
+        "cfs-driver",
+        "cfs-codec",
+        "cfs-parser",
+        "cfs-types",
+        "cfs-runtime",
+        "cfs-txn",
+        "cfs-pushdown",
+        "cfs-secrets",
+        "cfs-exec",
+        "cfs-engine",
+        "cfs-http",
+        "cfs-cron",
+        "cfs-watchtower",
+        "cfs-host",
+    ];
+    let host_deps = graph
+        .direct_deps
+        .get("cfs-host")
+        .expect("cfs-host is a workspace package");
+    let allowed = ["cfs-server"];
+    let mut ws_deps: Vec<&String> = host_deps
+        .iter()
+        .filter(|d| workspace_crates.contains(&d.as_str()))
+        .collect();
+    ws_deps.sort();
+    ws_deps.dedup();
+    for d in &ws_deps {
+        assert!(
+            allowed.contains(&d.as_str()),
+            "topology violation: cfs-host must depend only on {allowed:?} among workspace crates \
+             (the optional host-daemon BindingSet conversion source; the wasm-clean core has NO \
+             workspace dep), but depends on {d}. Workspace deps were: {ws_deps:?}"
+        );
+    }
+
+    // (b) cfs-host is a leaf: only the terminal `cfs` binary may depend on it.
+    let host_consumers: Vec<&String> = graph
+        .direct_deps
+        .iter()
+        .filter(|(pkg, deps)| pkg.as_str() != "cfs-host" && deps.iter().any(|d| d == "cfs-host"))
+        .map(|(pkg, _)| pkg)
+        .collect();
+    for consumer in &host_consumers {
+        assert_eq!(
+            consumer.as_str(),
+            "cfs",
+            "t36 leaf violation: {consumer} depends on cfs-host, but only the terminal `cfs` \
+             binary (the serve composition root) may compose the deployment host. cfs-host is the \
+             one deployment seam; a non-terminal consumer would let a host's feature-gated \
+             coupling escape the binary."
+        );
+    }
+
+    // (c) cfs-host must NOT depend on cfs-runtime (it never drives the COMMIT interpreter — the
+    // hosts cause the SAME injected committers to run; the two impure stages stay separate).
+    assert!(
+        !host_deps.iter().any(|d| d == "cfs-runtime"),
+        "t36: cfs-host must NOT depend on cfs-runtime — a host CAUSES a plan to run through the \
+         existing injected committers, it does not drive the COMMIT interpreter. Deps were: \
+         {host_deps:?}"
+    );
+
+    // (d) cfs-host must NOT carry the `worker` or `hyper` vendor crates: the wasm-clean core is
+    // vendor-free, and the CF `worker` entrypoints are PARKED (ADR-0005, not in the offline cache).
+    for forbidden in ["worker", "hyper", "axum"] {
+        assert!(
+            !host_deps.iter().any(|d| d == forbidden),
+            "t36: cfs-host must NOT depend on the vendor crate {forbidden} (the wasm-clean core is \
+             vendor-free; the CF `worker` entrypoints are parked per ADR-0005). Deps were: {host_deps:?}"
         );
     }
 }

@@ -12,6 +12,7 @@
 //! [`cfs_cmd::ShellLauncher`]. The shell LOGIC itself lives in `cfs-exec`; this only wires it.
 
 mod cron;
+mod host;
 mod serve;
 mod shell;
 mod watchtower;

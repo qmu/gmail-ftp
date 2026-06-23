@@ -1,0 +1,43 @@
+[package]
+name = "cfs-host"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "cfs deployment host-adapter seam (t36, RFD-0001 §8/§9): the ONE boundary that abstracts what causes a plan to run over the two production targets (EC2 daemon + Cloudflare Workers/wasm). It invents NO runtime semantics — the closed-core grammar, the three /server registries (t30), the binding model, and the three fire-path leaf bindings (cfs-http/cfs-cron/cfs-watchtower) are untouched. cfs-host carries CONSUMER-SIDE traits (RuntimeHost: now/serve_endpoints/schedule_jobs/consume_events/durable/native_store + DurableStore: get/put/cas) and OWNED, VENDOR-FREE DTOs only (BindingSet/EndpointBinding/JobBinding/WebhookBinding/WatcherBinding/NativeStoreBinding/Mount/Timestamp/StateKey/StateBytes) — NO worker::*, NO tokio::*, NO AWS/CF storage type ever crosses this seam. The PURE core (the traits, the DTOs, the host-agnostic binding-set DERIVATION, the wrangler.toml GENERATOR by binding NAME only, and the MockHost idempotency double) has ZERO tokio/worker and builds for wasm32-unknown-unknown with --no-default-features. `host-daemon` gates the EC2 side: the conversion from cfs-server's ServerState into the owned BindingSet (cfs-server pulls tokio `signal`, no-wasm), the fsync'd FileDurableStore for watcher cursors/LAST_RUN, and the on-disk audit ledger sink. `host-workers` gates the CF Workers scaffold: the four #[event] entrypoint shapes + the Durable Object mapping (ENDPOINT->fetch, JOB->scheduled/Cron, WEBHOOK/event->queue, watcher/LAST_RUN->DO storage, /d1·/r2·/kv->env bindings) — PARKED behind the feature because the `worker` crate is not in the offline cache (docs/adr/0005-deployment-hosts.md, the ADR-0002/0003/0004 footprint shape). The two host features are mutually exclusive in a single build. cfs-host is a LEAF: only the terminal `cfs` binary composes the daemon host (TokioHost reuses the EXISTING cfs-http/cfs-cron/cfs-watchtower serve composition behind the trait), so any feature-gated coupling dead-ends in the binary and the spine stays wasm-clean + vendor-free (enforced by the cargo-metadata no-vendor-in-core deny test)."
+
+[features]
+default = []
+# The EC2/Linux daemon side. Pulls cfs-server (the ServerState the BindingSet is derived from —
+# cfs-server pulls tokio `signal`, no-wasm) so this is the NON-wasm feature. The fsync'd
+# FileDurableStore + the on-disk audit ledger live here. The load-bearing wasm fence is the
+# ABSENCE of `host-daemon` (cfs-server is `optional`), not a marker (the t25/cron lesson).
+host-daemon = ["dep:cfs-server"]
+# The Cloudflare Workers / wasm32 side, PARKED per docs/adr/0005: the `worker` crate is NOT in
+# the offline cache (it is not even resolvable from the offline index), so the real
+# #[event(fetch/scheduled/queue)] + #[durable_object] entrypoints CANNOT be built here. This
+# feature compiles the wasm-clean SCAFFOLD — the binding-archetype -> CF-primitive mapping and the
+# DTO wiring — so it is drop-in once `worker` lands. It pulls NO `worker` dep today.
+host-workers = []
+
+[dependencies]
+# The owned ServerState/EndpointDef/JobDef/TriggerDef/WebhookDef DTOs the host-agnostic BindingSet
+# is derived from. OPTIONAL behind `host-daemon`: cfs-server pulls tokio `signal` (mio, no-wasm), so
+# the PURE wasm-clean core (traits + DTOs + wrangler generator + MockHost) excludes it. The BindingSet
+# itself is cfs-host's OWN owned DTO — cfs-server is only the conversion SOURCE, never re-exported.
+cfs-server = { path = "../server", optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The binding-set + wrangler golden tests boot a fixture config.cfs into a ServerState through the
+# server Runtime (parse -> lower -> COMMIT), then derive the BindingSet from it. These run under
+# the `host-daemon` feature (the default `cargo test --workspace` builds every feature combination
+# the deny-test pins). No live creds, no network.
+cfs-server = { path = "../server" }
+
+[lints]
+workspace = true

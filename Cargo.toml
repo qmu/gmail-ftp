@@ -44,3 +44,25 @@ all = { level = "deny", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+
+# --- t36 deployment build profiles (RFD-0001 §9; docs/adr/0005-deployment-hosts.md) ---
+# The native release profile for the EC2 daemon (`cargo build --release --features host-daemon`).
+# The release JOB cross-links static `x86_64`/`aarch64-unknown-linux-musl` binaries IN CI (the
+# local host has no x86_64 musl linker — t01/A2 established cross-link is CI-only), but the
+# profile itself is verified locally via the NATIVE release build.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# The wasm size profile for the CF Workers `cfs.wasm` artifact (RFD §9: lean wasm). Cargo has no
+# per-target profile, so the release JOB selects this via `--profile wasm-release` when building
+# `--target wasm32-unknown-unknown --features host-workers`. `opt-level="z"` + fat LTO + strip +
+# `panic="abort"` minimize the module size (the 128 MB / CPU-time Worker limits, RFD §6).
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

@@ -195,6 +195,7 @@ dependencies = [
  "cfs-cron",
  "cfs-driver-local",
  "cfs-exec",
+ "cfs-host",
  "cfs-http",
  "cfs-pushdown",
  "cfs-secrets",
@@ -503,6 +504,16 @@ dependencies = [
  "thiserror",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "cfs-host"
+version = "0.0.0"
+dependencies = [
+ "cfs-server",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

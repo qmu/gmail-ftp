@@ -1,0 +1,20 @@
+# cfs-host deployment fixture (t36): the acceptance binding set — one ENDPOINT, one JOB EVERY,
+# one WEBHOOK, one watcher (TRIGGER), and /d1 + /r2 + /kv references in the plan/query bodies.
+# Booting this file (via the t30 server Runtime) yields a ServerState the host-agnostic binding-set
+# derivation projects into a BindingSet, which the wrangler generator turns into wrangler.toml.
+# No network, no live credentials.
+
+# A least-privilege policy the writing causes attach (default-deny otherwise, t35).
+CREATE POLICY deploypriv ALLOW INSERT,REMOVE;
+
+# ONE ENDPOINT: a read query that references a CF D1 table (native d1 binding).
+CREATE ENDPOINT events ON 'GET /events' AS FROM /cf/d1/analytics/events |> LIMIT 5;
+
+# ONE JOB EVERY: fires every 6 hours, writing to a CF R2 bucket (native r2 binding).
+CREATE JOB archive EVERY '6h' DO INSERT INTO /cf/r2/backups VALUES ('snapshot') POLICY deploypriv;
+
+# ONE WEBHOOK: a signed inbound route (the secret is a cfs-secrets HANDLE, never a token).
+CREATE WEBHOOK inbound ON '/hooks/ingest';
+
+# ONE watcher (TRIGGER): fires on an inbox event, writing to a CF KV namespace (native kv binding).
+CREATE TRIGGER notify ON inbox DO INSERT INTO /cf/kv/sessions VALUES ('seen') POLICY deploypriv;

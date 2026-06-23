@@ -72,14 +72,49 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --workspace --target ${{ matrix.target }}
 
-  # wasm32 is DEFERRED per t01 (kept wasm-friendly but not built here). The wasm32
-  # build of cfs-parser is a t02 / future-E0-sibling concern; this job is a parked
-  # placeholder so the matrix slot is visibly reserved, not forgotten.
-  #
-  # wasm32:
-  #   name: wasm32 (cfs-parser, deferred)
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - run: rustup target add wasm32-unknown-unknown
-  #     - run: cargo build -p cfs-parser --target wasm32-unknown-unknown
+  # t36: the wasm-clean cfs-host CORE builds on wasm32-unknown-unknown (the RuntimeHost/
+  # DurableStore traits, the owned DTOs, the wrangler generator, the binding-set derivation,
+  # and the parked host-workers scaffold). The `worker`-backed WorkersHost is PARKED (the
+  # `worker` crate is not yet a dependency — docs/adr/0005-deployment-hosts.md), so this job
+  # builds the wasm-clean core, NOT a `worker` cdylib.
+  wasm32-host-core:
+    name: wasm32 (cfs-host core, t36)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup target add wasm32-unknown-unknown
+      # Default features = the wasm-clean core (no tokio, no cfs-server, no worker).
+      - run: cargo build -p cfs-host --target wasm32-unknown-unknown
+      # The parked host-workers scaffold also builds for wasm32 (the archetype->primitive mapping).
+      - run: cargo build -p cfs-host --target wasm32-unknown-unknown --features host-workers
+
+  # t36 RELEASE job: emit the deployment artifacts — static musl binaries (both arches), the
+  # cfs.wasm size-optimized module, the wrangler.toml template, and a SHA256SUMS. Gated on a tag
+  # push so a normal CI run does not produce release artifacts. The musl static link is CI-ONLY
+  # (the local trip host has no x86_64 musl cross-linker — t01/A2); this job installs `musl-tools`
+  # + the cross-linkers so the static binaries link here.
+  release-artifacts:
+    name: release artifacts (musl + wasm + wrangler + checksums)
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Add release targets
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          rustup target add aarch64-unknown-linux-musl
+          rustup target add wasm32-unknown-unknown
+      - name: Install musl + cross linkers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
+      - name: Build release artifacts
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+        run: bash deploy/release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cfs-release
+          path: dist/
