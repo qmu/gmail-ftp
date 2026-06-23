@@ -81,6 +81,32 @@ impl Schedule {
             Schedule::Cron(c) => c.next_after(from),
         }
     }
+
+    /// The most recent fire boundary **at or before** `now` — the first-eligibility boundary a
+    /// JOB that has never run should fire on. Derived FROM the schedule (not a fixed window).
+    ///
+    /// For `Every`, the exact arithmetic boundary `anchor + n*interval ≤ now` (works for ANY
+    /// interval, including one larger than a day, so an `EVERY '7d'` job fires on first eligibility
+    /// rather than deferring up to a full interval — the Obs-3 correctness fix). For `Cron`, the
+    /// prior matching minute, scanned back over a bounded look-back.
+    ///
+    /// Returns `None` if no boundary is at-or-before `now` (the anchor is still in the future, or
+    /// the cron has no match in the bounded look-back).
+    #[must_use]
+    pub fn prev_at_or_before(&self, now: Instant) -> Option<Instant> {
+        match self {
+            Schedule::Every { interval, anchor } => {
+                if now < *anchor {
+                    // The cadence has not started yet; nothing is due.
+                    return None;
+                }
+                // The largest anchor + n*interval ≤ now (exact; no fixed-window cap).
+                let n = (now - anchor) / interval;
+                Some(anchor + n * interval)
+            }
+            Schedule::Cron(c) => c.prev_at_or_before(now),
+        }
+    }
 }
 
 /// A restricted 5-field cron expression (`min hour dom mon dow`), all UTC. Each field is a
@@ -240,6 +266,32 @@ impl CronExpr {
                 return Some(t);
             }
             t += SECS_PER_MIN;
+            scanned += 1;
+        }
+        None
+    }
+
+    /// The most recent minute boundary **at or before** `now` matching this expression. Scans
+    /// backward minute-by-minute over a bounded look-back (4 years) so a never-matching expression
+    /// terminates with `None`. The cron analogue of [`Schedule::prev_at_or_before`].
+    #[must_use]
+    pub fn prev_at_or_before(&self, now: Instant) -> Option<Instant> {
+        const SECS_PER_MIN: i64 = 60;
+        const MAX_MINUTES: i64 = 4 * 366 * 24 * 60;
+        // Start at the whole minute at-or-before `now`.
+        let mut t = (now / SECS_PER_MIN) * SECS_PER_MIN;
+        let mut scanned = 0;
+        while scanned < MAX_MINUTES {
+            let parts = civil_from_epoch_secs(t);
+            if self.minute.matches(parts.minute)
+                && self.hour.matches(parts.hour)
+                && self.dom.matches(parts.day)
+                && self.month.matches(parts.month)
+                && self.dow.matches(parts.dow)
+            {
+                return Some(t);
+            }
+            t -= SECS_PER_MIN;
             scanned += 1;
         }
         None

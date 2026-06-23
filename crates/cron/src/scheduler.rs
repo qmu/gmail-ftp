@@ -182,6 +182,13 @@ where
         let dispatched = match result {
             Ok(outcome) => {
                 // (6) success: advance last_run_at to scheduled_for, store the plan hash.
+                // AT-LEAST-ONCE NOTE: the commit-apply (above) and this record_run are two steps,
+                // not one atomic transaction. A crash BETWEEN them leaves the effect applied but
+                // last_run_at un-advanced and the run-id un-dedup'd — so the next tick re-covers
+                // the same window and re-dispatches the SAME deterministic run-id. This is safe,
+                // not duplication: effects are idempotent (UPSERT/@version, RFD §6), so the
+                // re-apply is a no-op-equivalent. The system is at-least-once by design; the
+                // run-id dedup + idempotent effects make the worst case a safe replay.
                 let record = RunRecord {
                     job: job.name.clone(),
                     run_id: run_id.clone(),

@@ -129,7 +129,10 @@ impl JobStore for LedgerJobStore {
                 entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
             }
             RunStatus::Disabled => entry.last_status = RunStatus::Disabled,
-            RunStatus::Never => {}
+            // `Never` and any future variant: no state change. NOTE: the wildcard is MANDATORY
+            // here — RunStatus is `#[non_exhaustive]` and this is an out-of-crate match, so a
+            // no-catch-all shape (the safer one that surfaces a new variant at compile time) is
+            // not expressible for LedgerJobStore, only for the in-crate MemJobStore.
             _ => {}
         }
         g.ledger.push(record);

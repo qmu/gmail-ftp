@@ -78,10 +78,11 @@ impl MissedPolicy {
         }
 
         match self {
-            // Newest only.
-            MissedPolicy::Skip | MissedPolicy::Coalesce => {
-                vec![*boundaries.last().unwrap_or(&from)]
-            }
+            // Newest only. `boundaries` is non-empty here (checked above), so `last()` is Some.
+            MissedPolicy::Skip | MissedPolicy::Coalesce => match boundaries.last() {
+                Some(b) => vec![*b],
+                None => Vec::new(),
+            },
             // Oldest `max`, in order.
             MissedPolicy::CatchUp { max } => {
                 let take = (max as usize).min(boundaries.len());
@@ -91,28 +92,13 @@ impl MissedPolicy {
     }
 }
 
-/// First-run due set: the single most-recent boundary at-or-before `now`, if any. We probe one
-/// interval-equivalent before `now` and pick the latest boundary `<= now`.
+/// First-run due set: the single most-recent boundary **at or before** `now`, if any. Derived
+/// FROM the schedule via [`Schedule::prev_at_or_before`] — NOT a fixed-window look-back. This
+/// fixes the Obs-3 edge: a JOB whose interval exceeds a day (e.g. `EVERY '7d'`) still fires on
+/// first eligibility (the prior arithmetic `Every` boundary), rather than deferring up to a full
+/// interval as a fixed 24h window would have.
 fn first_run_due(schedule: &Schedule, now: Instant) -> Vec<Instant> {
-    // Walk forward from a point safely before `now`. For `Every` the boundary spacing gives a
-    // natural look-back; for `Cron` the minute granularity does. We look back a bounded window
-    // (one day) and pick the latest boundary <= now.
-    const LOOKBACK: Instant = 24 * 3600;
-    let start = now - LOOKBACK;
-    let mut latest: Option<Instant> = None;
-    let mut cursor = start;
-    let mut steps = 0;
-    while steps < MAX_ENUMERATED {
-        match schedule.next_after(cursor) {
-            Some(b) if b <= now => {
-                latest = Some(b);
-                cursor = b;
-            }
-            _ => break,
-        }
-        steps += 1;
-    }
-    match latest {
+    match schedule.prev_at_or_before(now) {
         Some(b) => vec![b],
         None => Vec::new(),
     }

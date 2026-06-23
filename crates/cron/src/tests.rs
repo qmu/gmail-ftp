@@ -308,6 +308,55 @@ fn missed_policy_catchup_capped() {
     assert_eq!(due_count(MissedPolicy::CatchUp { max: 10 }, 0, 5 * 3600), 5);
 }
 
+// --- first-fire on first eligibility (Obs-3: look-back derives from the schedule, not a fixed
+// 24h window) ---
+
+#[test]
+fn first_fire_for_interval_larger_than_a_day() {
+    // EVERY '7d' (604800s), never run. At a `now` past the first weekly boundary, the JOB must
+    // fire on first eligibility — NOT defer up to a full interval (the fixed-24h-window bug).
+    const WEEK: i64 = 7 * 24 * 3600;
+    let s = Schedule::every(WEEK).expect("valid");
+    // anchor = 0; first boundary at epoch 0, next at WEEK, etc. now is 1.5 weeks in.
+    let now = WEEK + WEEK / 2;
+    let due = MissedPolicy::Coalesce.due_set(&s, None, now);
+    assert_eq!(
+        due.len(),
+        1,
+        "first-run fires exactly once on first eligibility"
+    );
+    // The fired boundary is the most recent weekly boundary at-or-before now (1*WEEK), proving the
+    // look-back reached back a FULL week (a fixed 24h window would have found nothing and skipped).
+    assert_eq!(due[0], WEEK);
+}
+
+#[test]
+fn first_fire_before_first_boundary_is_empty() {
+    // EVERY '7d' anchored at WEEK; now is before the first boundary -> nothing due yet.
+    const WEEK: i64 = 7 * 24 * 3600;
+    let s = Schedule::every_anchored(WEEK, WEEK).expect("valid");
+    let due = MissedPolicy::Coalesce.due_set(&s, None, WEEK / 2);
+    assert!(
+        due.is_empty(),
+        "no fire before the cadence's first boundary"
+    );
+}
+
+#[test]
+fn first_fire_for_monthly_cron_past_a_day() {
+    // A cron firing on the 1st of each month at 00:00 — its prior boundary can be ~a month back,
+    // far beyond a 24h window. From mid-month, first-run must still fire on the prior 1st.
+    let s = Schedule::cron("0 0 1 * *").expect("valid cron");
+    // 1970: Jan 1 00:00 = epoch 0; Feb 1 00:00 = 31 days = 2_678_400. Pick mid-February.
+    let mid_feb = 2_678_400 + 10 * 24 * 3600;
+    let due = MissedPolicy::Coalesce.due_set(&s, None, mid_feb);
+    assert_eq!(due.len(), 1);
+    assert_eq!(
+        due[0], 2_678_400,
+        "first-run fires on the prior month-start, weeks back"
+    );
+}
+
 // --- last_run_at advance ordering + failed-run re-cover ---
 
 #[test]
