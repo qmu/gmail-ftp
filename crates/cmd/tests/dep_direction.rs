@@ -325,6 +325,7 @@ fn runtime_is_confined_to_plan_and_types() {
         "cfs-driver-http",
         "cfs-driver-gmail",
         "cfs-driver-gdrive",
+        "cfs-driver-ga",
         "cfs",
     ];
     for consumer in &runtime_consumers {
