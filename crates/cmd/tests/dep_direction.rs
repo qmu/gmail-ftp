@@ -398,6 +398,98 @@ fn secrets_is_confined_to_types_and_core_consumes_it() {
 }
 
 #[test]
+fn exec_is_confined_above_the_spine_and_off_the_runtime() {
+    // t29 (CO-t29-4): cfs-exec is the execution / integration layer that composes the SELECT
+    // read-path executor (parse -> resolve -> plan -> driver scan -> engine residual -> rows)
+    // ABOVE the spine. The t29 topology ruling rests on two structural facts this guard pins
+    // mechanically (so the six E7 server crates about to land cannot silently invert it):
+    //
+    //   (a) cfs-exec's workspace-internal deps are EXACTLY the above-spine set
+    //       {cfs-core, cfs-parser, cfs-pushdown, cfs-engine}. In particular it does NOT depend
+    //       on cfs-runtime — that absence is what keeps the two impure stages separate (the
+    //       runtime owns writes/COMMIT; cfs-exec owns reads/scans via its own ReadDriver seam).
+    //       Were cfs-exec to gain a cfs-runtime edge, it would become a runtime consumer and the
+    //       runtime leaf-confinement check would (correctly) fire — this assertion catches it
+    //       one step earlier with a precise message.
+    //   (b) NO spine / lower crate depends back onto cfs-exec — only cfs-cmd (and transitively
+    //       the `cfs` binary) may consume it. A future `cfs-core -> cfs-exec` (or any spine ->
+    //       cfs-exec) layer inversion fails here, since the spine must never reach UP into the
+    //       integration layer.
+    let graph = load_graph();
+
+    let workspace_crates = [
+        "cfs-cmd",
+        "cfs-core",
+        "cfs-server",
+        "cfs-lang",
+        "cfs-plan",
+        "cfs-driver",
+        "cfs-codec",
+        "cfs-parser",
+        "cfs-types",
+        "cfs-runtime",
+        "cfs-txn",
+        "cfs-pushdown",
+        "cfs-secrets",
+        "cfs-http-core",
+        "cfs-engine",
+        "cfs-exec",
+    ];
+
+    // (a) cfs-exec's workspace deps are exactly the above-spine set (no cfs-runtime).
+    let exec_deps = graph
+        .direct_deps
+        .get("cfs-exec")
+        .expect("cfs-exec is a workspace package");
+    let allowed = ["cfs-core", "cfs-parser", "cfs-pushdown", "cfs-engine"];
+    let mut ws_deps: Vec<&String> = exec_deps
+        .iter()
+        .filter(|d| workspace_crates.contains(&d.as_str()))
+        .collect();
+    ws_deps.sort();
+    ws_deps.dedup();
+    for d in &ws_deps {
+        assert!(
+            allowed.contains(&d.as_str()),
+            "topology violation: cfs-exec must depend only on the above-spine set {allowed:?} \
+             among workspace crates, but depends on {d}. Workspace deps were: {ws_deps:?}"
+        );
+    }
+    // The defining absence: cfs-exec must NOT consume the runtime (keeps the two impure stages —
+    // runtime writes/COMMIT vs. exec reads/scans — structurally separate).
+    assert!(
+        !exec_deps.iter().any(|d| d == "cfs-runtime"),
+        "topology violation: cfs-exec must NOT depend on cfs-runtime — that absence is what keeps \
+         the read executor a separate impure stage from the runtime's write/COMMIT stage (t29). \
+         A real read driver implements cfs-exec's own ReadDriver seam, never the runtime's."
+    );
+    // And the four above-spine deps must all be present (the executor genuinely composes them).
+    for required in allowed {
+        assert!(
+            exec_deps.iter().any(|d| d == required),
+            "cfs-exec must depend on {required} (the read executor composes the above-spine set)"
+        );
+    }
+
+    // (b) Only cfs-cmd may depend on cfs-exec — no spine/lower crate may reach UP into it.
+    let exec_consumers: Vec<&String> = graph
+        .direct_deps
+        .iter()
+        .filter(|(pkg, deps)| pkg.as_str() != "cfs-exec" && deps.iter().any(|d| d == "cfs-exec"))
+        .map(|(pkg, _)| pkg)
+        .collect();
+    for consumer in &exec_consumers {
+        assert_eq!(
+            consumer.as_str(),
+            "cfs-cmd",
+            "topology violation: {consumer} depends on cfs-exec, but only cfs-cmd (and \
+             transitively the `cfs` binary) may consume the integration layer. A spine/lower \
+             crate reaching UP into cfs-exec is a layer inversion (t29)."
+        );
+    }
+}
+
+#[test]
 fn core_depends_on_parser_one_directionally() {
     // C5 / E1 (ticket t06): the cfs-core -> cfs-parser edge is now WIRED — name
     // resolution (`cfs_core::resolve`) consumes the parsed `cfs_parser::Statement`. The
