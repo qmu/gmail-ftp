@@ -66,6 +66,15 @@ tokio = { version = "1", default-features = false, features = ["rt", "macros", "
 [dev-dependencies]
 # The in-memory fakes (counting committer, fake read driver) the tests drive — no live network/creds.
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "time", "sync"] }
+# Black-box E2E (tests/e2e_watchtower.rs): drive the PUBLIC watchtower surface through the same
+# crates the binary composes — cfs-server (ServerState/Runtime/AuditSink), cfs-core (Engine/Row/
+# Value), cfs-exec (the read path a real Watcher::poll_once runs over an in-memory ReadDriver fake),
+# cfs-pushdown (ScanNode), cfs-secrets (the fixture signing secret), and async-trait (the fake's
+# ReadDriver impl). No live network, no live credentials.
+cfs-server = { path = "../server" }
+cfs-exec = { path = "../exec" }
+cfs-pushdown = { path = "../pushdown" }
+async-trait = { workspace = true }
 
 [lints]
 workspace = true

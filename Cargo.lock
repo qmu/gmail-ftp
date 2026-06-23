@@ -642,6 +642,7 @@ dependencies = [
 name = "cfs-watchtower"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "cfs-core",
  "cfs-crypto-core",
  "cfs-exec",
