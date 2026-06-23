@@ -93,3 +93,4 @@
 | 2026-06-23T10:01:16+09:00 | Architect | code-review | t19 | Approve with minor suggestions: token safety PASS; recommend extracting cfs-http-core leaf so the duplicated HTTP DTO/redaction seam cannot drift before t20/t21/t41 |
 | 2026-06-23T10:02:52+09:00 | Planner | e2e-testing | t19 | E2E approved: token exchange, localhost redirect (no 127.0.0.1), expiry refresh, 401-retry-once, multi-account, no token leak |
 | 2026-06-23T10:12:30+09:00 | Constructor | implementation | t19-refine | Extract cfs-http-core shared leaf for HTTP DTOs + single-source header redaction |
+| 2026-06-23T10:13:30+09:00 | Lead | ticket-accepted | t19 | Google OAuth base accepted; cfs-http-core extracted |
