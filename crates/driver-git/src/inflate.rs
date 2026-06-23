@@ -1,15 +1,18 @@
 //! A self-contained, dependency-free **DEFLATE/zlib inflater** (RFC 1951 + RFC 1950) — git
 //! loose objects are zlib-compressed `<type> <len>\0<payload>` blobs (ADR-0003). This module
 //! decompresses one loose object; it is the only decompression the local-object read path
-//! needs (the fixture is authored to keep referenced objects loose, so no pack-delta inflate
-//! is required at t26 — that is a named park behind the `ObjectDb` seam).
+//! needs (no pack-delta inflate is required at t26 — that is a named park behind the `ObjectDb`
+//! seam).
 //!
 //! ## Why hand-rolled (ADR-0003)
 //! The trip cargo cache carries no `flate2`/`miniz_oxide`, the disk is at 97%, and the
 //! workspace default is wasm-clean. A pure-`std` canonical-Huffman inflater is a few hundred
-//! lines, has no native-link hazard, and is differentially checked against **real `git`**
-//! (the fixture's objects are produced by the host `git`, so what we inflate must equal the
-//! committed bytes). No vendor type crosses the boundary.
+//! lines and has no native-link hazard. Its correctness is **differentially checked against
+//! real `git` output**: `tests/inflate_differential.rs` inflates the exact compressed
+//! `.git/objects` bytes a real `git` produced (committed under `tests/fixtures/loose/`,
+//! generated once — no runtime `git`/network/creds) and asserts the decoded payload + oid equal
+//! git's, covering the **BTYPE=2 dynamic-Huffman** path (what real loose objects use), plus
+//! BTYPE=1 and BTYPE=0. No vendor type crosses the boundary.
 
 use crate::error::GitError;
 
@@ -346,7 +349,9 @@ mod tests {
     use super::*;
 
     /// A zlib stream of "hello world" (fixed-Huffman) produced by a reference zlib. Round-trips
-    /// to the original bytes — proving the fixed-tree literal path end to end.
+    /// to the original bytes — proving the fixed-tree literal path end to end. (The end-to-end
+    /// differential against REAL `git` loose objects, including BTYPE=2 dynamic-Huffman, lives in
+    /// `tests/inflate_differential.rs`.)
     #[test]
     fn inflate_zlib_fixed_huffman() {
         // echo -n "hello world" | (python3 zlib.compress) → these bytes.
@@ -358,15 +363,20 @@ mod tests {
         assert_eq!(out, b"hello world");
     }
 
-    /// A stored-block zlib stream (BTYPE=0) round-trips verbatim.
+    /// The **stored-block (BTYPE=0)** decoder path, pinned against a committed real zlib stream
+    /// (a level-0 / incompressible payload — git/zlib rarely emits BTYPE=0 for normal content, so
+    /// this fixture deliberately exercises that branch). The bytes + payload are committed under
+    /// `tests/fixtures/loose/stored.*`, so the test is hermetic and offline.
     #[test]
-    fn inflate_zlib_stored_block() {
-        // zlib.compress(b"abc", level=0): header 78 01, stored block.
-        let stream: [u8; 11] = [
-            0x78, 0x01, 0x01, 0x03, 0x00, 0xfc, 0xff, 0x61, 0x62, 0x63, 0x02,
-        ];
-        // trailing Adler bytes vary; we only need the inflate body to yield "abc".
-        let out = zlib_inflate(&stream).unwrap();
-        assert_eq!(&out[..3], b"abc");
+    fn stored_block_btype0_roundtrips_committed_fixture() {
+        let stream = include_bytes!("../tests/fixtures/loose/stored.z");
+        let payload = include_bytes!("../tests/fixtures/loose/stored.payload");
+        // Guard: the committed fixture really is a stored block (BTYPE=0).
+        assert_eq!((stream[2] >> 1) & 0x3, 0, "stored fixture must be BTYPE=0");
+        let out = zlib_inflate(stream).unwrap();
+        assert_eq!(
+            out, payload,
+            "stored-block inflate must round-trip verbatim"
+        );
     }
 }

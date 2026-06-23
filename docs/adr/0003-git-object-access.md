@@ -25,11 +25,29 @@ feature without touching any caller, exactly as ADR-0002 kept the combine-engine
 reversible behind the `CombineEngine` trait and ADR-0001 kept the parser choice reversible
 behind an owned `ParseError`.
 
-The reader covers exactly what the **committed fixture repository** drives: loose objects
-(commit / tree / blob / annotated tag), refs (`refs/heads/*`, `refs/tags/*`, `HEAD`),
-packed-refs, and the reflog. Pack-file reading is implemented only as far as the fixture
-needs (the fixture is authored to keep its referenced objects loose); a full delta/pack
-resolver is a named park behind the same `ObjectDb` seam.
+The reader covers exactly what the tests drive: loose objects (commit / tree / blob /
+annotated tag), refs (`refs/heads/*`, `refs/tags/*`, `HEAD`), packed-refs, and the reflog.
+Pack-file reading is implemented only as far as needed (a full delta/pack resolver is a named
+park behind the same `ObjectDb` seam).
+
+The inflater's correctness against canonical git is pinned by a **committed-real-git-bytes
+differential** (`crates/driver-git/tests/inflate_differential.rs` +
+`crates/driver-git/tests/fixtures/loose/`): three blobs were materialised **once** by the host
+`git 2.50.1` (`git hash-object -w`), and the **exact compressed `.git/objects` bytes** were
+checked into the crate. The test drives the real production read path
+(`LooseObjectDb::insert_loose` → `ObjectDb::read` → the `0x78` zlib probe → the in-house
+`zlib_inflate` → `parse_framed`) on those bytes and asserts both the decoded payload **and** the
+content-addressed oid equal git's. This needs **no runtime `git`, no network, no creds** — it is
+hermetic and offline by construction. **DEFLATE block-type coverage** is explicit and guarded
+(each fixture asserts its first-block BTYPE so coverage cannot silently drift):
+- **BTYPE=2 dynamic-Huffman** — a large, varied blob (git oid `faa97ff…`, 2272 compressed →
+  8442 framed bytes). This is the most complex decoder path (code-length tree, the 16/17/18
+  repeat codes, the dynamic literal/distance trees) and exactly what real git loose objects use
+  for non-trivial content.
+- **BTYPE=1 fixed-Huffman** — two small/repetitive blobs (`45b983b…`, `d4c4ca6…`).
+- **BTYPE=0 stored** — pinned by an inline inflate unit test against a committed level-0 zlib
+  stream (`tests/fixtures/loose/stored.*`), since git/zlib rarely emits a stored block for normal
+  content.
 
 ## Context
 
@@ -80,15 +98,19 @@ DEFLATE is the same situation.
 | Disk cost on a 97%-full host | Large fetch + compile — the ADR-0002 footprint hazard | Negligible (a few source modules) |
 | `wasm32` cleanliness (RFD §1/§9) | Heavier closure to keep wasm-clean | Wasm-clean by construction (`std` + owned values) |
 | Capability vs. need | Full git toolkit ≫ fixture-driven read+plan | Exactly the loose-object read + oid-compute surface |
-| Correctness guard | Battle-tested | Pinned to **real git output**: the fixture repo is built by the **system `git`** at test time, so our reader is differentially checked against canonical git bytes/oids |
+| Correctness guard | Battle-tested | Pinned to **real git output**: committed compressed `.git/objects` byte fixtures (generated once by the host `git`) the in-house inflater decodes back to git's exact bytes/oids — including the BTYPE=2 dynamic-Huffman path — with no runtime `git`/network/creds |
 
 Honest counter-point (as ADR-0002 recorded for the evaluator): a hand-rolled reader must be
-*correct*. We mitigate exactly as ADR-0002 did — with a **differential property**: the
-fixture repo is materialised by invoking the host's real `git` (a dev-time test fixture,
-not a production dependency), so every oid our SHA-1 computes and every object our inflater
-decodes is checked against what canonical git produced. A future need for pack-delta chains
-or remote transport reopens `GixObjectDb` behind the `ObjectDb` feature seam without a
-rewrite.
+*correct*. We mitigate exactly as ADR-0002 did — with a **differential property**, here against
+**canonical git output**: real loose-object bytes were produced **once** by the host `git`
+(`git hash-object -w`) and the exact compressed `.git/objects` bytes were **committed** as test
+fixtures (`crates/driver-git/tests/fixtures/loose/`), so the test inflates them deterministically
+with **no runtime `git` dependency, no network, no creds**. Every object our inflater decodes and
+every oid our SHA-1 recomputes is checked against what canonical git produced — and the coverage
+explicitly includes the **BTYPE=2 dynamic-Huffman** decoder (the riskiest path, and the one real
+git loose objects actually use), with the fixtures' DEFLATE block types asserted so coverage
+cannot silently drift. A future need for pack-delta chains or remote transport reopens
+`GixObjectDb` behind the `ObjectDb` feature seam without a rewrite.
 
 ## Consequences
 

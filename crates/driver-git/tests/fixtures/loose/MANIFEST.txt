@@ -1,0 +1,10 @@
+# Real git loose-object byte fixtures (generated ONCE by git 2.50.1; committed for hermetic,
+# offline differential testing of the in-house zlib/DEFLATE inflater — ADR-0003). Each *.blob.z
+# is the exact bytes of a .git/objects/xx/yyy.. loose blob produced by `git hash-object -w`.
+# Format: <name> <oid> <deflate_btype>
+small 45b983be36b73c0788dc9cbcb76cbb80fc7bb057 1
+fixed d4c4ca6d43306c0d7540b3aacc7e57485ff3cb10 1
+big   faa97ff147f1c13ecac7ac2c054c2d9a3f881420 2
+# stored.z is a synthetic zlib STORED-block (BTYPE=0) stream over stored.payload (level-0
+# incompressible data) — git/zlib rarely emits BTYPE=0 for normal content, so this pins the
+# stored-block decoder path. It is NOT a framed git object (no <type> <len>\0 header).

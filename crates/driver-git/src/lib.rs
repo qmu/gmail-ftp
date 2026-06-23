@@ -50,6 +50,16 @@
 //!   subtree write/merge is a named park.
 //! - **Deep-history blame engine** — [`blobfs::blame`] does bounded last-touched attribution; a
 //!   full per-line blame over deep history is parked (RFD §6 bound-the-work).
+//! - **`git.rebase` placeholder semantics** — [`planner::plan_rebase`] currently delegates to
+//!   [`planner::plan_merge`] (merge-shaped result, honest zero-effect conflict surface); true
+//!   linear per-commit replay is parked (documented on the function).
+//! - **Read-side vs apply-side reflog are independent structures (E0).** The read path
+//!   ([`Repo`]/[`relational::reflog`]) and the COMMIT apply path ([`GitApplier`]/[`RepoStore`])
+//!   keep **separate** ref + reflog state (the read side holds an `Arc<dyn ObjectDb>` for queries;
+//!   the apply side owns a mutable store). A `/reflog` SELECT on the read-side [`Repo`] therefore
+//!   does **not** reflect a just-applied ref move until the engine reconciles the two; the
+//!   authoritative post-COMMIT record is the applier's own reflog ([`GitApplier::reflog`], what the
+//!   recovery helper reads). Unifying both behind one ref/reflog store is a named park.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]

@@ -432,9 +432,17 @@ pub fn plan_merge(
     Ok(b.build())
 }
 
-/// Plan a `CALL git.rebase(...)`. At E0 a rebase shares the merge's three-way-merge conflict
-/// detection (replaying `theirs` onto `ours`); a conflict is the same typed plan-build error with
-/// zero effects. A clean rebase reduces to the merged result.
+/// Plan a `CALL git.rebase(...)`.
+///
+/// **Named park — placeholder semantics (E0).** This currently **delegates verbatim to
+/// [`plan_merge`]**: it reuses the same in-memory three-way-merge conflict detection and produces
+/// a merge-shaped result, NOT true linear rebase semantics (replay each of `ours`' commits onto
+/// `theirs` preserving a linear history, dropping the second parent). It is honest about the one
+/// invariant that matters at this layer — a conflict surfaces as the same typed
+/// [`GitError::MergeConflict`] plan-build error with **zero** effects in PREVIEW, and a clean case
+/// reduces to `WriteLooseObject` + a CAS `UpdateRef`. The per-commit linear replay (and the
+/// distinct reflog message / single-parent commits a real rebase writes) is deferred behind this
+/// same signature; a future change swaps the body without touching callers.
 ///
 /// # Errors
 /// [`GitError::MergeConflict`] on conflict.
@@ -447,6 +455,7 @@ pub fn plan_rebase(
     theirs: &Oid,
     who: &str,
 ) -> Result<Plan, GitError> {
+    // PARK: placeholder — see the doc comment. Real linear-replay rebase is deferred.
     plan_merge(repo_name, repo, branch, base, ours, theirs, who)
 }
 
