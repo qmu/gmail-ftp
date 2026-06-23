@@ -216,8 +216,8 @@ fn write_endpoint_is_refused_at_registration_plan_assertion() {
     let def = endpoint(
         "purge",
         "POST",
-        "/purge/:id",
-        "REMOVE /mock/items WHERE id = id",
+        "/purge/:p_id",
+        "REMOVE /mock/items WHERE id = p_id",
     );
     let result = compile_endpoint(&def, &engine, None);
     assert!(
@@ -232,8 +232,8 @@ fn write_endpoint_is_allowed_when_a_policy_grants_it() {
     let def = endpoint(
         "purge",
         "POST",
-        "/purge/:id",
-        "REMOVE /mock/items WHERE id = id",
+        "/purge/:p_id",
+        "REMOVE /mock/items WHERE id = p_id",
     );
     let policy = cfs_server::PolicyDef {
         name: "writer".to_string(),
@@ -487,5 +487,83 @@ fn route_pattern_extracts_named_params_and_rejects_mismatches() {
     assert!(
         p.match_path("/other/42/sub/widget").is_none(),
         "literal mismatch"
+    );
+}
+
+#[test]
+fn param_shadowing_a_referenced_column_is_refused_at_registration() {
+    // The t32 security fix: a route param `:id` whose name collides with the `id` COLUMN the
+    // query reads would make the typed-AST rewrite replace the wrong `Expr::Col` node and
+    // collapse `WHERE id = id` into the tautology `WHERE 2 = 2` (access widening). This is
+    // refused at registration with a structured error naming the param — no route is created.
+    let engine = engine_with_mock();
+    let def = endpoint(
+        "shadow",
+        "GET",
+        "/items/:id",
+        "FROM /mock/items |> WHERE id = id",
+    );
+    let result = compile_endpoint(&def, &engine, None);
+    match result {
+        Err(crate::route::CompileError::ParamShadowsColumn { param }) => {
+            assert_eq!(param, "id", "the error must name the shadowing param");
+        }
+        other => panic!("a param shadowing a referenced column must be refused, got: {other:?}"),
+    }
+
+    // And via the binding's reconcile, the shadowing endpoint is SKIPPED (no live route): a GET
+    // against it is 404, never a (silently widened) 200.
+    let mut binding = HttpBinding::new(engine_with_mock(), reads_with_mock(), 10_000);
+    binding
+        .reconcile(&state_with(vec![endpoint(
+            "shadow",
+            "GET",
+            "/items/:id",
+            "FROM /mock/items |> WHERE id = id",
+        )]))
+        .unwrap();
+    assert_eq!(
+        binding.current_router().len(),
+        0,
+        "no route may be registered"
+    );
+    assert_eq!(
+        serve_once(&binding, &HttpRequest::new(Method::Get, "/items/2")).status,
+        404
+    );
+}
+
+#[test]
+fn non_colliding_param_registers_and_serves() {
+    // The benign counterpart: a route param DISTINCT from every queried column registers and
+    // serves normally — the shadow gate does not false-refuse a correctly-authored endpoint.
+    let engine = engine_with_mock();
+    let def = endpoint(
+        "ok",
+        "GET",
+        "/items/:p_id",
+        "FROM /mock/items |> WHERE id = p_id",
+    );
+    assert!(
+        compile_endpoint(&def, &engine, None).is_ok(),
+        "a param distinct from every queried column must register"
+    );
+
+    let mut binding = HttpBinding::new(engine_with_mock(), reads_with_mock(), 10_000);
+    binding
+        .reconcile(&state_with(vec![endpoint(
+            "ok",
+            "GET",
+            "/items/:p_id",
+            "FROM /mock/items |> WHERE id = p_id",
+        )]))
+        .unwrap();
+    assert_eq!(binding.current_router().len(), 1, "the route must register");
+    let resp = serve_once(&binding, &HttpRequest::new(Method::Get, "/items/2"));
+    assert_eq!(resp.status, 200, "body: {}", resp.body_text());
+    assert!(
+        resp.body_text().contains("\"beta\""),
+        "body: {}",
+        resp.body_text()
     );
 }

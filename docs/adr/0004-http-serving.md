@@ -57,10 +57,20 @@ Implemented exactly to the endpoint contract, no more:
   caller auth is E5/E8.
 
 **Out of scope (named follow-ups):** HTTP keep-alive / pipelining, chunked transfer encoding,
-TLS termination, HTTP/2. None are needed for the t32 query-endpoint contract; should they
-become necessary, the `Binding` seam keeps the choice reversible (an `axum`/`hyper` backend
-could be added behind a non-default cargo feature without touching any caller — exactly as
-ADR-0001/0002/0003 kept their vendor choices reversible behind an owned seam).
+TLS termination, HTTP/2, and a **per-connection read timeout (slowloris defence)**. None are
+needed for the t32 query-endpoint contract; should they become necessary, the `Binding` seam
+keeps the choice reversible (an `axum`/`hyper` backend could be added behind a non-default
+cargo feature without touching any caller — exactly as ADR-0001/0002/0003 kept their vendor
+choices reversible behind an owned seam).
+
+**Slowloris / slow-read note.** The in-house `read_request` loop reads header + body up to the
+1 MiB size bound, but has **no per-connection read timeout**: a client that opens a connection
+and dribbles bytes (or never sends the `\r\n\r\n` terminator) holds a spawned task open. This
+is only a vector when the listener is bound to a **non-loopback** address; the t32 default is
+loopback-only (`127.0.0.1:8787`, RFD §10 trusted bind), where the attacker would already be on
+the trusted host. The mitigation when a deployment binds non-loopback is a `tokio::time::timeout`
+around `read_request` (the `time` feature is already enabled) or, preferably, the `hyper`/`axum`
+backend behind the reversibility seam above. Recorded as a follow-up; no code at t32.
 
 ## Tests require no live network
 

@@ -194,6 +194,224 @@ fn rewrite_expr(e: &mut Expr, args: &QueryArgs) {
     }
 }
 
+/// Collect the set of **bare column identifiers** ([`Expr::Col`]) the statement references.
+/// This is the registration-time shadow check's input: if a declared route-param name appears
+/// here, substituting it would replace a real column node (access widening), so the endpoint is
+/// refused at registration. The walk mirrors [`bind_params`] exactly, so it sees every position
+/// a substitution could touch — keeping the check and the rewrite in lockstep (one cannot drift
+/// from the other). Struct-navigation paths ([`Expr::Path`]) are not bare columns and are not a
+/// param substitution target, so they are deliberately NOT collected.
+#[must_use]
+pub fn referenced_columns(stmt: &Statement) -> std::collections::BTreeSet<String> {
+    let mut cols = std::collections::BTreeSet::new();
+    collect_stmt(stmt, &mut cols);
+    cols
+}
+
+fn collect_stmt(stmt: &Statement, out: &mut std::collections::BTreeSet<String>) {
+    match stmt {
+        Statement::Query(p) => collect_pipeline(p, out),
+        Statement::Effect(e) => {
+            match &e.body {
+                EffectBody::Values(v) => collect_values(v, out),
+                EffectBody::Pipeline(p) => collect_pipeline(p, out),
+                EffectBody::SetWhere { set, filter } => {
+                    for a in set {
+                        collect_expr(&a.value, out);
+                    }
+                    if let Some(f) = filter {
+                        collect_expr(f, out);
+                    }
+                }
+            }
+            if let Some(projs) = &e.returning {
+                for proj in projs {
+                    collect_projection(proj, out);
+                }
+            }
+        }
+        Statement::Ddl(d) => {
+            if let Some(p) = &d.do_plan {
+                collect_stmt(p, out);
+            }
+            if let Some(q) = &d.as_query {
+                collect_stmt(q, out);
+            }
+        }
+        Statement::Plan(PlanWrap { inner, .. }) => collect_stmt(inner, out),
+    }
+}
+
+fn collect_pipeline(p: &Pipeline, out: &mut std::collections::BTreeSet<String>) {
+    collect_source(&p.source, out);
+    for op in &p.ops {
+        collect_pipe_op(op, out);
+    }
+}
+
+fn collect_source(s: &Source, out: &mut std::collections::BTreeSet<String>) {
+    match s {
+        Source::Path(_) => {}
+        Source::Values(v) => collect_values(v, out),
+        Source::Subquery(p) => collect_pipeline(p, out),
+    }
+}
+
+fn collect_values(v: &cfs_parser::Values, out: &mut std::collections::BTreeSet<String>) {
+    for row in &v.rows {
+        for e in row {
+            collect_expr(e, out);
+        }
+    }
+}
+
+fn collect_pipe_op(op: &PipeOp, out: &mut std::collections::BTreeSet<String>) {
+    match op {
+        PipeOp::Where(e) => collect_expr(e, out),
+        PipeOp::Select(projs) | PipeOp::Aggregate(projs) => {
+            for p in projs {
+                collect_projection(p, out);
+            }
+        }
+        PipeOp::Extend(assigns) | PipeOp::Set(assigns) => {
+            for a in assigns {
+                collect_expr(&a.value, out);
+            }
+        }
+        PipeOp::GroupBy(exprs) => {
+            for e in exprs {
+                collect_expr(e, out);
+            }
+        }
+        PipeOp::OrderBy(keys) => {
+            for k in keys {
+                collect_expr(&k.expr, out);
+            }
+        }
+        PipeOp::Join(JoinOp { source, on }) => {
+            collect_source(source, out);
+            collect_expr(on, out);
+        }
+        PipeOp::Union(p) | PipeOp::Except(p) | PipeOp::Intersect(p) => collect_pipeline(p, out),
+        PipeOp::Call(c) => {
+            for a in &c.args {
+                collect_expr(&a.value, out);
+            }
+        }
+        PipeOp::Limit(_)
+        | PipeOp::Distinct
+        | PipeOp::As(_)
+        | PipeOp::Expand(_)
+        | PipeOp::Decode(_)
+        | PipeOp::Encode(_) => {}
+    }
+}
+
+fn collect_projection(p: &Projection, out: &mut std::collections::BTreeSet<String>) {
+    if let Projection::Expr { expr, .. } = p {
+        collect_expr(expr, out);
+    }
+}
+
+fn collect_expr(e: &Expr, out: &mut std::collections::BTreeSet<String>) {
+    match e {
+        Expr::Col(ident) => {
+            out.insert(ident.clone());
+        }
+        Expr::Fn(f) => {
+            for a in &f.args {
+                collect_expr(a, out);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_expr(lhs, out);
+            collect_expr(rhs, out);
+        }
+        Expr::Unary { expr, .. } => collect_expr(expr, out),
+        Expr::In { expr, set } | Expr::AnyOp { expr, set, .. } => {
+            collect_expr(expr, out);
+            for s in set {
+                collect_expr(s, out);
+            }
+        }
+        Expr::Between { expr, low, high } => {
+            collect_expr(expr, out);
+            collect_expr(low, out);
+            collect_expr(high, out);
+        }
+        Expr::Like { expr, pattern } => {
+            collect_expr(expr, out);
+            collect_expr(pattern, out);
+        }
+        Expr::Lit(_) | Expr::Path(_) => {}
+    }
+}
+
+/// Collect the `/driver/seg/...` SOURCE PATH strings the statement reads from (every `FROM`
+/// path, including joins / subqueries). The registration-time shadow check resolves each to its
+/// driver schema so it can compare a declared param name against the source's REAL data
+/// columns (the precise access-widening test). `VALUES` / dotted struct paths are not mount
+/// sources and are not collected.
+#[must_use]
+pub fn source_paths(stmt: &Statement) -> Vec<String> {
+    let mut paths = Vec::new();
+    collect_src_paths_stmt(stmt, &mut paths);
+    paths
+}
+
+fn collect_src_paths_stmt(stmt: &Statement, out: &mut Vec<String>) {
+    match stmt {
+        Statement::Query(p) => collect_src_paths_pipeline(p, out),
+        Statement::Effect(e) => {
+            out.push(path_string(&e.target));
+            if let EffectBody::Pipeline(p) = &e.body {
+                collect_src_paths_pipeline(p, out);
+            }
+        }
+        Statement::Ddl(d) => {
+            if let Some(p) = &d.do_plan {
+                collect_src_paths_stmt(p, out);
+            }
+            if let Some(q) = &d.as_query {
+                collect_src_paths_stmt(q, out);
+            }
+        }
+        Statement::Plan(PlanWrap { inner, .. }) => collect_src_paths_stmt(inner, out),
+    }
+}
+
+fn collect_src_paths_pipeline(p: &Pipeline, out: &mut Vec<String>) {
+    collect_src_paths_source(&p.source, out);
+    for op in &p.ops {
+        match op {
+            PipeOp::Join(JoinOp { source, .. }) => collect_src_paths_source(source, out),
+            PipeOp::Union(p) | PipeOp::Except(p) | PipeOp::Intersect(p) => {
+                collect_src_paths_pipeline(p, out)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_src_paths_source(s: &Source, out: &mut Vec<String>) {
+    match s {
+        Source::Path(p) => out.push(path_string(p)),
+        Source::Values(_) => {}
+        Source::Subquery(p) => collect_src_paths_pipeline(p, out),
+    }
+}
+
+/// Reconstruct the `/seg/seg` mount-path string from a [`cfs_parser::PathExpr`]'s segments
+/// (the registry resolves on this leading-slash form).
+fn path_string(p: &cfs_parser::PathExpr) -> String {
+    let mut s = String::new();
+    for seg in &p.segments {
+        s.push('/');
+        s.push_str(&seg.name);
+    }
+    s
+}
+
 /// Convert a typed [`cfs_core::Value`] to a parser [`Literal`] AST node. This is a pure data
 /// mapping — the value's content is carried verbatim into a typed leaf, never re-parsed.
 /// `Null` becomes the null literal; structured/blob values (which a scalar param never
