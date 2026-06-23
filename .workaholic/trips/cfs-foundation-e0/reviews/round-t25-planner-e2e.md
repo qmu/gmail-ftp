@@ -77,3 +77,40 @@ The driver faithfully realizes the ticket's RFD mapping: universal CRUD → Web 
 ## Suite
 
 `crates/driver-slack/tests/planner_e2e.rs` — 28 tests: **26 pass, 2 fail (Finding #7)**. Constructor's in-crate suite: 39 pass. The 2 failures are the deliverable signal of this review.
+
+---
+
+# Re-test gate (round 2) — Constructor fix `14a1d96`, Architect re-review `6d0c2d9`
+
+- **Reviewer**: Planner — re-test of the two findings through the same black-box harness.
+- **Decision: Approve — both fixes verified, re-test 30/30 green, workspace gates green.**
+
+## #7 remove-side idempotency — FIXED, verified end-to-end
+
+Driven through the real `RestSlackClient` over the scripted transport, observed via the COMMIT-path disposition:
+- `REMOVE` an already-absent reaction (`{"ok":false,"error":"no_reaction"}`) → **swallowed as a no-op success (`Ok`)** — was terminal before. (`s7_remove_absent_reaction_no_reaction_outcome`)
+- `slack.unpin` already-unpinned (`{"ok":false,"error":"not_pinned"}`) → **swallowed as a no-op success (`Ok`)** — was terminal before. (`s7_unpin_already_unpinned_not_pinned_outcome`)
+- **Swallow is the already-satisfied class ONLY (new guard test):** a genuine `reactions.remove` failure (`message_not_found`) and a genuine `slack.unpin` failure (`channel_not_found`) **still surface as terminal**, carrying the real Slack code — the fix does not mask real failures. (`s7_genuine_remove_failure_still_surfaces_terminal`)
+- Add-side control still swallows `already_reacted`/`already_pinned`.
+
+Root cause confirmed closed: `SlackEffect::swallows_already_done()` (effect.rs) is now symmetric across the add/remove pair (`AddReaction | RemoveReaction | Pin | Unpin`), in sync with `is_already_done()`'s recognizer.
+
+## #8 strict-ts residual — FIXED, verified
+
+- **Strict `ts > 100`** now pushes `oldest=100` (over-fetch is safe) AND **keeps the strict `ts > 100` residual** so the engine re-excludes the `ts==100` boundary row Slack over-returns → no wrong rows. Symmetric `ts < 200` keeps its residual too. (`s8_strict_gt_pushes_oldest_but_keeps_strict_residual`)
+- **Inclusive control:** `ts >= 100` / `ts <= 200` still correctly **drop** the residual (the inclusive Slack bound is exact) — the fix did not become over-conservative. (`s8_inclusive_ge_still_drops_residual`)
+- The mixed-predicate headline case (`ts >= 100 AND text = 'hi'`) and the `OR`-stays-residual case remain green.
+
+Driver change confirmed: `pushdown.rs` now distinguishes `Lowered::Exact` (`>=`/`<=`, drop residual) from `Lowered::PreFilter` (`>`/`<`, push param but keep the strict comparison residual) — exactly the truthful-residual fix proposed.
+
+## Self-artifact lint fix (Planner QA domain)
+
+`crates/driver-slack/tests/planner_e2e.rs` was missing the conventional test-allow header. Added `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]` at the crate root (matching `crates/driver-github/tests/e2e_blackbox.rs`). `cargo clippy --workspace --all-targets -- -D warnings` is now **fully green** (previously ~46 lint errors from this file).
+
+## Gates
+
+- `cargo test -p cfs-driver-slack --test planner_e2e`: **30/30 pass** (was 26/28).
+- `cargo clippy --workspace --all-targets -- -D warnings`: **green**.
+- `cargo test --workspace`: **green, 730 passed, 0 failed** (Constructor reported 728; +2 are my new guard tests — genuine-remove-failure and the split strict/inclusive residual assertions).
+
+**Verdict: re-test approved 30/30; the `--all-targets` clippy gate is green. No remaining concerns.**

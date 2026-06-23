@@ -13,6 +13,11 @@
 //! - signature/event: the `SlackInbound`/`EventError`;
 //! - secret safety: planted canaries scanned across plan/preview/error/Debug/log surfaces.
 
+// Conventional test-allow header (the same one every other test crate carries, e.g.
+// crates/driver-github/tests/e2e_blackbox.rs): a black-box harness asserts via unwrap/expect/panic,
+// which the workspace `-D warnings` clippy gate otherwise rejects.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::sync::{Arc, Mutex};
 
 use cfs_driver::{check_capability, Driver, Path, Verb};
@@ -823,6 +828,43 @@ fn s7_control_add_side_already_done_is_swallowed() {
     );
 }
 
+/// The swallow must be the **already-satisfied class only**, not "swallow all remove errors". A
+/// genuine remove failure (e.g. `message_not_found` on a reaction remove) must STILL surface as a
+/// terminal error — otherwise the fix would mask real failures.
+#[test]
+fn s7_genuine_remove_failure_still_surfaces_terminal() {
+    // reactions.remove that genuinely fails (the message does not exist) — NOT an already-done code.
+    let node = EffectNode::new(
+        NodeId(0),
+        EffectKind::Remove,
+        target("/slack/acme/#general/messages/9.9/reactions"),
+    )
+    .with_args(args(&[("emoji", Value::Text("tada".into()))]));
+    let (out, _t) =
+        commit_one_via_rest(node, vec![ok_json(r#"{"ok":false,"error":"message_not_found"}"#)]);
+    let err = out.expect_err("a genuine remove failure must NOT be swallowed");
+    assert_eq!(err.code(), "terminal", "real remove failure stays terminal");
+    assert!(
+        format!("{err}").contains("message_not_found"),
+        "carries the real Slack error code, not a silent success"
+    );
+
+    // Symmetrically, an unpin that genuinely fails (bad channel) must also surface terminal.
+    let unpin = EffectNode::new(
+        NodeId(0),
+        EffectKind::Call(ProcId::new("slack.unpin")),
+        target("/slack/acme/#general/messages"),
+    )
+    .with_args(args(&[("ts", Value::Text("5.5".into()))]));
+    let (out, _t) = commit_one_via_rest(
+        unpin,
+        vec![ok_json(r#"{"ok":false,"error":"channel_not_found"}"#)],
+    );
+    let err = out.expect_err("a genuine unpin failure must NOT be swallowed");
+    assert_eq!(err.code(), "terminal");
+    assert!(format!("{err}").contains("channel_not_found"));
+}
+
 // =====================================================================================
 // Scenario 8: pushdown residual truthfulness
 //   ts boundary (pushable) mixed with a non-pushable predicate keeps the exact residual.
@@ -867,31 +909,62 @@ fn s8_or_predicate_stays_wholly_residual() {
     );
 }
 
-/// PROBE: a STRICT `ts > 100` lowers to `oldest=100`. Slack's `oldest` is INCLUSIVE, so a row at
-/// ts==100 would be returned by Slack yet must be excluded by `> 100`. If the strict conjunct is
-/// dropped from the residual, the engine cannot re-exclude the boundary row → a truthfulness gap.
-/// We record exactly what the driver does.
+/// FIX RE-TEST (#8): a STRICT `ts > 100` must push `oldest=100` (Slack's inclusive bound is a fine
+/// pre-filter — over-fetch is safe) BUT must KEEP the strict `ts > 100` residual so the engine
+/// re-excludes the `ts == 100` boundary row Slack would otherwise over-return. This is the
+/// truthful-residual invariant: a pre-filter looser than the SQL predicate may never drop the
+/// predicate.
 #[test]
-fn s8_probe_strict_gt_boundary_residual_truthfulness() {
+fn s8_strict_gt_pushes_oldest_but_keeps_strict_residual() {
     let ts_gt = Predicate::Cmp(ColRef::col("ts"), CmpOp::Gt, Literal::Text("100".into()));
-    let plan = ReadPlan::list(NodeKind::Messages, Some(&ts_gt.clone()));
-    println!(
-        "S8 probe strict `ts > 100`: params={:?} residual={:?}",
+    let plan = ReadPlan::list(NodeKind::Messages, Some(&ts_gt));
+    assert_eq!(
         plan.params(),
-        plan.pushdown.residual
+        &[("oldest".to_string(), "100".to_string())],
+        "strict > still pushes oldest=100 as a pre-filter (over-fetch is safe)"
     );
-    // The pushed param is oldest=100 (inclusive); the strict `>` is dropped from the residual.
-    // Slack `oldest` default is inclusive, so the ts==100 boundary row is over-returned and NOT
-    // re-excluded locally → a potential off-by-one truthfulness gap on the strict boundary.
-    // We assert the OBSERVED behaviour and flag it in the report (not a hard failure of the suite).
-    if plan.params() == [("oldest".to_string(), "100".to_string())]
-        && plan.pushdown.residual.is_none()
-    {
-        println!(
-            "S8 FINDING: strict `>` lowered to inclusive `oldest=` and residual dropped — the \
-             ts==100 boundary row would be over-returned with no local re-exclusion."
-        );
-    }
+    assert_eq!(
+        plan.pushdown.residual,
+        Some(Predicate::Cmp(
+            ColRef::col("ts"),
+            CmpOp::Gt,
+            Literal::Text("100".into())
+        )),
+        "the strict `ts > 100` MUST stay residual so the ts==100 boundary row is re-excluded → no wrong rows"
+    );
+
+    // Symmetric strict `<` keeps its residual too.
+    let ts_lt = Predicate::Cmp(ColRef::col("ts"), CmpOp::Lt, Literal::Text("200".into()));
+    let plan = ReadPlan::list(NodeKind::Messages, Some(&ts_lt));
+    assert_eq!(plan.params(), &[("latest".to_string(), "200".to_string())]);
+    assert_eq!(
+        plan.pushdown.residual,
+        Some(Predicate::Cmp(
+            ColRef::col("ts"),
+            CmpOp::Lt,
+            Literal::Text("200".into())
+        )),
+        "strict < keeps its residual symmetrically"
+    );
+}
+
+/// CONTROL (#8): an INCLUSIVE `ts >= 100` still correctly DROPS its residual (the inclusive Slack
+/// `oldest` boundary means exactly `>=`, so re-checking would be redundant). The fix must not have
+/// made the inclusive case over-conservative.
+#[test]
+fn s8_inclusive_ge_still_drops_residual() {
+    let ts_ge = Predicate::Cmp(ColRef::col("ts"), CmpOp::Ge, Literal::Text("100".into()));
+    let plan = ReadPlan::list(NodeKind::Messages, Some(&ts_ge));
+    assert_eq!(plan.params(), &[("oldest".to_string(), "100".to_string())]);
+    assert!(
+        plan.pushdown.residual.is_none(),
+        "inclusive >= is exact against Slack's inclusive oldest → residual correctly dropped"
+    );
+
+    let ts_le = Predicate::Cmp(ColRef::col("ts"), CmpOp::Le, Literal::Text("200".into()));
+    let plan = ReadPlan::list(NodeKind::Messages, Some(&ts_le));
+    assert_eq!(plan.params(), &[("latest".to_string(), "200".to_string())]);
+    assert!(plan.pushdown.residual.is_none(), "inclusive <= drops residual symmetrically");
 }
 
 // =====================================================================================
