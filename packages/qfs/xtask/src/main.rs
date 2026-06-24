@@ -45,7 +45,19 @@ fn main() -> ExitCode {
             let docs_root = qfs::docs::find_repo_root(&repo_root);
             cmd_gen_docs(&docs_root, check)
         }
-        Some("dist") => cmd_dist(&repo_root),
+        Some("dist") => {
+            // Optional selection so each CI runner builds only the artifact it can:
+            //   xtask dist                       all native targets + wasm (local/single runner)
+            //   xtask dist --target <triple>…    only those native target(s) (no wasm)
+            //   xtask dist --wasm                only the wasm artifact
+            let targets: Vec<String> = args
+                .windows(2)
+                .filter(|w| w[0] == "--target")
+                .map(|w| w[1].clone())
+                .collect();
+            let want_wasm = args.iter().any(|a| a == "--wasm");
+            cmd_dist(&repo_root, &targets, want_wasm)
+        }
         Some("help") | Some("--help") | None => {
             print_help();
             ExitCode::SUCCESS
@@ -108,7 +120,7 @@ fn cmd_gen_docs(repo_root: &Path, check: bool) -> ExitCode {
 /// `dist`: the release-artifact pipeline. **CI-only**: refuses to run locally (it would wedge
 /// the constrained disk and the full-binary wasm build is parked). The matrix + steps are real
 /// and reviewable; `release.yml` invokes this in CI where `QFS_DIST_ALLOW=1` is set.
-fn cmd_dist(repo_root: &Path) -> ExitCode {
+fn cmd_dist(repo_root: &Path, sel_targets: &[String], sel_wasm: bool) -> ExitCode {
     let allowed = std::env::var("QFS_DIST_ALLOW").as_deref() == Ok("1");
     if !allowed {
         eprintln!(
@@ -130,8 +142,19 @@ fn cmd_dist(repo_root: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // Decide what this invocation builds. With no selection, build everything (the local /
+    // single-runner shape). With `--target`/`--wasm`, build only the requested slice so a CI
+    // matrix can fan one target out per runner (Linux can't link macOS, etc.).
+    let build_all = sel_targets.is_empty() && !sel_wasm;
+    let natives: Vec<&str> = if build_all {
+        NATIVE_TARGETS.to_vec()
+    } else {
+        sel_targets.iter().map(String::as_str).collect()
+    };
+    let do_wasm = build_all || sel_wasm;
+
     // Native tarballs: build --release per target, strip, sha256, tarball into dist/.
-    for target in NATIVE_TARGETS {
+    for target in &natives {
         if let Err(e) = build_native(repo_root, &dist_dir, target) {
             eprintln!("xtask dist: native target {target} failed: {e}");
             return ExitCode::FAILURE;
@@ -140,9 +163,11 @@ fn cmd_dist(repo_root: &Path) -> ExitCode {
 
     // The wasm artifact: build the wasm-clean facet for wasm32 and fail loudly on a non-wasm
     // symbol (rather than silently shipping a broken artifact, RFD §9).
-    if let Err(e) = build_wasm(repo_root, &dist_dir) {
-        eprintln!("xtask dist: wasm artifact failed: {e}");
-        return ExitCode::FAILURE;
+    if do_wasm {
+        if let Err(e) = build_wasm(repo_root, &dist_dir) {
+            eprintln!("xtask dist: wasm artifact failed: {e}");
+            return ExitCode::FAILURE;
+        }
     }
 
     println!("xtask dist: artifacts in {}", dist_dir.display());
@@ -225,13 +250,32 @@ fn build_wasm(repo_root: &Path, dist_dir: &Path) -> std::io::Result<()> {
 
 /// Write a `<file>.sha256` next to an artifact (the checksum `install.sh` verifies).
 fn write_sha256(path: &Path) -> std::io::Result<()> {
-    // Delegate to the platform `sha256sum` (Linux CI) — keeps xtask dep-light (no sha2 crate).
-    let out = std::process::Command::new("sha256sum").arg(path).output()?;
-    if out.status.success() {
-        let sum = String::from_utf8_lossy(&out.stdout);
-        std::fs::write(path.with_extension("sha256"), sum.as_bytes())?;
+    // Use the platform checksum tool: `sha256sum` (Linux CI) or `shasum -a 256` (macOS runner).
+    // Both emit `<hex>  <name>`, the exact format install.sh verifies. Keeps xtask dep-light.
+    // Run inside the artifact dir and pass the bare file name so the checksum line names the
+    // tarball (not an absolute path). The sidecar is `<tarball>.sha256` (e.g.
+    // `qfs-<triple>.tar.gz.sha256`) — note `with_extension` would wrongly yield `…tar.sha256`.
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    let tools: [(&str, &[&str]); 2] = [("sha256sum", &[]), ("shasum", &["-a", "256"])];
+    for (cmd, pre) in tools {
+        let mut c = std::process::Command::new(cmd);
+        c.current_dir(dir).args(pre).arg(&name);
+        if let Ok(out) = c.output() {
+            if out.status.success() {
+                let sidecar = dir.join(format!("{}.sha256", name.to_string_lossy()));
+                std::fs::write(sidecar, &out.stdout)?;
+                return Ok(());
+            }
+        }
     }
-    Ok(())
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "no sha256sum or shasum (-a 256) on PATH to checksum the artifact",
+    ))
 }
 
 /// Run a command in `cwd`, mapping a non-zero exit to an `io::Error`.

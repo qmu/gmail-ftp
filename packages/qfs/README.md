@@ -94,7 +94,7 @@ for (RFD §9):
 
 ```
 $ qfs --version
-qfs 0.0.0
+qfs 0.0.1
 commit:  <git-sha>
 target:  x86_64-unknown-linux-gnu
 wasm32:  false

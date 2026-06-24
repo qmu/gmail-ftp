@@ -13,6 +13,12 @@ The script detects your OS and architecture, downloads the matching release, **v
 checksum before extracting**, and installs `qfs` to `~/.local/bin`. It never asks for or fetches
 any credential.
 
+::: tip Requires a published release
+The script downloads from the project's GitHub Releases. If no release has been published yet,
+[build from source](#build-from-source) instead — it's one command. (Releases are cut by pushing a
+`v*` tag, which builds the Linux and macOS binaries in CI and attaches them.)
+:::
+
 To install somewhere else:
 
 ```sh

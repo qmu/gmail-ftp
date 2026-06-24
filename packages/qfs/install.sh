@@ -8,7 +8,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/qmu/qfs/main/packages/qfs/install.sh | sh
-#   QFS_VERSION=v0.1.0 QFS_INSTALL_DIR=/usr/local/bin sh install.sh
+#   QFS_VERSION=v0.0.1 QFS_INSTALL_DIR=/usr/local/bin sh install.sh
 set -eu
 
 REPO="qmu/qfs"

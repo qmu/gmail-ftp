@@ -1,17 +1,12 @@
 name: qfs release
 
-# Tag-triggered release pipeline (ticket t40, RFD-0001 §1/§9). On a `v*` tag, build the release
-# artifacts via `cargo run -p xtask -- dist` (the cross-compile matrix → strip → sha256 → tarball
-# pipeline), then attach the per-target tarballs + checksums to the GitHub Release. `install.sh`
-# consumes these artifacts.
+# Tag-triggered release pipeline. On a `v*` tag, build the per-target release tarballs — each on a
+# runner that can actually link it (Linux musl on Ubuntu, macOS on a macOS runner) — plus the wasm
+# artifact, then attach them all to a GitHub Release. `install.sh` consumes these.
 #
-# WHY xtask dist runs here and not locally (ADR-0007, mirrors t36/ADR-0005): a release build wedges
-# the constrained trip host's disk, the full-workspace wasm build is parked (only the pure cores are
-# wasm-clean — t36), and musl static cross-link needs the cross toolchain this job installs. So the
-# pipeline is CI-only; `xtask dist` refuses to run unless QFS_DIST_ALLOW=1 (set here).
-#
-# No secret / credential is used anywhere (RFD §10): only the auto-provided GITHUB_TOKEN to attach
-# the release assets. No live token is ever embedded in an artifact.
+# Each job runs `cargo run -p xtask -- dist --target <triple>` (or `--wasm`), which builds, strips,
+# tarballs, and writes a `<tarball>.sha256`. `xtask dist` refuses to run unless QFS_DIST_ALLOW=1
+# (set here) — it is CI-only by design. No secret is used beyond the auto-provided GITHUB_TOKEN.
 
 on:
   push:
@@ -23,60 +18,95 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  QFS_DIST_ALLOW: "1"   # authorize the CI-only `xtask dist` (see ADR-0007)
+  QFS_DIST_ALLOW: "1"   # authorize the CI-only `xtask dist`
 
-# The Cargo workspace lives under packages/qfs/ (monorepo layout). All `run:` steps
-# execute there; `uses:` actions (checkout, rust-cache, gh-release) take explicit paths.
 defaults:
   run:
     working-directory: packages/qfs
 
 jobs:
-  dist:
-    name: build release artifacts (4 native tarballs + wasm)
+  # One native tarball per target, each on a runner that can link it.
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/qfs
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+      - name: Install Linux cross/musl toolchain
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
+      - name: Build tarball
+        env:
+          # Used only for the aarch64 musl target; harmless for the others.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+        run: cargo run -p xtask -- dist --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qfs-${{ matrix.target }}
+          path: |
+            packages/qfs/dist/qfs-${{ matrix.target }}.tar.gz
+            packages/qfs/dist/qfs-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  # The size-optimized wasm artifact (Ubuntu).
+  wasm:
+    name: build wasm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/qfs
-
-      - name: Add release targets
-        run: |
-          rustup target add x86_64-unknown-linux-musl
-          rustup target add aarch64-unknown-linux-musl
-          rustup target add wasm32-unknown-unknown
-          # macOS targets are added for completeness; the darwin tarballs are produced on a
-          # macos runner in a matrixed release (omitted here for brevity — the xtask matrix lists
-          # all four native targets, and a follow-up macos job fills the darwin slots).
-
-      - name: Install musl + cross linkers
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
-
-      # Anti-drift gate: the committed docs MUST match what the binary generates, or the release
-      # is stale. This is the same check the CI workflow runs, re-asserted at release time.
-      - name: Verify generated docs are in sync
-        run: cargo run -p xtask -- gen-docs --check
-
-      - name: Build release artifacts (xtask dist)
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
-        run: cargo run -p xtask -- dist
-
-      # Credential-shape grep gate (RFD §10): fail the release if any live-credential shape leaked
-      # into a generated doc, an example, or a release artifact. Placeholder handles only.
-      - name: Credential-shape gate (no live secrets in artifacts)
-        run: bash scripts/check-no-live-credentials.sh
-
-      - name: Attach artifacts to the GitHub Release
-        uses: softprops/action-gh-release@v2
+      - run: rustup target add wasm32-unknown-unknown
+      - name: Build wasm artifact
+        run: cargo run -p xtask -- dist --wasm
+      - uses: actions/upload-artifact@v4
         with:
-          files: |
-            packages/qfs/dist/qfs-*.tar.gz
-            packages/qfs/dist/qfs-*.tar.gz.sha256
+          name: qfs-wasm
+          path: |
             packages/qfs/dist/qfs.wasm
             packages/qfs/dist/qfs.wasm.sha256
+          if-no-files-found: error
+
+  # Collect every artifact and publish the GitHub Release.
+  release:
+    name: publish release
+    needs: [build, wasm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Credential-shape gate (no live secrets in docs/examples)
+        run: bash scripts/check-no-live-credentials.sh
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: List artifacts
+        working-directory: dist
+        run: ls -l
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
