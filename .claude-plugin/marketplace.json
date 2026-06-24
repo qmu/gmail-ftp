@@ -1,0 +1,25 @@
+{
+  "name": "qfs",
+  "version": "0.1.0",
+  "description": "One pipe-SQL query language for every service, plus a skill teaching coding agents to drive it",
+  "owner": {
+    "name": "tamurayoshiya",
+    "email": "a@qmu.jp"
+  },
+  "plugins": [
+    {
+      "name": "qfs",
+      "description": "Use when a task needs to read or modify any service the user has connected — mail, files, databases, GitHub, Slack, git, cloud storage — through the qfs pipe-SQL query language and the qfs CLI.",
+      "version": "0.1.0",
+      "author": {
+        "name": "tamurayoshiya",
+        "email": "a@qmu.jp"
+      },
+      "source": "./plugins/qfs",
+      "category": "development",
+      "skills": [
+        "./skills/qfs"
+      ]
+    }
+  ]
+}

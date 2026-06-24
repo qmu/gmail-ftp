@@ -1,0 +1,20 @@
+{
+  "name": "qfs",
+  "interface": {
+    "displayName": "qfs"
+  },
+  "plugins": [
+    {
+      "name": "qfs",
+      "source": {
+        "source": "local",
+        "path": "./plugins/qfs"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
