@@ -40,7 +40,10 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("gen-docs") => {
             let check = args.iter().any(|a| a == "--check");
-            cmd_gen_docs(&repo_root, check)
+            // The generated `docs/` tree lives at the git repo root (above the packages/qfs
+            // workspace), not in the workspace dir that `dist` writes its artifacts to.
+            let docs_root = qfs::docs::find_repo_root(&repo_root);
+            cmd_gen_docs(&docs_root, check)
         }
         Some("dist") => cmd_dist(&repo_root),
         Some("help") | Some("--help") | None => {

@@ -32,7 +32,7 @@ operating procedure ships embedded in the binary — run `qfs skill` (and `qfs s
 - **Closed core + three open registries** (RFD §3). The language is a *closed core* — a frozen set
   of keywords and operators. A new backend adds **zero** keywords. Everything extensible is a
   registry entry:
-  - **paths** — a new mount (`/mail`, `/s3`, `/github`, …). See [`docs/drivers.md`](docs/drivers.md).
+  - **paths** — a new mount (`/mail`, `/s3`, `/github`, …). See [`docs/drivers.md`](../../docs/drivers.md).
   - **functions / procedures** — a registered `CALL driver.action(..)` + pure prelude aliases.
   - **codecs** — a registered `DECODE`/`ENCODE` format (json, jsonl, yaml, toml, csv, md).
 - **Four archetypes** (RFD §5). Every node is Blob, Relational, Append, or ObjectGraph; each
@@ -40,10 +40,10 @@ operating procedure ships embedded in the binary — run `qfs skill` (and `qfs s
   the agent never plans a rejected op.
 - **Purity invariant** (RFD §3/§6). Every function/alias produces a `Plan` and performs no I/O.
   `SEND(d)` does not send mail — it desugars to a `CALL mail.send` node in a `Plan`. Nothing
-  happens until `COMMIT`. See [`docs/language.md`](docs/language.md).
+  happens until `COMMIT`. See [`docs/language.md`](../../docs/language.md).
 - **Least privilege** (RFD §10). Credentials are stored per driver/account (`qfs account add`),
   never inline in a config, a log, or a doc. `CREATE POLICY` gates writes by verb / path /
-  irreversibility. See [`docs/server.md`](docs/server.md).
+  irreversibility. See [`docs/server.md`](../../docs/server.md).
 
 ## Install
 
@@ -102,16 +102,16 @@ wasm32:  false
 
 ## Documentation
 
-The reference docs under [`docs/`](docs/) are **generated from the binary's own registries** (run
+The reference docs under [`docs/`](../../docs/) are **generated from the binary's own registries** (run
 `cargo run -p xtask -- gen-docs`) so they can never drift from the code:
 
-- [`docs/language.md`](docs/language.md) — the pipe-SQL grammar (EBNF), the **frozen reserved-word
+- [`docs/language.md`](../../docs/language.md) — the pipe-SQL grammar (EBNF), the **frozen reserved-word
   table**, the open-registry governance rules, and the purity invariant.
-- [`docs/drivers.md`](docs/drivers.md) — the **generated driver catalog**: archetypes,
+- [`docs/drivers.md`](../../docs/drivers.md) — the **generated driver catalog**: archetypes,
   capabilities (supported *and* unsupported verbs, shown explicitly), procedures, codecs.
-- [`docs/server.md`](docs/server.md) — the server guide: `CREATE ENDPOINT|TRIGGER|JOB|VIEW|WEBHOOK
+- [`docs/server.md`](../../docs/server.md) — the server guide: `CREATE ENDPOINT|TRIGGER|JOB|VIEW|WEBHOOK
   |POLICY`, bindings, and the t36 deployment mapping.
-- [`docs/README.md`](docs/README.md) — the docs index (architecture, ADRs, the agent skill).
+- [`docs/README.md`](../../docs/README.md) — the docs index (architecture, ADRs, the agent skill).
 - [`crates/skill/assets/SKILL.md`](crates/skill/assets/SKILL.md) — the embedded AI operating
   procedure (also via `qfs skill`).
 
@@ -146,8 +146,8 @@ and PATCH releases.
 ## Deploy
 
 The same `CREATE …` bindings deploy onto two production hosts behind the `RuntimeHost` seam
-([ADR-0005](docs/adr/0005-deployment-hosts.md)). qfs documents the mapping in
-[`docs/server.md`](docs/server.md#deployment-mapping-t36-rfd-8); ticket **t36** builds the host
+([ADR-0005](../../docs/adr/0005-deployment-hosts.md)). qfs documents the mapping in
+[`docs/server.md`](../../docs/server.md#deployment-mapping-t36-rfd-8); ticket **t36** builds the host
 adapters (EC2 daemon live; Cloudflare Workers honestly parked while the worker crate is offline).
 
 ## License

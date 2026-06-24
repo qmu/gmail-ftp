@@ -1,0 +1,12 @@
+# Dev-environment docs: `docker compose up docs` serves the VitePress site with hot reload at
+# http://localhost:5173. Only ./docs is mounted, so editing any markdown (or the .vitepress
+# config) reloads the browser; node_modules lives in the image.
+services:
+  docs:
+    build:
+      context: .
+      dockerfile: Dockerfile.docs
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./docs:/app/docs

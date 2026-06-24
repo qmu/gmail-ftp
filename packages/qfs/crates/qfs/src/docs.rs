@@ -375,6 +375,22 @@ pub fn check_docs(repo_root: &Path) -> std::io::Result<Vec<DriftError>> {
     Ok(drift)
 }
 
+/// Resolve the git repo root by walking up from `start` until a directory holding a `.git` entry
+/// is found. The top-level `docs/` tree (and the `DOC` paths above) live at that root, which sits
+/// above the `packages/qfs/` Cargo workspace in the monorepo layout. Falls back to `start` when no
+/// `.git` is found (e.g. a source tarball), preserving whatever layout is present.
+#[must_use]
+pub fn find_repo_root(start: &Path) -> PathBuf {
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        if d.join(".git").exists() {
+            return d.to_path_buf();
+        }
+        dir = d.parent();
+    }
+    start.to_path_buf()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,12 +477,10 @@ mod tests {
     /// in CI). This runs in an EXISTING test binary (qfs's lib tests), not a new one.
     #[test]
     fn committed_docs_match_generated_output() {
-        // The repo root is two levels up from this crate (`crates/qfs`).
-        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("crates/qfs has a grandparent (the repo root)");
-        let drift = check_docs(repo_root).expect("docs are readable");
+        // The top-level `docs/` tree lives at the git repo root (above the packages/qfs
+        // workspace), located by walking up to the `.git` dir.
+        let repo_root = find_repo_root(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
+        let drift = check_docs(&repo_root).expect("docs are readable");
         assert!(
             drift.is_empty(),
             "committed docs are stale: {:?}. Run `cargo run -p xtask -- gen-docs` and commit.",

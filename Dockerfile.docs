@@ -1,0 +1,15 @@
+# VitePress dev server for the qfs documentation site (content at repo-root docs/).
+# Dev-environment only: hot-reloads as you edit docs/. See docker-compose.yml.
+FROM node:22-alpine
+
+WORKDIR /app
+
+# Install the docs toolchain (vitepress) into the image. node_modules stays in the image so the
+# bind-mounted ./docs (see docker-compose.yml) carries only markdown — edits hot-reload.
+COPY package.json package-lock.json* ./
+RUN npm install
+
+EXPOSE 5173
+
+# docs/ is bind-mounted at runtime; vitepress watches it and rebuilds on save.
+CMD ["npm", "run", "docs:dev"]

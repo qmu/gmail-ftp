@@ -1,0 +1,6 @@
+# Keep the docs image build context tiny: never ship the Rust build tree, node_modules, or git.
+.git
+**/target
+node_modules
+docs/.vitepress/cache
+docs/.vitepress/dist
