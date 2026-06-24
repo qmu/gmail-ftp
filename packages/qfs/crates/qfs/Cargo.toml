@@ -1,0 +1,94 @@
+[package]
+name = "qfs"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs: the single binary (CLI + server) for the AI-driven, DSL-programmable multi-service control plane (RFD-0001)."
+
+# The library facet (t40): the composition-root code reused by both the `qfs` binary and the
+# `xtask` build tool. xtask links this to call `qfs::docs::gen_docs` over the binary's OWN
+# describe registry (anti-drift). The binary stays the product; the lib ships no extra weight.
+[lib]
+name = "qfs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qfs"
+path = "src/main.rs"
+
+[dependencies]
+qfs-cmd = { path = "../cmd" }
+# t28 interactive shell: the binary is the ONE place that owns the runtime-coupled local read
+# facet. It is an allowlisted `qfs-runtime` consumer AND a leaf (nothing depends on it), so the
+# `qfs → qfs-driver-local → qfs-runtime` edge keeps tokio confined (it dead-ends in the leaf).
+# Putting the adapter here — rather than in qfs-cmd — is what keeps qfs-cmd off both the runtime
+# and the driver crates (the runtime-leaf-confinement guard would fire on a `qfs-cmd →
+# qfs-driver-local` edge). The pure shell LOGIC stays in qfs-exec; the binary only wires the
+# registries + REPL driver and injects them via qfs_cmd's ShellLauncher.
+qfs-core = { path = "../core" }
+qfs-exec = { path = "../exec" }
+qfs-driver-local = { path = "../driver-local" }
+# t39 CO-t39-1 `qfs skill` composition root: the binary links the embedded agent skill so SKILL.md
+# (and the example corpus) genuinely SHIP in the artifact and an AI agent can discover the uniform
+# DESCRIBE->statement->PREVIEW->COMMIT loop by RUNNING the binary (`qfs skill`). This is a NORMAL dep
+# edge (not a dev-dep), required so the `include_str!` consts are reachable and not dead-stripped.
+# qfs-skill's own `[dependencies]` is empty (its driver edges are dev-deps for the golden corpus
+# only), so this edge adds ZERO transitive runtime/driver weight to the binary.
+qfs-skill = { path = "../skill" }
+# t39 `qfs describe` composition root: the binary owns the **describe-only** driver registry the
+# subcommand consults. DESCRIBE is PURE (no creds, no I/O, no network), so each driver is built
+# with its public, cred-free mock client (gmail/gdrive/github/slack/ga) or an empty registry
+# (s3/r2 ObjRegistry) — only the introspective half (describe/capabilities/procedures/prelude/
+# pushdown) is ever called. These are path-deps already in the workspace (no new external crates),
+# and the binary is the allowlisted leaf that may carry the `qfs-driver-*` edges (qfs-cmd stays off
+# them). sql/git/cf need a registered catalog/repo for describe (a registration requirement, not a
+# cred one) and are covered by the qfs-skill golden corpus instead.
+qfs-driver-gmail = { path = "../driver-gmail" }
+qfs-driver-gdrive = { path = "../driver-gdrive" }
+qfs-driver-github = { path = "../driver-github" }
+qfs-driver-slack = { path = "../driver-slack" }
+qfs-driver-ga = { path = "../driver-ga" }
+qfs-driver-objstore = { path = "../driver-objstore" }
+qfs-pushdown = { path = "../pushdown" }
+# t32 serve composition root: the binary (the terminal sink, the HTTP sibling of the t28 shell
+# composition root) wires the HTTP serving binding (qfs-http). qfs-http is a LEAF that consumes
+# qfs-server + the qfs-exec read executor + tokio; putting its composition here keeps qfs-cmd
+# off qfs-exec/qfs-http and lets tokio dead-end in the terminal binary.
+qfs-http = { path = "../http" }
+# t33 serve composition root: the binary ALSO wires the cron JOB scheduler binding (qfs-cron, a
+# leaf consuming qfs-server + qfs-exec, the cron sibling of qfs-http). The binary builds the
+# CronBinding + the binary-local JobStore + the committer + the native daemon loop here, so
+# qfs-cron's feature-gated tokio dead-ends in the terminal binary and qfs-cmd stays off it. The
+# `native` feature (default-on) is required for the CronBinding + RecordingCommitter + daemon.
+qfs-cron = { path = "../cron" }
+# t34 serve composition root: the binary ALSO wires the watchtower binding (qfs-watchtower, a leaf
+# consuming qfs-server + qfs-exec, the watchtower sibling of qfs-http/qfs-cron). The binary builds
+# the WatchtowerBinding + the shared LocalBus + the injected Committer + the dispatch loop here, and
+# composes the webhook ingest into the qfs-http listener via a fallback closure (so qfs-watchtower
+# serves no HTTP itself and neither leaf depends on the other). qfs-watchtower's feature-gated tokio
+# (bus MPSC + watcher tasks) dead-ends in the terminal binary; qfs-cmd stays off it.
+qfs-watchtower = { path = "../watchtower" }
+# The shared secrets surface the watchtower resolves webhook signing secrets from (by handle).
+qfs-secrets = { path = "../secrets" }
+# t36 deployment host-adapter seam: the binary composes the daemon's TokioHost: RuntimeHost,
+# REUSING the existing qfs-http/qfs-cron/qfs-watchtower serve composition behind the trait, and
+# wires the fsync'd FileDurableStore + the on-disk AuditLedger. `host-daemon` is the EC2/Linux
+# build feature (mutually exclusive with `host-workers`); it pulls qfs-host's qfs-server-backed
+# conversion + daemon primitives. qfs-host is a leaf consumed only by this terminal binary.
+qfs-host = { path = "../host", features = ["host-daemon"] }
+# The serve composition builds a tokio runtime to drive the async listener + supervised wait.
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "signal", "macros"] }
+async-trait = { workspace = true }
+# Secret-free structured logging for the watchtower dispatch loop (the same target the serve
+# bindings log under). No secrets ever logged (RFD §10).
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Temp-dir fixtures for the shell's end-to-end local read tests (never touches user files).
+tempfile = "3"
+
+[lints]
+workspace = true

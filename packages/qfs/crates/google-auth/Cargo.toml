@@ -1,0 +1,44 @@
+[package]
+name = "qfs-google-auth"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs shared Google OAuth2 + multi-account auth base (RFD-0001 §5/§10, t19): the loopback authorization-code flow, access-token exchange/refresh, per-account refresh-token storage via qfs-secrets, profile-email account identity, and the reusable TokenSource + authenticated Google API client the Gmail (t20), Drive (t21), and Analytics (t41) drivers build on. Scope-agnostic (callers pass their minimum scopes). Tokens are qfs_secrets::Secret — never logged, never in error Display/Debug. Network rides a thin, synchronous, runtime-free HttpExchange seam (mirroring the t18 HttpClient shape) — kept local so this crate does NOT depend on qfs-driver-http (which depends on qfs-runtime): the runtime-leaf confinement invariant stays intact and reqwest stays confined to qfs-driver-http. The consuming drivers adapt their Arc<dyn qfs_driver_http::HttpClient> to HttpExchange. This crate constructs no Plan and no driver effects, keeping the effect-as-data spine intact."
+
+[dependencies]
+# The Secret type + the Secrets store + (driver, account) keys: per-account refresh tokens
+# are persisted/resolved through this one surface; raw tokens never leave a `Secret`. Among
+# workspace crates it depends only on qfs-secrets + qfs-http-core, both of which reach no
+# further than qfs-types, so qfs-google-auth stays off qfs-runtime and the spine confinement
+# test stays green (qfs-secrets -> qfs-types; qfs-http-core -> qfs-secrets -> qfs-types).
+qfs-secrets = { path = "../secrets" }
+# The shared pure HTTP DTO + redaction leaf (t19 refinement): the single source of truth for
+# HttpMethod/HttpRequest/HttpResponse and the SENSITIVE_HEADERS redaction set. This crate keeps
+# its local HttpExchange seam + MockExchange (so it does NOT depend on qfs-driver-http, which
+# depends on qfs-runtime and must stay a leaf); only the DTOs + redaction come from qfs-http-core,
+# so the OAuth seam and the REST driver can never drift to a different redaction set. qfs-http-core
+# is itself a pure leaf, so this edge keeps qfs-google-auth off qfs-runtime exactly as before.
+qfs-http-core = { path = "../http-core" }
+# Owned auth-flow + token DTOs (de)serialize from the Google token/userinfo JSON. No vendor
+# SDK type ever appears in a public signature (RFD §171/§9 — owned DTOs only).
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Structured, secret-free AuthError taxonomy (RFD §5/§103, AI-legible).
+thiserror = { workspace = true }
+# Auth-flow lifecycle logging at debug (port bound, code received, refresh performed) with
+# token values redacted — only the account email (a low-sensitivity id) is ever emitted.
+tracing = { workspace = true }
+# URL building (the consent/auth URL) + parsing the loopback redirect (extract code/state).
+# A small, vendor-neutral utility; no HTTP client, so the spine stays clean.
+url = "2"
+
+[dev-dependencies]
+# Tests drive the synchronous machinery against the in-memory MockHttpClient + InMemoryStore;
+# no live Google, no network. serde_json builds the scripted token/userinfo response bodies.
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

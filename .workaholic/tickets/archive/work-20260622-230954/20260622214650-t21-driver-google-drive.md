@@ -16,7 +16,7 @@ depends_on: [20260622214650-t19-driver-google-oauth-multi-account.md]
 This ticket delivers the **Google Drive blob/namespace driver**, mounting Drive under
 `/drive/...` so that an AI agent (or human) operates Drive through the same uniform,
 filesystem-shaped pipe-SQL grammar as every other backend. It implements the **Blob /
-namespace archetype** from RFD §5 (native verbs `ls cp mv rm`, mapped onto cfs universal
+namespace archetype** from RFD §5 (native verbs `ls cp mv rm`, mapped onto qfs universal
 verbs `SELECT / UPSERT / REMOVE` and the `cp/mv` cross-mount operators), the
 **`@version` temporal coordinate** for Drive revisions (RFD §4 — `/drive/file@<rev>`),
 and the **effects-as-data + purity invariant** (RFD §3, §6): every write evaluates to a
@@ -59,7 +59,7 @@ Out of scope (deferred):
 
 ## Key components
 
-New crate/module `cfs-driver-gdrive` (or `crates/drivers/gdrive/`), behind a thin HTTP
+New crate/module `qfs-driver-gdrive` (or `crates/drivers/gdrive/`), behind a thin HTTP
 client (RFD §9 — no heavy vendor SDK; `reqwest` + owned DTOs).
 
 - `struct GDriveDriver { http, accounts }` implementing the core `Driver` trait:
@@ -95,7 +95,7 @@ client (RFD §9 — no heavy vendor SDK; `reqwest` + owned DTOs).
 
 ## Implementation steps
 
-1. Scaffold `cfs-driver-gdrive`; add `GDriveDriver` registered into the path registry at
+1. Scaffold `qfs-driver-gdrive`; add `GDriveDriver` registered into the path registry at
    mount `/drive` (RFD §3 — new service = new mount, zero new keywords).
 2. Define owned DTOs + `GDriveClient` over Drive v3 with a `TokenSource` seam (t19);
    implement `files.list` (paged), `files.get`, `drives.list`.
@@ -137,7 +137,7 @@ client (RFD §9 — no heavy vendor SDK; `reqwest` + owned DTOs).
   4. *Rate limits & large files* — bounded retries with backoff, per-leg timeouts, circuit
      breaker (RFD §6 observability); stream, never buffer whole files.
 - **No vendor leak (RFD §9):** `reqwest`/serde DTOs stay inside the driver; the engine sees
-  only cfs `Row`/`Plan`/`DriveError`. Keep the driver a *consumer-side small trait* impl.
+  only qfs `Row`/`Plan`/`DriveError`. Keep the driver a *consumer-side small trait* impl.
 - **Directory/coding standards:** driver lives under `crates/drivers/gdrive/`; effects are
   data (`enum`), purity invariant holds (functions return `Plan`); `clippy -D warnings`.
 

@@ -13,7 +13,7 @@ depends_on: [20260622214650-t05-type-schema-model.md]
 
 ## Overview
 
-This ticket delivers the **effects-as-data spine** of `cfs`: the typed `Plan` —
+This ticket delivers the **effects-as-data spine** of `qfs`: the typed `Plan` —
 a DAG of effect nodes — that every write operator evaluates to instead of
 performing I/O, plus the `PREVIEW`/`COMMIT` semantics that render and apply it.
 This is the heart of RFD §2 (face 3, "Effect-plan") and §6 (Runtime/interpreter),
@@ -52,7 +52,7 @@ Out-of-scope (deferred):
 
 ## Key components
 
-New crate module `cfs-core::plan` (pure, no I/O, no vendor deps):
+New crate module `qfs-core::plan` (pure, no I/O, no vendor deps):
 
 - `enum EffectKind { Read, List, Insert, Upsert, Update, Remove, Call(ProcId) }`
   — closed set, mirrors frozen core write verbs (RFD §3).
@@ -73,7 +73,7 @@ New crate module `cfs-core::plan` (pure, no I/O, no vendor deps):
 - `fn commit<A: PlanApplier>(plan: &Plan, applier: &mut A) -> CommitReport`
   — topological traversal; stops/records on first error; returns applied + skipped.
 
-Touched: `cfs-core::types` (T05 `Schema`/`Rows`/`VfsPath`/`DriverId`), and the
+Touched: `qfs-core::types` (T05 `Schema`/`Rows`/`VfsPath`/`DriverId`), and the
 evaluator entry (consumes AST → emits `Plan`; thin wiring only here).
 
 ## Implementation steps
@@ -93,12 +93,12 @@ evaluator entry (consumes AST → emits `Plan`; thin wiring only here).
 9. Mark irreversible nodes (`Remove`, `Call` of declared-irreversible procs e.g.
    `mail.send`); `preview` must list them explicitly (RFD §10).
 10. Wire the evaluator's write paths to emit `Plan` (placeholder driver metadata) so
-    `cfs run` can render PREVIEW end-to-end with the test applier.
+    `qfs run` can render PREVIEW end-to-end with the test applier.
 11. Unit + golden tests; clippy; docs on the module (purity invariant stated in rustdoc).
 
 ## Considerations
 
-- **Purity invariant is load-bearing**: keep `cfs-core::plan` free of `async`, I/O,
+- **Purity invariant is load-bearing**: keep `qfs-core::plan` free of `async`, I/O,
   and vendor SDK types. The compiler should make "constructing a plan does I/O"
   unrepresentable. `CALL driver.x` builds a `Call` node — it never performs the call.
 - **Least-privilege / secrets**: `Plan` carries `DriverId` + `VfsPath` only, never
@@ -126,7 +126,7 @@ evaluator entry (consumes AST → emits `Plan`; thin wiring only here).
 ## Acceptance criteria
 
 - `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo test` all green;
-  `cfs-core::plan` has **zero** I/O / async / vendor dependencies (enforce via a
+  `qfs-core::plan` has **zero** I/O / async / vendor dependencies (enforce via a
   module-level test that the crate's dep set excludes HTTP/SDK crates).
 - Plan assertions: building `INSERT` then `CALL mail.send` produces a 2-node DAG with
   one dependency edge; `Call(mail.send)` and any `Remove` node have `irreversible == true`.

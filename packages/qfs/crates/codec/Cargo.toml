@@ -1,0 +1,30 @@
+[package]
+name = "qfs-codec"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs codec contract (RFD-0001 §4): the pure bytes <-> rows Codec trait. Codecs compose over any blob source independent of driver identity."
+
+[dependencies]
+# Depends on qfs-driver only for the shared CfsError (decision D1). This is an
+# acyclic, RFD-justified edge: both trait crates return Result<_, CfsError>.
+qfs-driver = { path = "../driver" }
+# Depends on qfs-types (a leaf) for the canonical Value/Row/RowBatch row model
+# (t05). Codecs are pure `bytes <-> rows`, so they target the canonical row DTOs
+# instead of redefining placeholders. Acyclic: qfs-types is a leaf.
+qfs-types = { path = "../types" }
+
+# Concrete-codec parsers (t15). These vendor types stay *internal* to each codec
+# module — `serde_json::Value`/`toml::Value`/`serde_yaml::Value` never cross the
+# `qfs-codec` public boundary (RFD §9, no vendor leak). Pure in-memory parsers, no
+# I/O, so the codec purity/wasm-friendliness invariants (G3/B7) still hold.
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+toml = "1"
+csv = "1"
+
+[lints]
+workspace = true

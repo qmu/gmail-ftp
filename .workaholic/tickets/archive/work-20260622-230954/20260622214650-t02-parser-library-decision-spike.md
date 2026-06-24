@@ -13,7 +13,7 @@ depends_on: [20260622214650-t01-rust-workspace-single-binary-scaffold.md]
 
 ## Overview
 
-`cfs` exposes every external service through **one uniform pipe-SQL DSL**
+`qfs` exposes every external service through **one uniform pipe-SQL DSL**
 (`FROM <path> |> <op> |> <op> …`, UPPERCASE keywords) — see RFD 0001 §2 (Pipe-SQL),
 §3 (closed core + three open registries), and §9 (Implementation: parser research
 2026-06-22). The DSL parser is the front door of the whole engine: it turns DSL text
@@ -27,7 +27,7 @@ nom/combine gripes), **chumsky** is the fallback if DSL parse-error recovery pro
 decisive (now on Codeberg, GitHub archived), and **combine** is deprioritized (sporadic
 maintenance, ~4.5 months idle). We do not take §9 on faith: we spike a tiny
 `FROM |> WHERE |> SELECT` grammar in both winnow and chumsky, compare error quality and
-ergonomics on real cfs constructs, then **record an ADR locking the choice**. The output
+ergonomics on real qfs constructs, then **record an ADR locking the choice**. The output
 is a decision + a thin parser-skeleton crate, not the production grammar.
 
 ## Scope
@@ -40,7 +40,7 @@ In scope:
   pipelines, UPPERCASE-keyword handling, span/position reporting, and wasm32 build size.
 - An **ADR** (`docs/adr/0001-parser-library.md`) recording the criteria, the spike
   evidence, and the locked choice.
-- A thin `cfs-parser` crate skeleton wired to the chosen library: module layout,
+- A thin `qfs-parser` crate skeleton wired to the chosen library: module layout,
   the `ParseError` type shape, and a `parse_statement(&str) -> Result<Stmt, ParseError>`
   signature — enough for ticket t-(E1) to build the real grammar on.
 
@@ -54,7 +54,7 @@ Out of scope (deferred):
 
 ## Key components
 
-New crate `cfs-parser` (workspace member from t01), spike code under `cfs-parser/spikes/`:
+New crate `qfs-parser` (workspace member from t01), spike code under `qfs-parser/spikes/`:
 
 - `spikes/winnow_spike.rs` and `spikes/chumsky_spike.rs` — two implementations of the
   same grammar, each exposing `fn parse(input: &str) -> Result<SpikeStmt, SpikeError>`.
@@ -77,7 +77,7 @@ New crate `cfs-parser` (workspace member from t01), spike code under `cfs-parser
 
 ## Implementation steps
 
-1. Add `cfs-parser` as a workspace member (depends on t01 scaffold); add `winnow` and
+1. Add `qfs-parser` as a workspace member (depends on t01 scaffold); add `winnow` and
    `chumsky` as **dev-dependencies** only (spikes), not yet a runtime dep.
 2. Define the shared `SpikeStmt`/`PipeOp`/`Expr` AST in `spikes/common.rs`.
 3. Implement `winnow_spike.rs`: `FROM` path, `|>`-separated ops, `WHERE` with
@@ -93,7 +93,7 @@ New crate `cfs-parser` (workspace member from t01), spike code under `cfs-parser
 8. Score winnow vs chumsky against the criteria; write `docs/adr/0001-parser-library.md`
    with the table, the golden evidence, and the **locked choice** (default winnow unless
    error recovery is decisive per RFD §9).
-9. Wire `cfs-parser/src/` to the chosen library: promote it from dev-dep to dep, add
+9. Wire `qfs-parser/src/` to the chosen library: promote it from dev-dep to dep, add
    `error.rs` + the `parse_statement` signature + closed-core keyword constants. Delete
    the losing spike (or move both under `spikes/` clearly marked non-production).
 10. `cargo build`, `cargo clippy -- -D warnings`, `cargo test`, and a `wasm32` build all green.
@@ -106,13 +106,13 @@ New crate `cfs-parser` (workspace member from t01), spike code under `cfs-parser
   is the genuinely hard call and the only reason to pick chumsky over the default winnow —
   resolve it with the committed golden corpus, not opinion.
 - **No vendor type leaks** (RFD §9): whichever library wins, its error/parser types must
-  not appear in `cfs-parser`'s public API — wrap into the owned `ParseError`. This keeps
+  not appear in `qfs-parser`'s public API — wrap into the owned `ParseError`. This keeps
   the choice reversible (we can swap libraries later without breaking E1+).
 - **Frozen keyword set** (RFD §3): define the closed-core keywords as constants in one
   place now so the spike and the future grammar share a single source of truth; the spike
   only exercises a subset but must not invent keywords outside §3.
 - **Purity / effects-as-data**: the parser produces AST only; it performs no I/O and
-  constructs no effects (effect-plan is E2). Keep `cfs-parser` free of any network, fs, or
+  constructs no effects (effect-plan is E2). Keep `qfs-parser` free of any network, fs, or
   credential dependency — least-privilege at the crate level (RFD §10), and it makes the
   parser fully unit-testable with **no live creds**.
 - **wasm32 footprint** (RFD §1, §9): both libraries are pure-Rust and wasm-friendly;
@@ -127,7 +127,7 @@ New crate `cfs-parser` (workspace member from t01), spike code under `cfs-parser
 ## Acceptance criteria
 
 - `cargo build`, `cargo clippy -- -D warnings`, and `cargo test` are green; a
-  `cargo build --target wasm32-unknown-unknown -p cfs-parser` succeeds.
+  `cargo build --target wasm32-unknown-unknown -p qfs-parser` succeeds.
 - Both `winnow_spike` and `chumsky_spike` parse every valid input in the corpus into the
   identical shared AST (asserted by tests comparing the two outputs).
 - Golden tests exist for every broken-input case in both libraries and are committed; the
@@ -135,10 +135,10 @@ New crate `cfs-parser` (workspace member from t01), spike code under `cfs-parser
 - `docs/adr/0001-parser-library.md` exists, states the criteria, includes the comparison
   table + benchmark/size numbers, and records a single **locked** library choice with
   rationale tied back to RFD §9 (and §5 if recovery is the deciding factor).
-- `cfs-parser` exposes `parse_statement(&str) -> Result<Stmt, ParseError>` and an owned
+- `qfs-parser` exposes `parse_statement(&str) -> Result<Stmt, ParseError>` and an owned
   `ParseError` (span + expected-set + machine code); no library-internal types appear in
   its public API (asserted by a doc/test or a `pub use` audit).
-- Closed-core keyword constants (RFD §3 frozen set) live in `cfs-parser` and are
+- Closed-core keyword constants (RFD §3 frozen set) live in `qfs-parser` and are
   referenced by the parser rather than hard-coded inline.
 - No network/filesystem/credential dependency is introduced; all tests run with no live
   credentials.

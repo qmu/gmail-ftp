@@ -17,7 +17,7 @@ A **read-only relational driver** exposing Google Analytics 4 as queryable relat
 `/ga/<propertyId>/...`. GA4's Data API (`properties.runReport` / `runRealtimeReport` /
 `batchRunReports`) is fundamentally a *query* surface — you ask for **metrics** grouped by
 **dimensions** over a **date range** with **filters**, and GA aggregates server-side and
-returns rows. That maps onto the cfs relational archetype with one honest constraint: GA is a
+returns rows. That maps onto the qfs relational archetype with one honest constraint: GA is a
 **query source, never a mutate target** (you do not `INSERT`/`UPDATE`/`REMOVE` analytics data).
 Like the SQL driver, the *entire* pipeline pushes down to one native `runReport` call
 (GA does the aggregation), so this is a **pushdown target** (RFD §5 relational archetype, §6
@@ -55,7 +55,7 @@ Out of scope (deferred):
   cached per property; powers `DESCRIBE`. Optional `checkCompatibility` to validate a
   dimension×metric combination and return a structured error rather than a runtime API 400.
 - **Owned response DTOs** decoding `runReport` rows (`dimensionValues`/`metricValues`) into typed
-  cfs rows — GA SDK/JSON types never leak past the driver boundary.
+  qfs rows — GA SDK/JSON types never leak past the driver boundary.
 - **Capability declaration**: `SELECT` only; `INSERT/UPSERT/UPDATE/REMOVE` absent (parse-time
   rejection). No mutating procedures.
 - Pushdown declaration: the whole relational subtree over a `/ga` node is executable by the
@@ -88,7 +88,7 @@ Out of scope (deferred):
   predicate (or apply a documented default window) and error clearly if absent — surprising
   for an AI otherwise.
 - **Dimension/metric compatibility**: not every combo is queryable. Prefer a pre-flight
-  `checkCompatibility` (or catalog-driven validation) returning a structured cfs error over a
+  `checkCompatibility` (or catalog-driven validation) returning a structured qfs error over a
   raw GA 400, so the agent can self-correct.
 - **Sampling** (operation/observability): high-cardinality/large queries are sampled; surfacing
   sampling metadata is required so downstream decisions aren't made on estimates silently.

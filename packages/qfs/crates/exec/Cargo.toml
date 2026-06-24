@@ -1,0 +1,39 @@
+[package]
+name = "qfs-exec"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs execution layer (t29): the end-to-end SELECT read-path executor (parse -> resolve -> plan -> driver scan -> engine residual -> rows) and the COMMIT apply seam, composing qfs-core + qfs-pushdown + qfs-engine above the spine. Owns the async ReadDriver scan seam (the read counterpart of the runtime's write ApplyDriver). Logic sits ABOVE the spine; nothing in the pure spine depends back onto it."
+
+[dependencies]
+# The hub: parse + resolve + registry + plan_query (AST -> PhysicalPlan) + CfsError, all
+# re-exported owned types. qfs-exec reaches the parser/plan/driver/codec ONLY through this
+# hub re-export surface, never directly.
+qfs-core = { path = "../core" }
+# The closed-core grammar front door (parse_statement -> owned Statement AST). The CLI adds
+# zero keywords; this crate parses the one-shot statement and hands the AST to the hub.
+qfs-parser = { path = "../parser" }
+# The pushdown split (PhysicalPlan / ScanNode / PushedQuery) and the local combine engine
+# (MiniEvaluator) that re-filters the residual over over-returned scan rows (the t20 property).
+qfs-pushdown = { path = "../pushdown" }
+qfs-engine = { path = "../engine" }
+# Async scan seam. tokio is used here for the read executor's I/O domain. This does NOT
+# violate the runtime confinement guard (crates/cmd/tests/dep_direction.rs), which fires
+# only on qfs-runtime *consumers*: qfs-exec does NOT depend on qfs-runtime. Nor does it
+# pollute qfs-plan's purity dep-closure (qfs-plan never depends on qfs-exec). The pure spine
+# (plan/types/pushdown/engine/core) stays runtime-free; qfs-exec is the integration layer
+# ABOVE it, the read-path sibling of the runtime's write/commit stage.
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# All test deps (qfs-pushdown, async-trait, serde_json) are already normal dependencies of
+# this crate, so the integration tests reach them without a separate dev-dep entry.
+
+[lints]
+workspace = true

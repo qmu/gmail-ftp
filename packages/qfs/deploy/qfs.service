@@ -1,0 +1,56 @@
+# t36 systemd unit for the qfs EC2/Linux daemon (RFD-0001 §8/§10).
+#
+# PROJECT-LOCAL TEMPLATE — this file is NOT installed system-wide by the trip (system-safety: qfs
+# is a regular project, not a provisioning repo). A deployer copies it to
+# /etc/systemd/system/qfs.service on the target host. It is least-privilege by construction: a
+# dedicated `qfs` user, a read-only filesystem except the StateDirectory, no new privileges, and
+# the loopback-by-default bind (RFD §10 trusted bind; front a reverse proxy for external traffic).
+#
+# The daemon reads credentials from the E5 store (never env-dumped, never logged); the only env it
+# needs is the config path + the optional bind/state overrides.
+
+[Unit]
+Description=qfs control-plane daemon (RFD-0001)
+Documentation=https://github.com/a-qmu-jp/gmail-ftp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# A dedicated unprivileged user (create with: useradd --system --no-create-home qfs).
+User=qfs
+Group=qfs
+
+# The config the daemon boots (parse -> lower -> COMMIT the /server registry, then attach causes).
+# Override QFS_HTTP_ADDR to bind a non-loopback address (front it with TLS termination).
+Environment=QFS_HTTP_ADDR=127.0.0.1:8787
+# t36: the fsync'd FileDurableStore (watcher cursors / LAST_RUN) + the on-disk audit ledger live
+# under the systemd-managed StateDirectory (/var/lib/qfs) — never a system path the daemon writes
+# to directly.
+Environment=QFS_STATE_DIR=%S/qfs
+ExecStart=/usr/local/bin/qfs serve /etc/qfs/config.qfs
+
+# Graceful shutdown: SIGTERM drains in-flight plans (the serve loop's supervised wait + audit
+# drain), giving the on-disk ledger time to flush before exit.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+# --- Least-privilege hardening (RFD §10) ---
+StateDirectory=qfs
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=%S/qfs
+# The daemon needs no extra capabilities (loopback bind on a high port).
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

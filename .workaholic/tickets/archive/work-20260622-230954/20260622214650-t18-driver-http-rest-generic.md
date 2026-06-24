@@ -13,7 +13,7 @@ depends_on: [20260622214650-t13-driver-contract-trait.md, 20260622214650-t15-cod
 
 ## Overview
 
-This ticket delivers the **escape hatch** for any service cfs does not model natively: a
+This ticket delivers the **escape hatch** for any service qfs does not model natively: a
 *configured* REST driver mounted at `/rest/<api>/...` and an ad-hoc `http.get(url, headers=>…)`
 table-valued function. It implements the driver contract (RFD §5), the open-paths registry
 (RFD §3), and the "generic REST" backend named in the vision (RFD §1). The REST driver maps
@@ -48,9 +48,9 @@ Out of scope (deferred):
 
 ## Key components
 
-New crate-internal module `drivers/rest/` (in the `cfs-drivers` crate):
+New crate-internal module `drivers/rest/` (in the `qfs-drivers` crate):
 - `RestDriver { instances: HashMap<String, RestApiConfig> }` — implements `Driver` (t13).
-- `RestApiConfig` (deserialized from cfs config, owned DTO, no vendor types):
+- `RestApiConfig` (deserialized from qfs config, owned DTO, no vendor types):
   ```rust
   pub struct RestApiConfig {
       pub base_url: Url,
@@ -77,7 +77,7 @@ New crate-internal module `drivers/rest/` (in the `cfs-drivers` crate):
 ## Implementation steps
 
 1. Add `drivers/rest/` module; define `RestApiConfig`, `AuthStrategy`, `Pagination`,
-   `ResourceMap` with `serde` deserialization from the cfs config format.
+   `ResourceMap` with `serde` deserialization from the qfs config format.
 2. Define `HttpClient` trait + `reqwest` impl (foreground) and a `MockHttpClient` (tests);
    feature-gate the wasm `fetch` impl.
 3. Implement `Driver::describe`/`capabilities`: map each `ResourceMap` to an archetype and the

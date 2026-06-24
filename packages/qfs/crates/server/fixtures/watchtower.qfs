@@ -1,0 +1,28 @@
+# qfs watchtower fixture (RFD-0001 §8) — the E7 trigger/watchtower face under the t35 policy
+# engine. Booting this file replays INSERT INTO /server/... writes; CREATE ... is sugar over
+# them. Every write-firing handler carries an EXPLICIT POLICY granting exactly its verbs, because
+# default-deny is the law (t35): a handler with no policy denies every write at fire time.
+# No network and no live credentials are required to boot.
+
+# Least-privilege policies, each scoped to exactly one handler's verbs.
+# - watch_insert grants the notify TRIGGER's INSERT (and nothing else).
+# - server_admin grants the reconfigure TRIGGER's /server INSERT — note: the policy does NOT
+#   special-case /server; it is just an INSERT grant. The "who fires it, not what it targets"
+#   rule (OBS-3) means a /server-targeting DO body is gated like any other handler write.
+CREATE POLICY watch_insert ALLOW INSERT;
+CREATE POLICY server_admin ALLOW INSERT,UPSERT;
+
+# A notify TRIGGER whose DO body INSERTs into /log. It attaches watch_insert, so its fired plan
+# is allowed under least privilege.
+CREATE TRIGGER notify ON inbox DO INSERT INTO /log VALUES ('fired') POLICY watch_insert;
+
+# A reconfigure TRIGGER whose DO body writes /server config (a ServerConfigWrite effect). With
+# the server_admin grant it is allowed — confirming a /server-write trigger CAN be granted by an
+# explicit policy (it is gated, not forbidden).
+CREATE TRIGGER reconfigure ON ctl DO UPSERT INTO /server/jobs VALUES (name, every) ('cleanup', '6h') POLICY server_admin;
+
+# A WHERE-guarded TRIGGER (t34 predicate) that also INSERTs, attaching watch_insert.
+CREATE TRIGGER guarded ON inbox DO INSERT INTO /log VALUES ('guarded') WHERE priority > 5 POLICY watch_insert;
+
+# A read-only ENDPOINT — a pure READ produces no commit plan, so it needs no POLICY.
+CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5;

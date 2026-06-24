@@ -14,7 +14,7 @@ depends_on: [20260622214650-t05-type-schema-model.md]
 ## Overview
 
 This ticket implements the **codec registry** — the third of the three open
-registries that keep the cfs grammar closed while letting capabilities grow
+registries that keep the qfs grammar closed while letting capabilities grow
 (RFD §3). Codecs bridge the blob↔relational boundary: `DECODE fmt` turns any
 opaque byte blob (from FS, S3, git, Drive, or a REST response) into typed rows;
 `ENCODE fmt` does the reverse (RFD §4). With codecs, a markdown file with YAML
@@ -50,7 +50,7 @@ Out of scope (deferred):
 
 ## Key components
 
-New crate/module `cfs-codec` (Domain layer), depending only on `cfs-type`
+New crate/module `qfs-codec` (Domain layer), depending only on `qfs-type`
 (t05) — no driver/vendor types leak in (owned DTOs, RFD §9).
 
 ```rust
@@ -123,7 +123,7 @@ impl CodecRegistry {
 - **Observability:** decode/encode errors carry `fmt` + byte offset/line where
   available for actionable logs.
 - **Standards:** Domain crate, no `unsafe`, `#![deny(clippy::all)]`; one codec per
-  module file under `cfs-codec/src/codecs/`.
+  module file under `qfs-codec/src/codecs/`.
 
 ## Acceptance criteria
 

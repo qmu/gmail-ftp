@@ -12,7 +12,7 @@ depends_on: [20260622214650-t09-effect-plan-and-preview-commit.md]
 # CLI: one-shot execution + output formats
 
 ## Overview
-Delivers the non-interactive face of the `cfs` binary described in RFD §7: `cfs run '<stmt>'`
+Delivers the non-interactive face of the `qfs` binary described in RFD §7: `qfs run '<stmt>'`
 (and `-e <stmt>`) executes a single pipe-SQL statement with **no cwd** — addressing is by
 absolute VFS path or `id:`/path form only — and renders results as either machine `--json`
 or a human `table`. This is the surface AI agents drive: a stable, scriptable contract with a
@@ -23,8 +23,8 @@ t09 (PREVIEW default) through the CLI. The interactive shell (§7 bullet 1) is a
 
 ## Scope
 In scope:
-- `cfs run '<stmt>'` and `cfs -e '<stmt>'` subcommand/flag parsing (one statement per invocation).
-- Stdin statement source (`cfs run -` reads stmt from stdin) for agent pipelines.
+- `qfs run '<stmt>'` and `qfs -e '<stmt>'` subcommand/flag parsing (one statement per invocation).
+- Stdin statement source (`qfs run -` reads stmt from stdin) for agent pipelines.
 - Output renderers: `--format json|table` (alias `--json`), default `table` on a TTY, `json` when piped.
 - Stable error contract: serialize engine/parse errors to `{"error": {...}}` JSON on stderr + non-zero exit codes.
 - PREVIEW-by-default; `--commit` (and recognizing a trailing `COMMIT`) to apply; count summary for set-wide destructive plans.
@@ -33,12 +33,12 @@ In scope:
 Out of scope (deferred):
 - Interactive FTP-like shell, cwd, completion → sibling t28 (CLI: interactive shell).
 - The effect-plan/PREVIEW/COMMIT engine internals, batching, audit ledger → **t09** (dependency).
-- `cfs serve` and `/server/...` bindings → E7 server tickets.
+- `qfs serve` and `/server/...` bindings → E7 server tickets.
 - Auth/credential resolution → E5; this ticket consumes the credential context, does not build it.
 - Driver registration and capability tables → E4 / E1; consumed read-only here.
 
 ## Key components
-New crate `cfs-cli` (binary `cfs`), thin over the core `cfs-engine` crate (from t09/E1–E2):
+New crate `qfs-cli` (binary `qfs`), thin over the core `qfs-engine` crate (from t09/E1–E2):
 - `cli::args` — `clap` derive. `Cli { command: Command }`; `Command::Run(RunArgs)`.
   `RunArgs { stmt: Option<String>, expr: Option<String> /*-e*/, format: OutputFormat,
   commit: bool, quiet: bool }`. Mutually-exclusive `stmt`/`-e`/stdin resolved into one source.
@@ -60,7 +60,7 @@ the engine, `--commit` is only the apply switch); three open registries untouche
 capability gating surfaced as exit `3`; owned DTOs across the engine↔CLI seam.
 
 ## Implementation steps
-1. Scaffold `cfs-cli` crate; wire `main()` → `clap` `Cli::parse()` → dispatch `Command::Run`.
+1. Scaffold `qfs-cli` crate; wire `main()` → `clap` `Cli::parse()` → dispatch `Command::Run`.
 2. Implement `StmtSource` resolution (positional stmt | `-e` | `-` stdin); error on >1 source.
 3. Implement absolute/`id:` addressing validation; emit structured usage error for relative paths.
 4. Call core parse + capability resolution; map every error into `CfsError` with a `kind`.
@@ -91,11 +91,11 @@ capability gating surfaced as exit `3`; owned DTOs across the engine↔CLI seam.
 - **Standards**: thin CLI crate, no business logic; vendor types excluded by construction.
 
 ## Acceptance criteria
-- `cargo build`, `cargo clippy -- -D warnings`, `cargo test` green; `cfs --help`/`cfs run --help` snapshot-stable.
-- `cfs run 'FROM /mail/inbox |> LIMIT 1' --json` prints `{"rows":[…]}` to stdout, exit `0` (against a fake/in-memory driver — **no live creds**).
+- `cargo build`, `cargo clippy -- -D warnings`, `cargo test` green; `qfs --help`/`qfs run --help` snapshot-stable.
+- `qfs run 'FROM /mail/inbox |> LIMIT 1' --json` prints `{"rows":[…]}` to stdout, exit `0` (against a fake/in-memory driver — **no live creds**).
 - A pure query renders as a `table` on a TTY and `json` when piped, with no plan/commit prompt.
 - A statement with effects but no `--commit` prints a PREVIEW with affected counts and exits `0` (preview) ; a destructive set-wide plan without commit exits `4`.
-- `cfs run '<bad syntax>'` writes `{"error":{"kind":"parse",…}}` to stderr and exits `2`; an unsupported-op (capability) case exits `3`.
+- `qfs run '<bad syntax>'` writes `{"error":{"kind":"parse",…}}` to stderr and exits `2`; an unsupported-op (capability) case exits `3`.
 - A relative-path address is rejected with a structured `usage` error (exit `2`); absolute and `id:` forms accepted.
 - **Plan assertions**: golden tests assert the serialized `Plan`/`PlanPreview` for representative effect statements (preview path) without committing; commit path tested only against the in-memory engine.
 - Exit-code map and JSON error schema documented and covered by tests.

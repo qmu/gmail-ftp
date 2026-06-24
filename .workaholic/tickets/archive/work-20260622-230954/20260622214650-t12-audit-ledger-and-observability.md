@@ -71,7 +71,7 @@ Purity invariant preserved: pure query/transform stages are never ledgered; only
 6. Wire `tracing` spans: root span per plan (`plan_id`, `trace_id`), child span per effect (`effect_id`, `driver`, `endpoint`); ensure ids appear in every log line.
 7. Integrate with t10 interpreter: emit intended record before apply, outcome record after; wrap each external leg in `run_leg`.
 8. Implement `Recovery::resume`: build committed-set from ledger, diff against plan DAG, return residual `Plan`; cover the `cp` copy→verify→delete partial-failure case.
-9. Add a `--trace`/`-json` log toggle and a `cfs ledger show <plan-id>` debug subcommand (read path only).
+9. Add a `--trace`/`-json` log toggle and a `qfs ledger show <plan-id>` debug subcommand (read path only).
 10. Golden tests: serialize a fixed plan's ledger to a golden JSONL; assert byte-stable (modulo redacted timestamps/ids).
 
 ## Considerations

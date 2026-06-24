@@ -1,0 +1,29 @@
+[package]
+name = "qfs-plan"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs effect substrate: the typed effect-plan DAG (RFD-0001 §6). Effects-as-data; the interpreter is the only impure op (reserved for E2)."
+
+[dependencies]
+# qfs-types is a LEAF (serde only) — depending on it keeps the spine acyclic
+# (qfs-driver → qfs-plan → qfs-types). It supplies the canonical Schema/Row/RowBatch/
+# DriverId so the plan carries no vendor types and redefines nothing (RFD §9).
+qfs-types = { path = "../types" }
+# serde powers `-json` PREVIEW output and the golden snapshots. No I/O, no async,
+# no vendor SDK — the purity invariant is preserved structurally (RFD §3).
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Integration/golden tests build representative plans from the canonical row model
+# and snapshot the `-json` preview. qfs-types is already a (non-dev) dep; serde_json
+# is too — restated here so the integration test target sees them explicitly.
+qfs-types = { path = "../types" }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

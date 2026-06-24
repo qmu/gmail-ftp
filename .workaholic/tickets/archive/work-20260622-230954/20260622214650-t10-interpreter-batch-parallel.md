@@ -13,7 +13,7 @@ depends_on: [20260622214650-t09-effect-plan-and-preview-commit.md, 2026062221465
 
 ## Overview
 
-This ticket delivers the **impure edge** of cfs: the interpreter that takes a typed
+This ticket delivers the **impure edge** of qfs: the interpreter that takes a typed
 effect-plan DAG (built by t09) and *applies* it against the world. Per RFD §3 the only
 impure operation in the system is `COMMIT : Plan -> World -> World`; everything upstream
 constructs effects as data. This ticket implements the executor for that signature.
@@ -48,7 +48,7 @@ Out-of-scope (deferred):
 
 ## Key components
 
-New crate/module `cfs-runtime` (`src/runtime/`):
+New crate/module `qfs-runtime` (`src/runtime/`):
 
 - `interpreter.rs` — the executor.
   ```rust
@@ -91,7 +91,7 @@ impure stage), owned DTOs, capability gating (re-checked here).
 
 ## Implementation steps
 
-1. Define `ConcurrencyLimits`, `Outcome`, `ApplyError`, `EffectError` in `cfs-runtime`.
+1. Define `ConcurrencyLimits`, `Outcome`, `ApplyError`, `EffectError` in `qfs-runtime`.
 2. Implement `Frontier`: validate the DAG is acyclic, compute in-degree, yield ready-sets as deps resolve.
 3. Implement `batch.rs` coalescing: stable grouping key `(DriverId, EffectKind)`; preserve effect identity for result fan-out.
 4. Implement the scheduler loop: pull a frontier, group it, spawn one task per group under a global `Semaphore(global)` and a per-driver `Semaphore(per_driver)` (backpressure).
@@ -116,11 +116,11 @@ impure stage), owned DTOs, capability gating (re-checked here).
 - **Observability.** Per-leg timeouts, bounded retries, structured (not string) errors for AI consumption,
   duration + status per effect in the ledger; emit tracing spans per group.
 - **Coding standards / structure.** Async via tokio; small consumer-side traits; owned DTOs only — no vendor
-  type leaks past drivers. Keep `cfs-runtime` free of any concrete driver dependency (test with a mock).
+  type leaks past drivers. Keep `qfs-runtime` free of any concrete driver dependency (test with a mock).
 
 ## Acceptance criteria
 
-- `cargo build` and `cargo clippy -- -D warnings` green; `cargo test -p cfs-runtime` green.
+- `cargo build` and `cargo clippy -- -D warnings` green; `cargo test -p qfs-runtime` green.
 - **Batching assertion:** given a plan with N independent same-`(driver,kind)` leaf effects, the mock
   driver's `apply_batch` is invoked exactly once with N effects (N+1 → 1).
 - **Ordering assertion:** for a dependent chain A→B→C, the ledger records A, B, C in dependency order;

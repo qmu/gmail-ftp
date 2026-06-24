@@ -13,7 +13,7 @@ depends_on: [20260622214650-t31-server-binding-ddl.md]
 
 ## Overview
 
-This ticket delivers the **JOB scheduler** for the `cfs` server: the runtime that
+This ticket delivers the **JOB scheduler** for the `qfs` server: the runtime that
 makes `CREATE JOB <name> EVERY <interval> DO <plan>` bindings actually fire on a
 schedule (RFD §8, "Bindings = what causes a plan to run"; §3 frozen DDL keywords
 `JOB`/`EVERY`/`DO`). A `JOB` is one of the four "what causes a plan to run" cases —

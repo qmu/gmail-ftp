@@ -1,8 +1,8 @@
-# cfs rebuild — ticket index
+# qfs rebuild — ticket index
 
-Design anchor: **RFD 0001** (`.workaholic/RFDs/0001-cfs-architecture.md`) is the single source of truth for every ticket below.
+Design anchor: **RFD 0001** (`.workaholic/RFDs/0001-qfs-architecture.md`) is the single source of truth for every ticket below.
 
-> **Status: all 41 tickets delivered** (trip `cfs-foundation-e0`, branch `work-20260622-230954`, 1240 tests green). Archived under `.workaholic/tickets/archive/work-20260622-230954/`; each ticket's `commit_hash` records its acceptance commit. Ready for `/report` + `/ship`.
+> **Status: all 41 tickets delivered** (trip `qfs-foundation-e0`, branch `work-20260622-230954`, 1240 tests green). Archived under `.workaholic/tickets/archive/work-20260622-230954/`; each ticket's `commit_hash` records its acceptance commit. Ready for `/report` + `/ship`.
 
 Recommended build order follows the dependency graph: **E0 → E1 / E2 / E3 foundations → E4 drivers → E5 / E6 → E7 server → E8 cross-cutting.**
 

@@ -1,0 +1,18 @@
+[package]
+name = "qfs-crypto-core"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs shared pure crypto leaf (t34): the SINGLE SOURCE OF TRUTH for the dependency-free, wasm-clean crypto primitives the workspace needs — SHA-256 (FIPS 180-4), HMAC-SHA256 (RFC 2104 / RFC 4231), lowercase-hex, and a constant-time byte compare. Before it, SHA-256 was independently vendored THREE times (qfs-driver-objstore SigV4, qfs-driver-slack signature verification, qfs-cron run-id) because no shared crypto leaf existed and depending on any of those crates would pull a runtime/driver coupling. This is a TRUE PURE LEAF: it depends on NOTHING (no workspace crate, no vendor crate, std-only by construction) so every consumer — including the off-runtime t34 watchtower webhook HMAC verification and the wasm32 Workers WEBHOOK ingress — shares ONE pinned implementation rather than a drift-prone copy. The implementations are pure-std (no native-link hazard on wasm32-unknown-unknown, unlike ring/openssl) and pinned to the canonical FIPS 180-4 + RFC 4231 known-answer vectors. constant_time_eq never short-circuits on the first mismatch (RFD §10 replay defense)."
+
+[dependencies]
+# NONE. qfs-crypto-core is a TRUE pure leaf: it depends on no workspace crate and no vendor
+# crate — std-only by construction. The pure-leaf dep guard in crates/cmd/tests/dep_direction.rs
+# enforces that this list stays empty (it is the single source of crypto, so it must not be able
+# to pull a cycle or a runtime/native coupling into any consumer, including the wasm32 ingress).
+
+[lints]
+workspace = true

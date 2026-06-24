@@ -1,0 +1,34 @@
+[package]
+name = "qfs-pushdown"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs pushdown planner (RFD-0001 §6, ticket t14): the pure source-splitting pass that lowers a query into a LogicalPlan, negotiates each maximal same-source subtree against a driver's PushdownProfile, and emits a PhysicalPlan of native Scans + a local Combine residual. Cross-source JOIN/UNION federate locally. Domain crate: no I/O, no async, no vendor types."
+
+[dependencies]
+# The pushdown profile + capability accessors the planner queries by intent (t13). This
+# edge is acyclic: qfs-pushdown -> qfs-driver -> qfs-plan -> qfs-types.
+qfs-driver = { path = "../driver" }
+# The canonical typed Schema + the typed Predicate IR that LogicalPlan::Filter carries
+# (O-t07-3: predicates are sourced from the typed predicate model, NOT a dropped AST).
+qfs-types = { path = "../types" }
+# Owned identity/path DTOs (DriverId/VfsPath) shared with the effect plan, so a ScanNode
+# names its source the same way an EffectNode's Target does.
+qfs-plan = { path = "../plan" }
+# The pure AST. t14 sources predicates/expressions FROM the AST (O-t07-3) — the lowering
+# `Expr -> qfs_types::Predicate` and `Pipeline -> LogicalPlan` lives here. This edge is
+# acyclic (qfs-parser -> qfs-lang only) and carries no vendor/winnow type (G6).
+qfs-parser = { path = "../parser" }
+# Structured, AI-consumable error / `explain()` JSON. No I/O, no async, no vendor SDK.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+qfs-types = { path = "../types" }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

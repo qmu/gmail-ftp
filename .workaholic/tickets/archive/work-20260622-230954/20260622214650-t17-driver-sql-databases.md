@@ -51,7 +51,7 @@ Out of scope (deferred):
 
 ## Key components
 
-New crate `cfs-driver-sql` (thin clients only — RFD §9 "no heavy vendor SDKs"; `sqlx` with
+New crate `qfs-driver-sql` (thin clients only — RFD §9 "no heavy vendor SDKs"; `sqlx` with
 `postgres,mysql,sqlite` features as the thin async client, or `tokio-postgres`+`mysql_async`
 +`rusqlite` if `sqlx` footprint is rejected by the spike).
 
@@ -70,7 +70,7 @@ New crate `cfs-driver-sql` (thin clients only — RFD §9 "no heavy vendor SDKs"
 - `mod catalog` — `fn introspect(&Dialect, &mut Conn) -> Catalog` querying
   `information_schema.columns/key_column_usage/table_constraints` (pg/mysql) and
   `pragma_table_info`/`pragma_foreign_key_list` (sqlite); maps to owned `ColumnDef { name,
-  ty: ColType, nullable, pk, unique }` where `ColType` is cfs's type enum (RFD §4), not a
+  ty: ColType, nullable, pk, unique }` where `ColType` is qfs's type enum (RFD §4), not a
   vendor type.
 - `mod emit` — `fn render_select(&Dialect, &PushdownPlan) -> SqlText` and
   `fn render_dml(&Dialect, &Effect) -> SqlText`; returns `(sql, Vec<Param>)` with bound
@@ -82,7 +82,7 @@ New crate `cfs-driver-sql` (thin clients only — RFD §9 "no heavy vendor SDKs"
 
 1. Spike the client choice (`sqlx` vs hand-rolled trio); confirm `wasm32` exclusion is OK
    (these clients are native-only — sqlite/D1-on-wasm is the separate D1 ticket).
-2. Define `Dialect` + the `cfs-driver-sql` crate skeleton; register the `/sql` mount.
+2. Define `Dialect` + the `qfs-driver-sql` crate skeleton; register the `/sql` mount.
 3. `conn` module: parse connection URI, resolve secret ref, open + health-check connection.
 4. `catalog::introspect` for all three dialects → owned `Catalog`; cache per connection.
 5. Wire `describe` + `capabilities` off the catalog; reject unknown table/column at parse
@@ -91,7 +91,7 @@ New crate `cfs-driver-sql` (thin clients only — RFD §9 "no heavy vendor SDKs"
    LIMIT/DISTINCT` + single-source `JOIN` within one connection; param binding.
 7. Implement `pushdown` to report exactly the prefix `emit` can render; remainder returns to
    the local engine (T14).
-8. `execute_read` → stream rows back as cfs DTO rows (typed via catalog).
+8. `execute_read` → stream rows back as qfs DTO rows (typed via catalog).
 9. `build_effects`: lower `INSERT/UPSERT/UPDATE/REMOVE/RETURNING` into `Effect` nodes
    (pure, with `irreversible` flag set for DELETE/UPDATE without retry-safe key).
 10. `emit::render_dml` per dialect, incl. upsert variants and `RETURNING` (pg/sqlite native;
@@ -108,7 +108,7 @@ New crate `cfs-driver-sql` (thin clients only — RFD §9 "no heavy vendor SDKs"
   single decision point and covering each branch with golden SQL tests; never emit SQL by
   string-formatting values — **always bind params** (injection + correctness).
 - **Pushdown fidelity vs. semantics.** SQL `NULL`/collation/ordering semantics must match
-  cfs's pure-query semantics, or pushed-down results differ from locally-combined ones. Where
+  qfs's pure-query semantics, or pushed-down results differ from locally-combined ones. Where
   a construct can't be faithfully rendered, the driver must *decline* it in `pushdown` and let
   the local engine handle it — declining is correct, mis-rendering is a bug.
 - **ACID boundary.** Single connection = single transaction is the guarantee (RFD §6). Effects
@@ -129,7 +129,7 @@ New crate `cfs-driver-sql` (thin clients only — RFD §9 "no heavy vendor SDKs"
 
 ## Acceptance criteria
 
-- `cargo build` and `cargo clippy -- -D warnings` green for `cfs-driver-sql`.
+- `cargo build` and `cargo clippy -- -D warnings` green for `qfs-driver-sql`.
 - Golden tests: for a fixed pipeline IR, the emitted SQL string matches the expected text for
   **each** of postgres/mysql/sqlite (no live DB needed) — plan/SQL assertions are the primary
   gate.

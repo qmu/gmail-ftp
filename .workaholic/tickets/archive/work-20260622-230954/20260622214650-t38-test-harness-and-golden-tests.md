@@ -31,13 +31,13 @@ vendor types never leak" (codec round-trips and DTO snapshots are how we police 
 ## Scope
 
 In-scope:
-- A `cfs-test` support crate: plan-assertion helpers, golden/snapshot infrastructure,
+- A `qfs-test` support crate: plan-assertion helpers, golden/snapshot infrastructure,
   an `httptest`-style mock HTTP backend, and a fake-credential injector.
 - **Plan assertions** — normalize and compare an evaluated `Plan` (typed effect DAG)
   structurally against an expected shape, with `irreversible`/dependency edges asserted.
 - **Per-driver fakes** — an in-memory backing store + recorded HTTP transcripts so a
   real driver (E4) can be exercised end-to-end (DESCRIBE → plan → COMMIT) with no creds.
-- **Golden tests for parser/grammar** — input `.cfs` → serialized AST snapshot; covers
+- **Golden tests for parser/grammar** — input `.qfs` → serialized AST snapshot; covers
   closed-core keywords and parse-error recovery messages.
 - **Codec round-trip tests** — `DECODE fmt` then `ENCODE fmt` (and reverse) is identity
   for `json/yaml/toml/csv/markdown+frontmatter`, plus rows↔bytes property tests.
@@ -56,7 +56,7 @@ Out-of-scope (deferred):
 
 ## Key components
 
-New crate `cfs-test` (dev-dependency only; never linked into the shipped binary). No
+New crate `qfs-test` (dev-dependency only; never linked into the shipped binary). No
 vendor SDKs; it trades only in owned DTOs (`Plan`, `Schema`, `Row`, AST) so the
 purity/no-leak invariants are testable from outside the boundary.
 
@@ -80,7 +80,7 @@ pub struct MockHttp { /* httptest-style: match request → canned response */ }
 pub struct NoCreds;   // injected where a real CredentialStore would be (E5) — proves no token use
 
 // Golden helpers (insta wrappers, stable serde of owned DTOs).
-pub fn golden_parse(src: &str) -> AstSnapshot;             // .cfs → AST
+pub fn golden_parse(src: &str) -> AstSnapshot;             // .qfs → AST
 pub fn roundtrip_codec(fmt: Codec, bytes: &[u8]) -> RoundTrip;  // DECODE∘ENCODE == id
 pub fn preview_handler(handler: &ServerHandler, evt: Event) -> Plan; // §8 PREVIEW-as-test
 ```
@@ -94,8 +94,8 @@ pub fn preview_handler(handler: &ServerHandler, evt: Event) -> Plan; // §8 PREV
 
 ## Implementation steps
 
-1. Scaffold `cfs-test` as a workspace dev crate; pull in `insta` (snapshots) and an
-   `httptest`/wiremock-style mock; ensure it is **not** a runtime dep of `cfs`.
+1. Scaffold `qfs-test` as a workspace dev crate; pull in `insta` (snapshots) and an
+   `httptest`/wiremock-style mock; ensure it is **not** a runtime dep of `qfs`.
 2. Implement `assert_plan` over the evaluator (t07) + `DriverRegistry` (t13): evaluate a
    statement to a `Plan` *without* COMMIT, expose `nodes/irreversible/no_io_performed`.
 3. Add stable `serde` snapshotting of `Plan`/AST (deterministic ordering of DAG nodes and
@@ -110,7 +110,7 @@ pub fn preview_handler(handler: &ServerHandler, evt: Event) -> Plan; // §8 PREV
    fixture event and assert the resulting `Plan` (no listen socket, no live backend).
 8. Add the no-network test guard and a doc note: "assert the plan, not the side effect."
 9. Seed canonical fixtures (a multi-archetype fake, a recorded HTTP transcript, sample
-   `.cfs` programs) reused by E1/E2/E3/E4/E7 tickets.
+   `.qfs` programs) reused by E1/E2/E3/E4/E7 tickets.
 
 ## Considerations
 
@@ -135,7 +135,7 @@ pub fn preview_handler(handler: &ServerHandler, evt: Event) -> Plan; // §8 PREV
   so its serialized shape (verb, path, supported set) is locked — AI consumers depend on it.
 - **wasm32 parity:** the pure half (parse, plan, codec round-trip) must run in the `wasm32`
   test target too, so the harness's pure helpers avoid `std::net`/threads.
-- **Coding standards / layout:** `cfs-test` under the workspace as a dev-only crate;
+- **Coding standards / layout:** `qfs-test` under the workspace as a dev-only crate;
   goldens under `tests/snapshots/` per crate; fixtures under `tests/fixtures/`; one
   obvious `cargo insta review` workflow documented in the crate README.
 
@@ -143,12 +143,12 @@ pub fn preview_handler(handler: &ServerHandler, evt: Event) -> Plan; // §8 PREV
 
 - `cargo build`, `cargo test`, and `cargo clippy -- -D warnings` green across the
   workspace; the pure test subset also passes on `wasm32-unknown-unknown`.
-- `cfs-test` is a **dev-dependency only** (dep-graph assertion: the shipped `cfs` binary
+- `qfs-test` is a **dev-dependency only** (dep-graph assertion: the shipped `qfs` binary
   does not link it).
 - **Plan assertion:** evaluating a representative write statement (e.g.
   `... |> UPSERT INTO /fake/table ...`) yields the expected effect-DAG shape and
   `irreversible` count, and `no_io_performed()` holds — **no live creds, no socket**.
-- **Parser golden tests:** a corpus of `.cfs` inputs (closed-core keywords, `|>`, `CALL`,
+- **Parser golden tests:** a corpus of `.qfs` inputs (closed-core keywords, `|>`, `CALL`,
   `DECODE/ENCODE`, server `CREATE …`) snapshots to stable AST; at least one parse-error
   case asserts a stable recovery message.
 - **Codec round-trip:** `DECODE` then `ENCODE` is identity for each of

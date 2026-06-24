@@ -1,0 +1,44 @@
+[package]
+name = "qfs-http"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs HTTP serving binding (t32, RFD-0001 §8): the leaf binding crate that turns the /server/endpoints registry into live HTTP routes. It implements qfs-server's generic `Binding` (kind Http) — reconciling an atomically hot-swapped route table from a cloned ServerState snapshot — binds path/query/body params as TYPED Values into the pre-parsed (t31 StatementSpec) endpoint query (zero parse-time injection surface), evaluates the bound query through the qfs-exec read executor (t29), and encodes owned Rows via the codec registry (t15). A LEAF: only the `qfs` binary consumes it (the serve composition root, the HTTP sibling of the t28 shell adapter), so its tokio listener dead-ends in the terminal binary and the qfs-exec-consumer + runtime-leaf confinement guards stay green. All native HTTP types are isolated here behind the generic Binding trait so the same EndpointDef->query->codec pipeline maps to a CF Worker fetch later (E7/t35). In-house minimal HTTP/1.1 over tokio (no axum) — see docs/adr/0004-http-serving.md."
+
+[dependencies]
+# The binding seam + the owned ServerState/EndpointDef registry the route table reconciles to.
+qfs-server = { path = "../server" }
+# The read executor (execute_read), the ReadDriver/ReadRegistry seam, and the structured
+# ExecError this crate maps to HTTP status codes. qfs-http is a LEAF integration consumer of
+# the read executor, the same role qfs-cmd plays — NOT a spine/lower crate reaching up
+# (the t29 CO-t29-4 guard's allowlist is extended for qfs-http with that documented rationale).
+qfs-exec = { path = "../exec" }
+# The hub: the codec registry (ENCODE json/csv), the owned Value/Row/RowBatch/Schema type
+# model, the MountRegistry, and the rehydratable StatementSpec (re-exported from qfs-core's
+# closed-core server DDL). No vendor HTTP type ever crosses this seam.
+qfs-core = { path = "../core" }
+# The parser AST (Statement/Expr/Literal) the injection-safe typed-param rewrite walks and the
+# StatementSpec rehydrates into. Reached directly for the AST node types only.
+qfs-parser = { path = "../parser" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# The async listener + per-request handler future + the arc-swap-style router hot-swap. tokio
+# is used HERE for the HTTP I/O domain only; qfs-http does NOT depend on qfs-runtime (it never
+# drives the COMMIT interpreter), so the runtime-leaf-confinement guard is untouched, and as a
+# terminal-consumed leaf tokio dead-ends in the binary.
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
+
+[dev-dependencies]
+# The in-memory fake ReadDriver the oneshot tests register (no live network/creds), plus the
+# ScanNode it returns rows for. Already normal deps' transitive crates, declared here for the
+# integration tests that build the fake directly.
+qfs-pushdown = { path = "../pushdown" }
+async-trait = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,31 @@
+[package]
+name = "qfs-server"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs server face (RFD-0001 §8): the server-IS-a-driver runtime. `qfs serve <config.qfs>` boots by replaying the config as /server writes through the same COMMIT path as a live write, and is itself reconfigurable through qfs. E7 sibling tickets plug HTTP/cron/webhook causes in behind the Binding seam."
+
+[dependencies]
+# The hub: Engine/Session, the Driver contract + Plan/commit/RowBatch/Value, and the
+# re-exported ServerNode/ServerWriteOp plan coordinates (qfs-server depends on qfs-core
+# only for these — it never reaches the runtime, so it stays consumable by qfs-cmd).
+qfs-core = { path = "../core" }
+# Boot parses the .qfs config into statements with the same parser the CLI uses. The
+# qfs-core -> qfs-parser edge already exists; qfs-server consumes the AST directly to
+# lower CREATE-DDL sugar and INSERT-INTO-/server writes into ServerConfigWrite plans.
+qfs-parser = { path = "../parser" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# The run loop blocks on ctrl_c then drains the audit sink. tokio is scoped to THIS
+# crate (the server runtime) with only the rt + signal features it needs — qfs-server is
+# NOT a qfs-runtime consumer (the /server writes are in-memory and apply through the pure
+# qfs_plan::commit seam), so this does not pull the async interpreter into the spine.
+tokio = { version = "1", default-features = false, features = ["rt", "signal", "macros"] }
+
+[lints]
+workspace = true

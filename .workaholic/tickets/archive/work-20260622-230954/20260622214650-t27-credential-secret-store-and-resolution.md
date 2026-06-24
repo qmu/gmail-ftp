@@ -13,7 +13,7 @@ depends_on: [20260622214650-t01-rust-workspace-single-binary-scaffold.md]
 
 ## Overview
 
-`cfs` is one binary holding tokens for Gmail, Drive, S3/R2, D1, GitHub, Slack, AWS,
+`qfs` is one binary holding tokens for Gmail, Drive, S3/R2, D1, GitHub, Slack, AWS,
 and Cloudflare while running cross-service effect-plans — a large blast radius
 (RFD §10). This ticket delivers the **single secrets surface** that every driver
 and the server read from: an encrypted-at-rest credential store keyed by
@@ -34,7 +34,7 @@ In scope:
 - `Secrets` trait — the one surface all drivers + server call to fetch a credential.
 - Local file backend: encrypted blob, `0600` perms, keyed by `(driver, account)`.
 - Cloudflare Workers backend: resolve from Secret Store / `env` bindings (no file).
-- Account model + `cfs account` CLI verbs (`add`, `list`, `use`, `remove`).
+- Account model + `qfs account` CLI verbs (`add`, `list`, `use`, `remove`).
 - Resolution precedence: `--account` > AT `acct` clause > persistent active > sole > error.
 - Redaction guarantees: secrets never enter logs, `Debug`, audit ledger, or error text.
 
@@ -46,7 +46,7 @@ Out of scope (deferred):
 
 ## Key components
 
-New crate `cfs-secrets` (consumer-side small trait, owned DTOs — RFD §9):
+New crate `qfs-secrets` (consumer-side small trait, owned DTOs — RFD §9):
 
 ```rust
 pub struct AccountId(pub String);            // e.g. "work", "personal"
@@ -71,7 +71,7 @@ pub trait Secrets: Send + Sync {
 pub enum SecretError { NotFound(CredentialKey), Locked, Backend(String) }
 ```
 
-- `LocalStore` — impl over `~/.config/cfs/credentials` (XDG), one encrypted blob;
+- `LocalStore` — impl over `~/.config/qfs/credentials` (XDG), one encrypted blob;
   AEAD (`chacha20poly1305`/`aes-gcm` via `ring`/`rustcrypto`), key from OS keyring or
   passphrase-derived (argon2). Enforces `0600` on create and re-checks on open.
 - `WorkerStore` — `wasm32` impl reading Secret Store / `env` bindings; no fs, no `0600`.
@@ -96,7 +96,7 @@ cross-driver key access is impossible by construction (key is `(driver, account)
 
 ## Implementation steps
 
-1. Scaffold `cfs-secrets` crate; add `zeroize`, an AEAD crate, `argon2`, `time`.
+1. Scaffold `qfs-secrets` crate; add `zeroize`, an AEAD crate, `argon2`, `time`.
 2. Define DTOs (`AccountId`, `DriverId`, `CredentialKey`, `Secret`, `AccountRecord`)
    with redacting `Debug` and `Zeroizing` backing; unit-test redaction.
 3. Define the `Secrets` trait + `SecretError`.
@@ -105,7 +105,7 @@ cross-driver key access is impossible by construction (key is `(driver, account)
 5. Implement `ActiveAccounts` persistence (separate plaintext metadata file).
 6. Implement `resolve()` with the full precedence ladder + structured errors.
 7. Feature-gate `WorkerStore` behind `cfg(target_arch = "wasm32")`; share the trait.
-8. Wire `cfs account add|list|use|remove` CLI subcommands onto the store/resolver.
+8. Wire `qfs account add|list|use|remove` CLI subcommands onto the store/resolver.
 9. Expose a `Secrets` handle in the driver-bind context so any driver fetches via the trait.
 10. Add golden tests for resolution outcomes and a redaction integration test.
 

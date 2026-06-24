@@ -14,7 +14,7 @@ depends_on: [20260622214650-t13-driver-contract-trait.md, 20260622214650-t10-int
 ## Overview
 
 Implements the **pushdown federation** bullet of RFD §6 (and the federation half of
-epic E3). A cfs pipeline (`FROM <path> |> <op> |> …`) may straddle several sources —
+epic E3). A qfs pipeline (`FROM <path> |> <op> |> …`) may straddle several sources —
 a Postgres table JOINed against git commit history, an S3 listing UNIONed with a Drive
 listing. Today the interpreter (T10) would pull every leaf into the local engine and
 evaluate naively. This ticket teaches the planner to **split the logical plan by source**:
@@ -60,7 +60,7 @@ Out-of-scope (deferred):
 
 ## Key components
 
-New crate `cfs-plan` (Domain) and `cfs-engine` (Infrastructure).
+New crate `qfs-plan` (Domain) and `qfs-engine` (Infrastructure).
 
 - `enum LogicalPlan` — sum type over the pure query operators (one variant per closed-core
   query keyword; no effect variants). Built from the AST by a lowering already owned upstream.
@@ -92,7 +92,7 @@ New crate `cfs-plan` (Domain) and `cfs-engine` (Infrastructure).
 
 ## Implementation steps
 
-1. Define `LogicalPlan` (pure-query variants only) and `PhysicalPlan`/`ScanNode` in `cfs-plan`.
+1. Define `LogicalPlan` (pure-query variants only) and `PhysicalPlan`/`ScanNode` in `qfs-plan`.
 2. Implement `partition_by_source`: post-order walk; tag each leaf with its `SourceId`; a node
    whose entire subtree shares one `SourceId` is a pushdown candidate.
 3. For each candidate subtree, call `Pushdown::accept`; wrap the accepted part in `ScanNode`,
@@ -118,7 +118,7 @@ New crate `cfs-plan` (Domain) and `cfs-engine` (Infrastructure).
   Resolve with a column-provenance check before offering a subtree to `accept`, and keep the
   residual semantically total (engine result == naive all-local result). Differential test:
   run every fixture both fully-local and partitioned, assert equal row sets.
-- **Footprint / operation (RFD §9).** Keep `cfs-engine` dependency-light; gate any optional
+- **Footprint / operation (RFD §9).** Keep `qfs-engine` dependency-light; gate any optional
   `DuckDbEngine` behind a non-default cargo feature so the default static + wasm build stays
   lean. CI must build `--target wasm32-unknown-unknown` to keep the Workers target honest.
 - **Effects-as-data + purity (RFD §3).** This pass touches only the **pure** query side; it
@@ -132,8 +132,8 @@ New crate `cfs-plan` (Domain) and `cfs-engine` (Infrastructure).
   audit-friendly plan record.
 - **Determinism.** Rule-based partitioning only — identical input plan ⇒ byte-identical
   `explain()` output, so golden tests are stable and AI agents get reproducible plans.
-- **Coding standards.** Domain types (`LogicalPlan`, `PhysicalPlan`) in `cfs-plan` with no I/O;
-  the evaluator + any DuckDB feature in `cfs-engine` (Infrastructure). No vendor types cross
+- **Coding standards.** Domain types (`LogicalPlan`, `PhysicalPlan`) in `qfs-plan` with no I/O;
+  the evaluator + any DuckDB feature in `qfs-engine` (Infrastructure). No vendor types cross
   the `Pushdown`/`CombineEngine` traits.
 
 ## Acceptance criteria

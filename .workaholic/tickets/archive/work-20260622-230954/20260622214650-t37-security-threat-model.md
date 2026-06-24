@@ -13,7 +13,7 @@ depends_on: [20260622214650-t27-credential-secret-store-and-resolution.md, 20260
 
 ## Overview
 
-`cfs` is one binary that holds long-lived tokens for Gmail, Drive, GitHub, Slack,
+`qfs` is one binary that holds long-lived tokens for Gmail, Drive, GitHub, Slack,
 AWS, and Cloudflare and runs cross-service effect-plans unattended. That is a large
 blast radius (RFD §10, §8 "Unattended-execution safety"). This ticket delivers the
 **threat model document plus the cross-cutting enforcement code** that ties together
@@ -102,7 +102,7 @@ New crate-internal module `security/` (consumer-side, no vendor types):
 - **Idempotency & recovery** (operation, RFD §6): the audit ledger is the recovery source
   of truth — `cp` = copy→verify→delete, each step a ledger entry, so a partial cross-source
   plan can be replayed or rolled back. Prefer `UPSERT` for retry-safe at-least-once paths.
-- **Observability**: structured audit entries must be queryable *through cfs itself*
+- **Observability**: structured audit entries must be queryable *through qfs itself*
   (`/server/audit` is a relation) so an operator can ask "what did this handler do?".
 - **Hard parts**: (a) TOCTOU between parse-time capability rejection and commit-time policy
   — resolve by re-authorizing at commit with the same `SecurityContext`. (b) Redaction is

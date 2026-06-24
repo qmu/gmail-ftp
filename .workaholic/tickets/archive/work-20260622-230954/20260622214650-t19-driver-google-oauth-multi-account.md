@@ -46,7 +46,7 @@ Out of scope:
 
 ## Key components
 
-New crate/module `crates/cfs-google-auth` (or `src/auth/google/`):
+New crate/module `crates/qfs-google-auth` (or `src/auth/google/`):
 
 - `struct OAuthClient { client_id, client_secret, scopes: Vec<String>, http: HttpClient }`
   — thin reqwest-based client; no vendor SDK (owned DTOs only, RFD §171).
@@ -69,7 +69,7 @@ New crate/module `crates/cfs-google-auth` (or `src/auth/google/`):
 
 ## Implementation steps
 
-1. Add the `cfs-google-auth` module; add `reqwest` (rustls), `url`, `serde`,
+1. Add the `qfs-google-auth` module; add `reqwest` (rustls), `url`, `serde`,
    `secrecy`, `tiny_http`/`tokio` listener deps (thin, no Google SDK).
 2. Define owned DTOs (`GoogleAccount`, `AccessToken`) and `AuthError`.
 3. Implement the OAuth endpoints client: build auth URL (`access_type=offline`,

@@ -1,0 +1,28 @@
+[package]
+name = "qfs-driver"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs driver contract (RFD-0001 §5): the consumer-side narrow Driver trait + owned-DTO conventions. Also owns the shared CfsError and Path primitives the trait signatures need."
+
+[dependencies]
+qfs-plan = { path = "../plan" }
+# qfs-types supplies the canonical typed `Schema` the Driver contract describes
+# (RFD §5: "driver declares schema; powers DESCRIBE"). The driver crate trades in the
+# typed model directly rather than redefining an untyped one; qfs-types is a LEAF so
+# the spine stays acyclic (qfs-driver → { qfs-plan, qfs-types } → qfs-types).
+qfs-types = { path = "../types" }
+thiserror = { workspace = true }
+# serde powers `-json DESCRIBE` output and the golden snapshots of the declaration
+# DTOs (RFD §5). No I/O, no async, no vendor SDK — the purity invariant is preserved.
+serde = { workspace = true }
+
+[dev-dependencies]
+# The fixture-driver DESCRIBE snapshot test serializes the owned DTOs to JSON.
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

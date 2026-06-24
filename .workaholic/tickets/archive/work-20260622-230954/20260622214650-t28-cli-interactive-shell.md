@@ -13,7 +13,7 @@ depends_on: [20260622214650-t09-effect-plan-and-preview-commit.md, 2026062221465
 
 ## Overview
 
-Implements the interactive half of RFD §7 (CLI): an FTP-like REPL invoked as bare `cfs`.
+Implements the interactive half of RFD §7 (CLI): an FTP-like REPL invoked as bare `qfs`.
 It gives an AI agent or human a stateful session with a *current working location* tagged
 `{driver, path}` (RFD §2 VFS, §5 archetypes) and the filesystem verbs (`ls/cd/pwd/cat/cp/mv/rm`)
 that are sugar over the closed-core grammar (RFD §3). The shell binds the operating procedure
@@ -31,20 +31,20 @@ In scope:
   path resolution against cwd.
 - Filesystem builtins `ls`, `cd`, `pwd`, `cat`, `cp`, `mv`, `rm` desugared to core statements.
 - Cross-mount `cp`/`mv` (source and dest under different drivers) without `cd`-ing.
-- Running raw cfs statements typed at the prompt (anything not a builtin), with inline
+- Running raw qfs statements typed at the prompt (anything not a builtin), with inline
   `PREVIEW` (default) and `COMMIT` UX and affected-count display.
 - Tab completion for builtins, mount/driver names, and path components (via driver `ls`).
 
 Out of scope (deferred):
-- One-shot `cfs run`/`-e`, `-json` output, absolute-only addressing — sibling ticket t27 (CLI one-shot runner).
+- One-shot `qfs run`/`-e`, `-json` output, absolute-only addressing — sibling ticket t27 (CLI one-shot runner).
 - Auth/account switching, credential store — t-auth/E5 tickets (shell consumes the resolved registry).
 - Non-local drivers beyond what t16 (local FS) provides; completion against remote drivers
   works via the generic `Driver` trait but only local is exercised here.
-- Server `CREATE …` DDL forms and `cfs serve` — E7.
+- Server `CREATE …` DDL forms and `qfs serve` — E7.
 
 ## Key components
 
-New crate-internal module `cli::shell` (binary crate `cfs`), reusing engine crates from
+New crate-internal module `cli::shell` (binary crate `qfs`), reusing engine crates from
 t09 (effect-plan/preview/commit) and t16 (local driver). No vendor types cross the boundary
 (RFD §9 owned DTOs); the shell only sees core AST, `Plan`, and DTO rows.
 
@@ -67,14 +67,14 @@ t09 (effect-plan/preview/commit) and t16 (local driver). No vendor types cross t
 
 ## Implementation steps
 
-1. Add `cli::shell` module and the `cfs` binary entrypoint that drops into the REPL when no subcommand/args.
+1. Add `cli::shell` module and the `qfs` binary entrypoint that drops into the REPL when no subcommand/args.
 2. Define `Location`, `Session`, and `VfsPath` resolution (`resolve`) with unit tests for
    relative, `..`, root, and cross-driver absolute cases.
 3. Wire the line editor (`rustyline`): prompt from `Location::Display`, persistent history file
-   under the cfs config dir.
+   under the qfs config dir.
 4. Implement builtin parsing (split line → builtin + args) and `Builtin::desugar` to core `Statement`s.
 5. Route every line through one `eval_line`: builtins desugar then run; non-builtin lines parse as
-   raw cfs statements. Both call `Interpreter::plan(stmt)`.
+   raw qfs statements. Both call `Interpreter::plan(stmt)`.
 6. Implement PREVIEW-by-default: print `PlanSummary` + affected counts; require explicit `COMMIT`
    (typed, or `--commit`/confirmation) before applying. Destructive set ops always show counts first.
 7. Implement `cd`/`pwd` to mutate/print `Session.cwd` (no plan; pure state change), validating the
@@ -99,7 +99,7 @@ t09 (effect-plan/preview/commit) and t16 (local driver). No vendor types cross t
   into a driver that has no namespace archetype — gate via capabilities); (b) completion latency —
   cache the parent `ls` per prompt and bound it with a short timeout so a slow driver never hangs the REPL;
   (c) distinguishing a builtin from a raw statement unambiguously (reserve builtin names only at the
-  line head, everything else parses as cfs). Resolve (c) by lexing the first token and checking the
+  line head, everything else parses as qfs). Resolve (c) by lexing the first token and checking the
   builtin set before falling through to the grammar.
 - **Observability:** every committed plan goes to the audit ledger (RFD §6) with the session as origin.
 - **Standards:** keep `cli::shell` free of vendor/driver internals (owned DTOs only); no secrets are
@@ -108,7 +108,7 @@ t09 (effect-plan/preview/commit) and t16 (local driver). No vendor types cross t
 ## Acceptance criteria
 
 - `cargo build` and `cargo clippy --all-targets -- -D warnings` are green; `cargo test` passes.
-- Launching `cfs` with no args enters the REPL; prompt shows `{driver}:{path}$` reflecting cwd.
+- Launching `qfs` with no args enters the REPL; prompt shows `{driver}:{path}$` reflecting cwd.
 - `cd`/`pwd`/`ls` against the local driver (t16) navigate and list correctly; `cd` into a
   non-namespace node is rejected with a structured error.
 - `rm`/`mv`/`cp` over a set print affected counts and a PREVIEW by default; nothing is applied
@@ -116,7 +116,7 @@ t09 (effect-plan/preview/commit) and t16 (local driver). No vendor types cross t
   not live effects.
 - Cross-mount `cp src /other-driver/dst` produces a cross-source plan without changing cwd
   (asserted via golden plan snapshot).
-- A raw cfs statement typed at the prompt produces the same plan as the equivalent one-shot input.
+- A raw qfs statement typed at the prompt produces the same plan as the equivalent one-shot input.
 - Tab completion returns builtin names, mount names, and path segments; tests cover completion
   resolution without live credentials (local driver only).
 - Golden tests over scripted REPL sessions assert rendered output and emitted plans.

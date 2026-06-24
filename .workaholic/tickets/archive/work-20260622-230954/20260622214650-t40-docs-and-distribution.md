@@ -14,7 +14,7 @@ depends_on: [20260622214650-t36-deployment-targets.md]
 ## Overview
 
 This ticket delivers the **authoritative documentation set** and the **single-binary
-distribution/release pipeline** for `cfs`. It implements the distribution promise in RFD
+distribution/release pipeline** for `qfs`. It implements the distribution promise in RFD
 §1 ("a single static binary that runs as a CLI locally, as a daemon on EC2, or compiled to
 `wasm32` for Cloudflare Workers") and §9 (Rust single binary + `wasm32-unknown-unknown`),
 and it makes the closed-core grammar and three open registries of §3 *legible* to both the
@@ -38,7 +38,7 @@ In scope:
 - `docs/server.md`: server guide (`CREATE ENDPOINT|TRIGGER|JOB|VIEW|WEBHOOK|POLICY`, bindings,
   deployment mapping).
 - Release pipeline producing static Linux (`x86_64`/`aarch64` musl) + macOS (`x86_64`/`aarch64`)
-  binaries and a `wasm32-unknown-unknown` artifact; `install.sh`; SemVer + `cfs --version`.
+  binaries and a `wasm32-unknown-unknown` artifact; `install.sh`; SemVer + `qfs --version`.
 
 Out of scope (deferred):
 - Actual deployment-target wiring (Worker/EC2 packaging, native CF bindings) — ticket **t36**
@@ -53,9 +53,9 @@ New crate `xtask` (cargo-xtask pattern; not shipped in the binary):
 - `xtask::gen_docs` — render reference docs from in-binary metadata so docs cannot drift.
 
 Doc-generation surface added to existing core crates (introspection, not new behavior):
-- `cfs-lang`: `pub const RESERVED_KEYWORDS: &[&str]` (the §3 frozen set) and
+- `qfs-lang`: `pub const RESERVED_KEYWORDS: &[&str]` (the §3 frozen set) and
   `pub fn grammar_ebnf() -> &'static str`; a `#[test]` golden-compares these to `docs/`.
-- `cfs-driver`: extend the `Driver` trait with already-required descriptors so the catalog
+- `qfs-driver`: extend the `Driver` trait with already-required descriptors so the catalog
   is generated, never hand-written:
   ```rust
   pub struct DriverDoc {
@@ -70,7 +70,7 @@ Doc-generation surface added to existing core crates (introspection, not new beh
   ```
   `DriverDoc` is an **owned DTO** — no vendor SDK types leak (RFD §9). `gen_docs` walks the
   function/codec registries and the path registry (the three open namespaces of §3).
-- Version surface: `cfs::version::VERSION` from `env!("CARGO_PKG_VERSION")`, plus build
+- Version surface: `qfs::version::VERSION` from `env!("CARGO_PKG_VERSION")`, plus build
   metadata (git sha, target triple, wasm-capable flag) via a `build.rs`.
 
 Release/CI:
@@ -80,13 +80,13 @@ Release/CI:
 ## Implementation steps
 
 1. Add `xtask` workspace member; wire `cargo xtask <dist|gen-docs>`.
-2. Expose `RESERVED_KEYWORDS` + `grammar_ebnf()` in `cfs-lang`; transcribe the §3 frozen
+2. Expose `RESERVED_KEYWORDS` + `grammar_ebnf()` in `qfs-lang`; transcribe the §3 frozen
    keyword set verbatim (query/effect/codec/plan/server-DDL/operators).
 3. Add `Driver::doc()` / `DriverDoc` and implement for every existing driver.
 4. Build `xtask::gen_docs`: render `docs/language.md`, `docs/drivers.md`, `docs/server.md`
    from the registries; write README quickstart section from a checked-in template.
 5. Add golden tests: generated docs must equal committed `docs/*` (fail CI on drift).
-6. `build.rs` emitting version/build metadata; implement `cfs --version` long form.
+6. `build.rs` emitting version/build metadata; implement `qfs --version` long form.
 7. `xtask::dist`: cross-compile the 4 native targets (musl static) + `wasm32`; strip,
    checksum, tarball into `dist/`.
 8. `install.sh` + `release.yml`; document SemVer policy (grammar = stable surface).
@@ -110,7 +110,7 @@ Release/CI:
   filesystem). Gate non-wasm code behind features; `xtask dist` must *fail loudly* if the
   wasm artifact pulls a non-wasm symbol, rather than silently producing a broken artifact.
   Deeper target wiring is t36's job — here we only prove the artifact builds.
-- **Reproducibility/observability:** embed git sha + target in the binary; `cfs --version`
+- **Reproducibility/observability:** embed git sha + target in the binary; `qfs --version`
   is the field-debug anchor. Tarballs carry `sha256`; `install.sh` verifies before exec.
 - **Directory standards:** `docs/` for reference, `xtask/` for build tooling, no doc logic
   in shipped crates beyond pure introspection (`doc()` is read-only, side-effect-free).
@@ -126,5 +126,5 @@ Release/CI:
 - `cargo xtask dist` produces 4 native tarballs + 1 wasm artifact, each with a verified
   `sha256`; the wasm artifact contains no non-wasm symbol (linker check passes).
 - `install.sh` on a clean Linux + macOS host fetches, verifies checksum, and yields a
-  runnable `cfs --version` printing semver + git sha + target triple.
+  runnable `qfs --version` printing semver + git sha + target triple.
 - No live credentials appear in README, docs, golden files, or release artifacts (grep gate).

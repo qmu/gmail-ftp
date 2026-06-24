@@ -50,8 +50,8 @@ Out of scope (deferred):
 - Pushdown planning → E3 federation.
 
 ## Key components
-New crate/module `cfs-resolve` (or `crates/lang/src/resolve.rs`), depending on
-`cfs-ast` (t04) and `cfs-types` (t05). No vendor types leak in — drivers register via
+New crate/module `qfs-resolve` (or `crates/lang/src/resolve.rs`), depending on
+`qfs-ast` (t04) and `qfs-types` (t05). No vendor types leak in — drivers register via
 owned DTOs only.
 
 ```rust
@@ -89,7 +89,7 @@ impl<'r, R: CallRegistry> Resolver<'r, R> {
 }
 ```
 
-Touches: `cfs-ast` (adds `ResolvedRef` slot to call nodes), `cfs-types` (`Type::Plan`,
+Touches: `qfs-ast` (adds `ResolvedRef` slot to call nodes), `qfs-types` (`Type::Plan`,
 `FnSig`), driver-contract trait (read-only here; full driver impls land in E4).
 
 ## Implementation steps

@@ -13,7 +13,7 @@ depends_on: [20260622214650-t13-driver-contract-trait.md, 20260622214650-t17-dri
 
 ## Overview
 
-Delivers a single Cloudflare driver crate exposing three of Cloudflare's primitives through cfs's
+Delivers a single Cloudflare driver crate exposing three of Cloudflare's primitives through qfs's
 uniform DSL, each mapped to the correct archetype from RFD §5:
 
 - **D1** (`/cf/d1/<db>/<table>`) — **relational/table** archetype. SQLite-compatible; reuses the

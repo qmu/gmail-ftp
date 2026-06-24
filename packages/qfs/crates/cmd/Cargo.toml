@@ -1,0 +1,32 @@
+[package]
+name = "qfs-cmd"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs command layer (RFD-0001 §7): clap-derive argv parsing dispatching run/serve/interactive shell into qfs-core. Logic-free w.r.t. the engine."
+
+[dependencies]
+# C4 / G5: cmd depends on qfs-core (the hub), qfs-server (the serve arm), and qfs-exec (the
+# execution/integration layer, t29) ONLY. It must NOT depend on qfs-lang / qfs-plan /
+# qfs-driver / qfs-codec / qfs-parser directly — enforced by tests/dep_direction.rs. qfs-exec
+# is the t29 home for the SELECT read-path executor + one-shot orchestration; cmd stays
+# logic-free, dispatching into it.
+qfs-core = { path = "../core" }
+qfs-server = { path = "../server" }
+qfs-exec = { path = "../exec" }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+# Planner E2E (t29): the read-path scenario drives the qfs-exec black-box API against an
+# in-memory fake driver. qfs-pushdown supplies `ScanNode`; async-trait its async `scan`.
+qfs-pushdown = { path = "../pushdown" }
+async-trait = { workspace = true }
+
+[lints]
+workspace = true

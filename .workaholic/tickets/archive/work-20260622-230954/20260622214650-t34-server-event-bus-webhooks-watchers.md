@@ -54,7 +54,7 @@ Out of scope (deferred):
   the `EventBus`/`WatcherStore` traits those back).
 
 ## Key components
-Module `cfs-server::watchtower` (no HTTP/cron deps beyond the t31 seam):
+Module `qfs-server::watchtower` (no HTTP/cron deps beyond the t31 seam):
 - `event.rs` — owned, vendor-free DTO (RFD §9):
   - `struct Event { id: EventId, source: SourcePath, kind: EventKind, dedup_key: String, new: Row, received_at: DateTime }`
   - `enum EventKind { Webhook, RowAppended, RowChanged, RowRemoved }`. `new: Row` exposes the
@@ -98,7 +98,7 @@ Module `cfs-server::watchtower` (no HTTP/cron deps beyond the t31 seam):
 8. Wire `WatchtowerBinding` into the `Runtime` supervisor (t30) alongside the t31 HTTP binding;
    share the `Arc<RwLock<ServerState>>` snapshot.
 9. Emit an audit ledger record per fired plan (event id, trigger, plan summary, outcome) (RFD §6).
-10. Golden + replay tests (see acceptance); ship a `fixtures/watchtower.cfs` config.
+10. Golden + replay tests (see acceptance); ship a `fixtures/watchtower.qfs` config.
 
 ## Considerations
 - **At-least-once is the hard part.** Exactly-once is not promised; correctness comes from

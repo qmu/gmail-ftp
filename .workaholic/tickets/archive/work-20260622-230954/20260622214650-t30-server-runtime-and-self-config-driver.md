@@ -12,8 +12,8 @@ depends_on: [20260622214650-t09-effect-plan-and-preview-commit.md, 2026062221465
 # Server runtime + /server self-config driver
 
 ## Overview
-Delivers `cfs serve <config.cfs>`: the long-lived runtime that boots from a file of cfs
-statements and is itself **reconfigurable through cfs**. Implements RFD §8 (Server) and the
+Delivers `qfs serve <config.qfs>`: the long-lived runtime that boots from a file of qfs
+statements and is itself **reconfigurable through qfs**. Implements RFD §8 (Server) and the
 §6 runtime principle that "a statement is a plan; the runtime is just *what causes a plan to
 run*". The server's own configuration — endpoints, triggers, jobs, views, policies, webhooks
 — is **data** exposed under the `/server/...` mount and managed by the same DSL the server
@@ -26,7 +26,7 @@ hook — those are sibling tickets in E7.
 
 ## Scope
 In scope:
-- `cfs serve <config.cfs>` subcommand: parse the file into statements, apply each as a Plan
+- `qfs serve <config.qfs>` subcommand: parse the file into statements, apply each as a Plan
   via `COMMIT` against the in-process `/server` driver, then enter the supervised run loop.
 - The `/server` driver implementing the `Driver` trait (t13): namespace
   `/server/{endpoints,triggers,jobs,views,policies,webhooks}`, each an **append/table**
@@ -48,7 +48,7 @@ Out of scope (deferred):
 - `CREATE ...` DDL parsing lives in E1; this ticket consumes the resulting AST/Plan.
 
 ## Key components
-New crate/module `cfs-server` (binary feature `serve`):
+New crate/module `qfs-server` (binary feature `serve`):
 - `runtime.rs`
   - `struct Runtime { state: Arc<RwLock<ServerState>>, bindings: Vec<Box<dyn Binding>>, audit: AuditSink }`
   - `impl Runtime { fn boot(cfg: &Path, world: &mut World) -> Result<Runtime>; fn run(self) -> Result<()> }`
@@ -83,10 +83,10 @@ New crate/module `cfs-server` (binary feature `serve`):
    each statement in file order; fail fast with line-located errors on any rejected statement.
 6. Define the `Binding` trait + `BindingKind`; after each committed `/server` write, call
    `reconcile` on every registered binding (start with a no-op `NullBinding` for tests).
-7. Wire `cfs serve <config.cfs>` in `main.rs`; `Runtime::run` blocks on a shutdown signal
+7. Wire `qfs serve <config.qfs>` in `main.rs`; `Runtime::run` blocks on a shutdown signal
    (`tokio::signal::ctrl_c`) and drains the audit sink on exit.
 8. Emit an audit ledger record for every `/server` mutation (who/op/node/before-after).
-9. Golden tests: boot a fixture `.cfs` and assert the resulting `ServerState` snapshot.
+9. Golden tests: boot a fixture `.qfs` and assert the resulting `ServerState` snapshot.
 
 ## Considerations
 - **Least-privilege & secrets**: config DTOs reference policies/credentials by handle, never
@@ -104,19 +104,19 @@ New crate/module `cfs-server` (binary feature `serve`):
   same `COMMIT` path as a live write, not a privileged shortcut. Resolve by making
   `ServerConfigWrite` the **only** way `ServerState` changes, and routing boot through it.
 - **Directory/coding standards**: owned DTOs, small consumer-side traits, no vendor types,
-  `thiserror` error enums with structured variants; keep `cfs-server` free of HTTP/cron deps
+  `thiserror` error enums with structured variants; keep `qfs-server` free of HTTP/cron deps
   (those land in siblings behind the `Binding` trait).
 
 ## Acceptance criteria
 - `cargo build` and `cargo clippy --all-targets -- -D warnings` are green.
-- `cfs serve fixtures/server_boot.cfs` boots without network/live credentials, applies all
+- `qfs serve fixtures/server_boot.qfs` boots without network/live credentials, applies all
   statements, and reaches the run loop; `ctrl_c` shuts down cleanly draining the audit sink.
 - **Plan assertion**: lowering `CREATE JOB ... EVERY ... DO ...` (and the equivalent
   `INSERT INTO /server/jobs ...`) yields identical `ServerConfigWrite` plan nodes (sugar
   equivalence) — golden test on the plan, not on execution.
 - **Plan assertion**: writing to a `/server` node with an unsupported verb is rejected at
   plan time with a structured, machine-readable error (no panic, no `COMMIT`).
-- Golden test: a fixture `.cfs` boots to a deterministic `ServerState` snapshot (serde),
+- Golden test: a fixture `.qfs` boots to a deterministic `ServerState` snapshot (serde),
   and re-applying the same file is a no-op (idempotency).
 - `DESCRIBE /server/triggers` returns the trigger schema with no live backend.
 - A registered `NullBinding`'s `reconcile` is invoked exactly once per committed `/server`

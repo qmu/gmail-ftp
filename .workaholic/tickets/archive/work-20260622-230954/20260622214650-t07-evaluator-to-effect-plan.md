@@ -50,8 +50,8 @@ Out of scope (deferred):
 
 ## Key components
 
-New crate/module `cfs-eval` (domain, no I/O deps), touching `cfs-plan` (#9),
-`cfs-ast` (#4), `cfs-types` (#5):
+New crate/module `qfs-eval` (domain, no I/O deps), touching `qfs-plan` (#9),
+`qfs-ast` (#4), `qfs-types` (#5):
 
 - `fn eval(stmt: &Stmt, ctx: &EvalCtx) -> Result<Value, EvalError>` — entry point.
 - `enum Value { Relation(PlanSource), Plan(Plan), Scalar(Literal) }` — owned, no
@@ -92,9 +92,9 @@ New crate/module `cfs-eval` (domain, no I/O deps), touching `cfs-plan` (#9),
 
 ## Considerations
 
-- **Purity invariant is the load-bearing property.** No signature in `cfs-eval` may
+- **Purity invariant is the load-bearing property.** No signature in `qfs-eval` may
   take or return `World`, an HTTP client, or a token; enforce via crate-level deny of
-  I/O dependencies (no `reqwest`/`tokio` in `cfs-eval`'s `Cargo.toml`). This is what
+  I/O dependencies (no `reqwest`/`tokio` in `qfs-eval`'s `Cargo.toml`). This is what
   makes `SEND` safe and everything dry-runnable.
 - **Least privilege / secrets:** the evaluator never sees credentials; capability
   gating happens here so denied verbs never reach a plan. Keep `EvalError` messages
@@ -118,8 +118,8 @@ New crate/module `cfs-eval` (domain, no I/O deps), touching `cfs-plan` (#9),
 
 ## Acceptance criteria
 
-- `cargo build` and `cargo clippy --all-targets -- -D warnings` are green; `cargo test -p cfs-eval` passes.
-- `cfs-eval` has **no** runtime/HTTP/async dependency (verified by `Cargo.toml`/`cargo tree`).
+- `cargo build` and `cargo clippy --all-targets -- -D warnings` are green; `cargo test -p qfs-eval` passes.
+- `qfs-eval` has **no** runtime/HTTP/async dependency (verified by `Cargo.toml`/`cargo tree`).
 - A pure query statement evaluates to a `Value::Relation(PlanSource)` whose node tree
   matches a golden snapshot; **no I/O occurs** (assert via a panicking dummy driver if invoked).
 - `INSERT/UPSERT/UPDATE/REMOVE` and `CALL mail.send` evaluate to `Value::Plan` with the

@@ -1,0 +1,19 @@
+[package]
+name = "qfs-http-core"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs shared pure HTTP DTO + redaction leaf (RFD-0001 §5/§10, t19 refinement): the single source of truth for the vendor-free HTTP exchange DTOs (HttpMethod/HttpRequest/HttpResponse) and the header-redaction authority (SENSITIVE_HEADERS/is_sensitive_header + the redacting Debug impls). A PURE LEAF — no reqwest/tokio/qfs-runtime: it carries only owned DTOs + the secret-discipline logic, so both qfs-driver-http (real reqwest client) and qfs-google-auth (local HttpExchange seam) depend on it for ONE redaction set rather than each hand-copying a drift-prone duplicate. The concrete clients (HttpClient/ReqwestClient, HttpExchange/MockExchange) stay in their respective crates; only the DTOs + redaction live here."
+
+[dependencies]
+# The single redaction marker (REDACTED) the manual Debug impls emit in place of a sensitive
+# header value. qfs-secrets depends ONLY on qfs-types among workspace crates, so depending on it
+# keeps qfs-http-core a pure leaf (qfs-http-core -> qfs-secrets -> qfs-types). No reqwest, no
+# tokio, no qfs-runtime: the DTOs are vendor-free and runtime-free by construction.
+qfs-secrets = { path = "../secrets" }
+
+[lints]
+workspace = true

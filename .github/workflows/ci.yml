@@ -1,6 +1,6 @@
-name: cfs CI
+name: qfs CI
 
-# CI for the Rust `cfs` workspace (RFD-0001 epic E0). The toolchain is read from
+# CI for the Rust `qfs` workspace (RFD-0001 epic E0). The toolchain is read from
 # `rust-toolchain.toml` (channel = stable, with rustfmt + clippy and the two Linux
 # targets). No secrets, no credentials are used anywhere in this workflow
 # (acceptance criterion: no live credentials in the build / tests / CI).
@@ -13,6 +13,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+
+# The Cargo workspace lives under packages/qfs/ (monorepo layout). All `run:` steps
+# execute there; `uses:` actions (checkout, rust-cache, upload-artifact) take explicit paths.
+defaults:
+  run:
+    working-directory: packages/qfs
 
 jobs:
   fmt:
@@ -30,6 +36,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/qfs
       - name: Install toolchain (from rust-toolchain.toml)
         run: rustup show
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -40,6 +48,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/qfs
       - name: Install toolchain (from rust-toolchain.toml)
         run: rustup show
       - run: cargo build --workspace
@@ -57,6 +67,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/qfs
       - name: Add target
         run: rustup target add ${{ matrix.target }}
       - name: Install aarch64 cross-linker
@@ -66,31 +78,33 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
       # x86_64 is native on the ubuntu runner (full binary link); aarch64 uses the
       # cross-linker installed above. Both build the whole workspace including the
-      # `cfs` binary.
+      # `qfs` binary.
       - name: Build workspace for target
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --workspace --target ${{ matrix.target }}
 
-  # t36: the wasm-clean cfs-host CORE builds on wasm32-unknown-unknown (the RuntimeHost/
+  # t36: the wasm-clean qfs-host CORE builds on wasm32-unknown-unknown (the RuntimeHost/
   # DurableStore traits, the owned DTOs, the wrangler generator, the binding-set derivation,
   # and the parked host-workers scaffold). The `worker`-backed WorkersHost is PARKED (the
   # `worker` crate is not yet a dependency — docs/adr/0005-deployment-hosts.md), so this job
   # builds the wasm-clean core, NOT a `worker` cdylib.
   wasm32-host-core:
-    name: wasm32 (cfs-host core, t36)
+    name: wasm32 (qfs-host core, t36)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/qfs
       - run: rustup target add wasm32-unknown-unknown
-      # Default features = the wasm-clean core (no tokio, no cfs-server, no worker).
-      - run: cargo build -p cfs-host --target wasm32-unknown-unknown
+      # Default features = the wasm-clean core (no tokio, no qfs-server, no worker).
+      - run: cargo build -p qfs-host --target wasm32-unknown-unknown
       # The parked host-workers scaffold also builds for wasm32 (the archetype->primitive mapping).
-      - run: cargo build -p cfs-host --target wasm32-unknown-unknown --features host-workers
+      - run: cargo build -p qfs-host --target wasm32-unknown-unknown --features host-workers
 
   # t36 RELEASE job: emit the deployment artifacts — static musl binaries (both arches), the
-  # cfs.wasm size-optimized module, the wrangler.toml template, and a SHA256SUMS. Gated on a tag
+  # qfs.wasm size-optimized module, the wrangler.toml template, and a SHA256SUMS. Gated on a tag
   # push so a normal CI run does not produce release artifacts. The musl static link is CI-ONLY
   # (the local trip host has no x86_64 musl cross-linker — t01/A2); this job installs `musl-tools`
   # + the cross-linkers so the static binaries link here.
@@ -101,6 +115,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/qfs
       - name: Add release targets
         run: |
           rustup target add x86_64-unknown-linux-musl
@@ -116,5 +132,5 @@ jobs:
         run: bash deploy/release.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: cfs-release
-          path: dist/
+          name: qfs-release
+          path: packages/qfs/dist/

@@ -3,15 +3,12 @@ credentials.json
 token.json
 *.token.json
 
-# Built binary (Go)
-/gmail-ftp
-/dist/
-
-# Rust build artifacts
-/target/
+# Build artifacts (Cargo) — match at any depth under packages/*/
+target/
+dist/
 
 # Editor / OS noise
 *.swp
 .DS_Store
 .cargo/config.toml
-.cfs-state/
+.qfs-state/

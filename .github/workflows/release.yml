@@ -1,4 +1,4 @@
-name: cfs release
+name: qfs release
 
 # Tag-triggered release pipeline (ticket t40, RFD-0001 §1/§9). On a `v*` tag, build the release
 # artifacts via `cargo run -p xtask -- dist` (the cross-compile matrix → strip → sha256 → tarball
@@ -8,7 +8,7 @@ name: cfs release
 # WHY xtask dist runs here and not locally (ADR-0007, mirrors t36/ADR-0005): a release build wedges
 # the constrained trip host's disk, the full-workspace wasm build is parked (only the pure cores are
 # wasm-clean — t36), and musl static cross-link needs the cross toolchain this job installs. So the
-# pipeline is CI-only; `xtask dist` refuses to run unless CFS_DIST_ALLOW=1 (set here).
+# pipeline is CI-only; `xtask dist` refuses to run unless QFS_DIST_ALLOW=1 (set here).
 #
 # No secret / credential is used anywhere (RFD §10): only the auto-provided GITHUB_TOKEN to attach
 # the release assets. No live token is ever embedded in an artifact.
@@ -23,7 +23,13 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  CFS_DIST_ALLOW: "1"   # authorize the CI-only `xtask dist` (see ADR-0007)
+  QFS_DIST_ALLOW: "1"   # authorize the CI-only `xtask dist` (see ADR-0007)
+
+# The Cargo workspace lives under packages/qfs/ (monorepo layout). All `run:` steps
+# execute there; `uses:` actions (checkout, rust-cache, gh-release) take explicit paths.
+defaults:
+  run:
+    working-directory: packages/qfs
 
 jobs:
   dist:
@@ -32,6 +38,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/qfs
 
       - name: Add release targets
         run: |
@@ -66,9 +74,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/cfs-*.tar.gz
-            dist/cfs-*.tar.gz.sha256
-            dist/cfs.wasm
-            dist/cfs.wasm.sha256
+            packages/qfs/dist/qfs-*.tar.gz
+            packages/qfs/dist/qfs-*.tar.gz.sha256
+            packages/qfs/dist/qfs.wasm
+            packages/qfs/dist/qfs.wasm.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

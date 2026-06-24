@@ -1,0 +1,34 @@
+# qfs server boot config (RFD-0001 §8).
+# Booting this file is equivalent to replaying these statements as writes to the
+# /server/... self-config registry. CREATE ... DDL is sugar over INSERT INTO /server/...;
+# both forms appear here to exercise the same ServerConfigWrite COMMIT path.
+# No network and no live credentials are required to boot.
+
+# A least-privilege policy (sugar), now ENFORCED (t35): default-deny is the law, so a handler
+# that COMMITs a write plan must attach a POLICY granting exactly its verbs. This one grants the
+# nightly JOB's irreversible REMOVE (an EXPLICIT `ALLOW REMOVE` — a broad `ALLOW ALL` would NOT
+# grant it) and the notify TRIGGER's INSERT, scoped to no driver glob (any). `ALLOW`/`DENY` are
+# contextual idents, NOT new frozen keywords (the t31 `AT` lesson).
+CREATE POLICY leastpriv ALLOW INSERT,REMOVE;
+
+# A cron job, written as the frozen CREATE DDL sugar. It REMOVEs (irreversible) so it attaches
+# the `leastpriv` POLICY (default-deny otherwise).
+CREATE JOB nightly EVERY '1h' DO REMOVE /tmp WHERE age > 7 POLICY leastpriv;
+
+# An HTTP endpoint (sugar), backed by a read query. A pure READ produces no commit plan, so it
+# needs no POLICY (the read path is separate from the COMMIT plan the policy gates).
+CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5;
+
+# An event trigger (sugar). It INSERTs, so it attaches the `leastpriv` POLICY.
+CREATE TRIGGER notify ON inbox DO INSERT INTO /log VALUES ('fired') POLICY leastpriv;
+
+# A view and a materialized view (sugar).
+CREATE VIEW recent_view AS FROM /mail/inbox;
+CREATE MATERIALIZED VIEW cached_view AS FROM /mail/inbox;
+
+# A webhook route (sugar).
+CREATE WEBHOOK inbound ON '/hooks/x';
+
+# The explicit /server write the sugar desugars to — a second job, added by INSERT.
+# Demonstrates that boot is "replay INSERT INTO /server/...".
+UPSERT INTO /server/jobs VALUES (name, every, plan) ('weekly', '7d', 'noop');

@@ -1,0 +1,42 @@
+[package]
+name = "qfs-skill"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+# An assets crate: it CARRIES the embedded SKILL.md + golden corpus as `&'static str` (include_str!)
+# for an embedding host to ship inside the single `qfs` binary; it is not a standalone published
+# library, and its golden CORPUS is dev-only (reuses qfs-test). `publish = false` matches qfs-test.
+publish = false
+description = "qfs agent skill (t39): the authored SKILL.md operating procedure (the uniform DESCRIBE -> statement -> PREVIEW -> COMMIT loop) plus the golden example corpus, both embedded at compile time via include_str! so they ship inside the single qfs binary (RFD §9). The golden tests reuse the t38 qfs-test harness (assert_plan / preview_handler / golden) — no COMMIT, no network, no live creds."
+
+[dependencies]
+# The embedded skill assets are pure `&'static str` (include_str!) — no runtime deps are needed
+# to SHIP them. The crate's only library job is to expose the embedded text + a manifest of the
+# examples; the golden CORPUS lives under tests/ and pulls the dev harness below.
+
+[dev-dependencies]
+# The t38 offline harness: assert_plan / preview_handler / golden — REUSED, not re-hand-rolled.
+# Dev-only, so qfs-test never links into the shipped binary (its dev_only_dep_graph guard holds).
+qfs-test = { path = "../test" }
+# The hub the golden corpus evaluates statements through (MountRegistry + the driver describe
+# facets the examples DESCRIBE). qfs-core's closure is the tokio-free pure spine.
+qfs-core = { path = "../core" }
+# The concrete describe-facet drivers the corpus builds its describe registry from (cred-free mock
+# clients / empty registries) — the SAME facets the binary's `qfs describe` registry uses. Dev-only.
+qfs-driver-local = { path = "../driver-local" }
+qfs-driver-gmail = { path = "../driver-gmail" }
+qfs-driver-gdrive = { path = "../driver-gdrive" }
+qfs-driver-github = { path = "../driver-github" }
+qfs-driver-slack = { path = "../driver-slack" }
+qfs-driver-sql = { path = "../driver-sql" }
+qfs-driver-git = { path = "../driver-git" }
+# The parser front door (parse_statement -> Statement) the negative golden + sql read drive.
+qfs-parser = { path = "../parser" }
+# Cached workspace dep — the report-shape (secret-free) assertion serializes the DescribeReport.
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,53 @@
+[package]
+name = "qfs-driver-sql"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs SQL databases driver (RFD-0001 §5, E4 t17): the relational/table archetype over real SQL databases (postgres / mysql / sqlite) behind ONE Driver mounted at /sql/<conn>/<schema>/<table>. A single Dialect decision point drives quoting, placeholders ($n vs ?), upsert syntax and type mapping; a pluggable SqlBackend abstracts the connection (rusqlite is the in-process real-test backend; postgres/mysql share the same dialect-rendered compiled-SQL path). Catalog introspection maps SQL columns/types/PK to the canonical qfs_types::Schema for DESCRIBE; capabilities gate verbs per node (tables full CRUD, views SELECT-only) at parse time. A pure compiler lowers the relational query (projection/WHERE/ORDER BY/LIMIT) to ONE parameterized native SQL statement with a TRUTHFUL residual (an exactly-equivalent SQL predicate drops the residual; a non-faithfully-renderable construct — LIKE/regex/OR-mixing — is kept and re-filtered locally, never wrong rows). DML (INSERT/UPSERT/UPDATE/REMOVE) lowers to parameterized statements; a single-connection COMMIT is one ACID transaction (BEGIN -> effects -> COMMIT/ROLLBACK). EVERY value is a bound parameter — no value is string-interpolated, so a literal like `'; DROP TABLE` is data, never executed (injection-safe). Connection credentials come from qfs_secrets::Secret; redacted in all logs/errors, never in a DTO. Owned DTOs only at the boundary — no vendor row/column type leaks past the driver. Bridges its synchronous PlanApplier to the runtime async ApplyDriver via qfs-runtime's PlanApplierBridge (a runtime leaf)."
+
+[dependencies]
+# The introspective Driver contract (t13): trait, archetype/capability/pushdown DTOs,
+# the shared CfsError, and the Path boundary adapter.
+qfs-driver = { path = "../driver" }
+# The effect substrate (t06/t09): EffectKind/EffectNode/Target/VfsPath + the synchronous
+# PlanApplier seam the runtime bridge drives.
+qfs-plan = { path = "../plan" }
+# The canonical typed row model + Schema/Predicate/Value/DriverId (t05) the describe schema,
+# the compiled query, and the bound params speak.
+qfs-types = { path = "../types" }
+# The pure SQL compile/emit core (dialect, emitter, compiler, catalog DTOs) extracted into a
+# pure leaf so both this driver and the Cloudflare D1 driver (t23) reuse ONE sqlite emitter
+# without either runtime-leaf driver depending on the other. Re-exported from this crate.
+qfs-sql-core = { path = "../sql-core" }
+# The async interpreter side: the ApplyDriver/DriverRegistry the bridge registers into and
+# the PlanApplierBridge that adapts this driver's synchronous applier. tokio is confined to
+# qfs-runtime + leaf driver-impl consumers (this crate), so qfs-plan's purity dep-closure
+# test stays green.
+qfs-runtime = { path = "../runtime" }
+# The single secrets surface (t27): the connection string / password is a qfs_secrets::Secret,
+# fetched by CredentialKey, never logged, never in an error.
+qfs-secrets = { path = "../secrets" }
+# Render an irregular (Struct/Array/Json) DML value to JSON text so it binds as a single
+# bound text parameter (still bound, never interpolated). serde_json is the canonical home
+# of the Value::Json tree (qfs-types re-exports it).
+serde_json = { workspace = true }
+# Structured, secret-free SqlError taxonomy (RFD §5, AI-consumable).
+thiserror = { workspace = true }
+# Structured request/lifecycle logging at debug, with bound param VALUES never rendered.
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The REAL test backend: an in-process / temp-file SQLite (bundled = vendored C SQLite, no
+# external server, native aarch64). Proves catalog introspection, parameterized SELECT/DML,
+# injection safety, and ACID transaction commit/rollback against a live engine. NOT a
+# production dependency — the production SQL path is dialect-rendered text + the SqlBackend
+# seam, so postgres/mysql need no live server (golden SQL string tests cover them).
+rusqlite = { version = "0.40", features = ["bundled"] }
+# End-to-end COMMIT tests drive the async interpreter through the bridge.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

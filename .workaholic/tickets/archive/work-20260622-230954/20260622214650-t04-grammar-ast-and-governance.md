@@ -17,7 +17,7 @@ subsystem (effect-plan, runtime, drivers, server DDL) consumes. It implements RF
 (pipe-SQL), §3 (closed core + three open registries + purity invariant), §4 (data/type model:
 `EXPAND`, path access, `@version`, codecs), and the parser-stack decision in §9 (winnow).
 
-The point of cfs is that an AI learns **one small grammar** instead of N SDKs (RFD §1). This
+The point of qfs is that an AI learns **one small grammar** instead of N SDKs (RFD §1). This
 ticket is where that grammar is pinned down as a reserved-word set and a sum-type AST, so that
 "new backend = zero new keywords" (RFD §3) is enforced *structurally* — there is no AST node a
 driver can add. Everything a driver contributes flows through three open namespaces (paths,
@@ -43,7 +43,7 @@ Out of scope (deferred):
 - Pushdown/federation analysis (E3); driver prelude alias expansion (E4).
 
 ## Key components
-New crate/module `cfs-lang` (or `crates/lang`), modules `ast`, `parse`, `keywords`.
+New crate/module `qfs-lang` (or `crates/lang`), modules `ast`, `parse`, `keywords`.
 
 - `ast::Statement` — top sum type:
   ```rust
@@ -81,7 +81,7 @@ three open registries (only string-named refs); purity (AST is data — no execu
 (zero vendor types in `ast`); capability gating deferred but *enabled* by structured `CallRef`.
 
 ## Implementation steps
-1. Add `cfs-lang` crate; depend on `winnow` and the t03 lexer crate; re-export `Token`.
+1. Add `qfs-lang` crate; depend on `winnow` and the t03 lexer crate; re-export `Token`.
 2. Encode `keywords::RESERVED` from RFD §3 verbatim (query, effect, codec, plan, DDL,
    operators); add `is_reserved` + a unit test asserting the exact frozen list.
 3. Define `ast` sum types above; derive `Debug, Clone, PartialEq, serde::Serialize`
@@ -121,7 +121,7 @@ three open registries (only string-named refs); purity (AST is data — no execu
   (`tokens -> Result<Statement>`) is stable enough to swap to chumsky behind it.
 
 ## Acceptance criteria
-- `cargo build` and `cargo clippy -D warnings` are green; no vendor/driver deps in `cfs-lang`.
+- `cargo build` and `cargo clippy -D warnings` are green; no vendor/driver deps in `qfs-lang`.
 - Unit test asserts `keywords::RESERVED` equals the exact RFD §3 frozen set; using any reserved
   word as an identifier is a parse error with a targeted message.
 - Round-trip / golden-AST snapshot tests pass for a corpus covering: a multi-op `FROM |> WHERE

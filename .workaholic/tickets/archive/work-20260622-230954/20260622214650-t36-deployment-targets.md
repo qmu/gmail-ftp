@@ -13,7 +13,7 @@ depends_on: [20260622214650-t30-server-runtime-and-self-config-driver.md]
 
 ## Overview
 
-This ticket delivers the two production deployment targets for the single `cfs`
+This ticket delivers the two production deployment targets for the single `qfs`
 binary described in RFD 0001 §8–§9: a long-lived **Linux/EC2 daemon** and a
 **`wasm32` Cloudflare Workers** build. It implements the deployment mapping in
 RFD §8: `ENDPOINT`→Worker `fetch`, `JOB`→Cron Triggers, `WEBHOOK`/event bus→
@@ -29,10 +29,10 @@ profiles and release artifacts that ship them.
 ## Scope
 
 In scope:
-- A `cfs-host` boundary: a `RuntimeHost` trait abstracting the platform
+- A `qfs-host` boundary: a `RuntimeHost` trait abstracting the platform
   (timers, inbound HTTP, queue consume/produce, durable state, native storage
   bindings) so the server core is host-agnostic.
-- `host-daemon` impl: tokio-based EC2/Linux daemon (`cfs serve <config.cfs>`),
+- `host-daemon` impl: tokio-based EC2/Linux daemon (`qfs serve <config.qfs>`),
   systemd unit, graceful shutdown, signal handling, on-disk audit ledger.
 - `host-workers` impl: `wasm32-unknown-unknown` entrypoints via the `worker`
   crate — `fetch`, `scheduled` (Cron), `queue`, and a Durable Object class —
@@ -55,7 +55,7 @@ Out of scope (deferred):
 
 ## Key components
 
-New crate `cfs-host` (consumer-side traits, owned DTOs only — no `worker::*`,
+New crate `qfs-host` (consumer-side traits, owned DTOs only — no `worker::*`,
 `tokio::*`, or AWS types leak past this boundary):
 
 ```rust
@@ -76,11 +76,11 @@ pub trait DurableStore {        // owned KV-ish DTO over DO storage / disk
 }
 ```
 
-- `cfs-host-daemon` (feature `host-daemon`): `TokioHost: RuntimeHost`; axum/hyper
+- `qfs-host-daemon` (feature `host-daemon`): `TokioHost: RuntimeHost`; axum/hyper
   listener for `ENDPOINT`; `tokio::time` interval driver for `JOB`; in-process
   mpsc + on-disk spool for the event bus; `FileDurableStore` (fsync'd) for
   watcher cursors/`LAST_RUN`; native stores = the drivers' HTTP clients.
-- `cfs-host-workers` (feature `host-workers`, `crate-type = ["cdylib"]`):
+- `qfs-host-workers` (feature `host-workers`, `crate-type = ["cdylib"]`):
   `WorkersHost: RuntimeHost`; `#[event(fetch)]`→`EndpointRouter`,
   `#[event(scheduled)]`→matched `JobBinding`, `#[event(queue)]`→`EventSink`;
   `#[durable_object] struct WatchtowerState` implementing `DurableStore`;
@@ -94,22 +94,22 @@ pub trait DurableStore {        // owned KV-ish DTO over DO storage / disk
 
 ## Implementation steps
 
-1. Define `cfs-host` traits + owned DTOs; make the server core (t30) depend on
+1. Define `qfs-host` traits + owned DTOs; make the server core (t30) depend on
    `RuntimeHost` instead of any concrete runtime.
 2. Add workspace feature flags `host-daemon` / `host-workers` (mutually
    exclusive in a build) and gate platform crates behind them.
-3. Implement `cfs-host-daemon`: listener, interval scheduler, event spool,
+3. Implement `qfs-host-daemon`: listener, interval scheduler, event spool,
    `FileDurableStore`, graceful shutdown (SIGTERM drains in-flight plans).
-4. Ship a systemd unit + `cfs serve` wiring; persist the audit ledger to disk;
+4. Ship a systemd unit + `qfs serve` wiring; persist the audit ledger to disk;
    wire native stores to driver HTTP clients.
-5. Implement `cfs-host-workers`: the four `#[event]` entrypoints + the Durable
+5. Implement `qfs-host-workers`: the four `#[event]` entrypoints + the Durable
    Object; map `LAST_RUN`/watcher cursors onto DO storage via `DurableStore`.
 6. Bridge `/d1`/`/r2`/`/kv` to native bindings on wasm; behind the same driver
    backend trait used by the daemon's HTTP path (capability set is identical).
 7. Add build profiles: static `x86_64/aarch64-unknown-linux-musl` release;
    `wasm32` size-optimized profile (`opt-level="z"`, `lto`, `strip`,
    `panic="abort"`); generate a `wrangler.toml` template enumerating Cron,
-   Queue, DO, and d1/r2/kv bindings from the parsed `config.cfs`.
+   Queue, DO, and d1/r2/kv bindings from the parsed `config.qfs`.
 8. CI: build both targets, run clippy, produce + checksum artifacts.
 
 ## Considerations
@@ -131,7 +131,7 @@ pub trait DurableStore {        // owned KV-ish DTO over DO storage / disk
   and DO single-threaded concurrency for `LAST_RUN`.
 - **Observability**: structured logs + audit ledger on both — stdout/journald on
   EC2, `console`/Tail Workers on CF; every fired plan is recorded (RFD §6, §8).
-- **Directory/standards**: one crate per host, `cfs-host` is the only seam; DTOs
+- **Directory/standards**: one crate per host, `qfs-host` is the only seam; DTOs
   owned; feature-gate, do not `cfg`-spray; thin clients, no heavy SDKs (RFD §9).
 
 ## Acceptance criteria
@@ -142,14 +142,14 @@ pub trait DurableStore {        // owned KV-ish DTO over DO storage / disk
 - No `worker`, `tokio`, `hyper`, or vendor storage type is reachable from the
   server core crate (enforced by a dependency/`deny`-style test).
 - **Plan assertion / golden tests** (no live creds): given a fixture
-  `config.cfs` with one `ENDPOINT`, one `JOB EVERY`, one `WEBHOOK`, one watcher,
+  `config.qfs` with one `ENDPOINT`, one `JOB EVERY`, one `WEBHOOK`, one watcher,
   and `/d1` + `/r2` + `/kv` references, a host-agnostic test asserts the produced
   binding set; a golden test asserts the generated `wrangler.toml` matches a
   checked-in fixture (Cron expr, Queue, DO class, and d1/r2/kv binding names).
 - A `MockHost` test drives a `JOB` twice and a `WEBHOOK` event twice and asserts
   the committed effect set is identical (at-least-once idempotency).
-- Daemon integration test: `cfs serve` boots, serves one `ENDPOINT` over loopback
+- Daemon integration test: `qfs serve` boots, serves one `ENDPOINT` over loopback
   returning the expected `PREVIEW`/`-json` body, and shuts down cleanly on SIGTERM
   with the audit ledger flushed.
-- Release job emits: musl binaries (both arches), `cfs.wasm`, `wrangler.toml`
+- Release job emits: musl binaries (both arches), `qfs.wasm`, `wrangler.toml`
   template, and a `SHA256SUMS` file.

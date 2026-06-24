@@ -1,0 +1,27 @@
+[package]
+name = "qfs-parser"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs parser front door (RFD-0001 §2.2/§9). Skeleton reserved for t02 (the winnow-vs-chumsky decision spike + owned ParseError + parse_statement). E0 ships an empty-but-typed crate."
+
+[dependencies]
+# The parser consumes the frozen keyword consts / AST from qfs-lang (boundary B6).
+qfs-lang = { path = "../lang" }
+# Chosen parser library (t02, docs/adr/0001-parser-library.md): winnow — maintained,
+# macro-free, zero transitive deps (wasm-friendly), precise spans. Confined to the
+# crate-private `grammar` module; never appears in the public API (fidelity G6).
+winnow = "1.0.3"
+# AST nodes derive `Serialize` to power `-json` AST dumps and golden snapshot tests
+# (t04). serde is pure-Rust / wasm-clean and adds no driver/vendor type to `ast`.
+serde = { workspace = true }
+
+[dev-dependencies]
+# Golden-AST snapshot tests serialise the AST to JSON for stable, reviewable goldens.
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -46,7 +46,7 @@ Out of scope (deferred):
 - Federation pushdown planner internals → E3; this ticket only declares pushdown capability.
 
 ## Key components
-New crate `crates/driver-git` (`cfs-driver-git`), thin over `gix` (gitoxide) for object
+New crate `crates/driver-git` (`qfs-driver-git`), thin over `gix` (gitoxide) for object
 access — no shelling out to `git`, no vendor types past the boundary (RFD §9 owned DTOs).
 
 - `GitDriver` implementing the `Driver` trait from t13:

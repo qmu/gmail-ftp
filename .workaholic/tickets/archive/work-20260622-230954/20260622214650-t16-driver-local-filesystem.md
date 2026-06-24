@@ -55,8 +55,8 @@ Out of scope (deferred):
 
 ## Key components
 
-New crate/module `cfs-driver-local` (infrastructure), depending on `cfs-driver`
-(the `Driver` trait + DTOs, #13) and `cfs-codec` (#15) only at the registry boundary:
+New crate/module `qfs-driver-local` (infrastructure), depending on `qfs-driver`
+(the `Driver` trait + DTOs, #13) and `qfs-codec` (#15) only at the registry boundary:
 
 - `struct LocalFsDriver { root: PathBuf, read_only: bool }` — the mount; `root` is the
   least-privilege sandbox boundary.
@@ -81,7 +81,7 @@ New crate/module `cfs-driver-local` (infrastructure), depending on `cfs-driver`
 
 ## Implementation steps
 
-1. Scaffold `cfs-driver-local`; implement `path_resolve(&root, vfs_path)` that
+1. Scaffold `qfs-driver-local`; implement `path_resolve(&root, vfs_path)` that
    canonicalizes and **rejects any path escaping `root`** (`..`, symlink) → `OutsideSandbox`.
 2. Implement `declare()` returning the `DriverDecl`: blob archetype, `LocalRow` schema,
    capability set, pushdown set, no procs/prelude.
@@ -130,7 +130,7 @@ New crate/module `cfs-driver-local` (infrastructure), depending on `cfs-driver`
 ## Acceptance criteria
 
 - `cargo build` and `cargo clippy --all-targets -- -D warnings` are green;
-  `cargo test -p cfs-driver-local` passes.
+  `cargo test -p qfs-driver-local` passes.
 - `declare()` reports the blob archetype, `LocalRow` schema, and a capability set that
   rejects unsupported verbs at parse/eval time (asserted via a denied-verb test).
 - `FROM /local/**/*.md` over a `tempdir` fixture yields the correct recursive row set in

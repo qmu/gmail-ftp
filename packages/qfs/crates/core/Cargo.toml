@@ -1,0 +1,41 @@
+[package]
+name = "qfs-core"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs shared engine glue (RFD-0001 §3/§6): the three open registries, the Engine/Session context, and re-exports of the trait seams + structured CfsError."
+
+[dependencies]
+qfs-driver = { path = "../driver" }
+qfs-codec = { path = "../codec" }
+qfs-lang = { path = "../lang" }
+qfs-plan = { path = "../plan" }
+# The canonical type & schema model (t05). A leaf crate; core re-exports it so the
+# rest of the workspace sees one `qfs_core::Schema` / `Value` / `TypeError`.
+qfs-types = { path = "../types" }
+# Acceptance criterion C5 / E1 (ticket t06): the `qfs-core -> qfs-parser` edge is now
+# WIRED — name resolution (`resolve`) consumes the parsed `qfs_parser::Statement` AST.
+# One direction only: `qfs-parser` must never depend on `qfs-core` (cycle prevention,
+# asserted by `qfs-cmd/tests/dep_direction.rs`).
+qfs-parser = { path = "../parser" }
+# The pushdown planner (t14): core wires the query AST → LogicalPlan → PhysicalPlan,
+# building the SourceRegistry from the MountRegistry so independent native ScanNodes
+# surface for T10's batcher. Acyclic: qfs-core → qfs-pushdown → qfs-driver.
+qfs-pushdown = { path = "../pushdown" }
+# The credential / secret store + multi-account resolution (t27, RFD §10). core threads
+# a `Secrets` handle into the Engine so the driver-bind context fetches credentials via
+# the one trait, and re-exports the secrets surface so consumers depend on qfs-core only.
+# Acyclic: qfs-core → qfs-secrets → qfs-types (a leaf).
+qfs-secrets = { path = "../secrets" }
+# The server-binding DDL (t31) stores the deferred body (`AS <query>` / `DO <plan>`) as a
+# fully-parsed, serializable `StatementSpec`/`PlanSpec`: serde derives over the owned AST,
+# serialized to a canonical span-normalised form. serde is pure-Rust / wasm-clean and adds
+# no driver/vendor type (the AST is already vendor-free).
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -104,7 +104,7 @@ against the t30-declared `/server/*` capabilities.
   handler may touch (POLICY) is t32; leave a typed seam (`policy_ref: Option<...>`) on the
   decl DTOs so t32 attaches without a schema migration.
 - **Idempotency / recovery**: desugar to `INSERT INTO` per RFD; consider an `UPSERT`-by-name
-  variant (re-`CREATE` of a same-named trigger/job) so re-applying a `config.cfs` is
+  variant (re-`CREATE` of a same-named trigger/job) so re-applying a `config.qfs` is
   retry-safe (RFD §6 idempotency). Decide and document; default to `INSERT` + explicit error
   on duplicate name to avoid silent overwrite.
 - **Observability**: each desugared insert flows through the standard audit ledger (§6/§10);

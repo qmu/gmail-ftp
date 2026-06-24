@@ -46,7 +46,7 @@ Out of scope (deferred):
 
 ## Key components
 
-New crate `cfs-txn` (pure orchestration over the `Driver` trait; no vendor types):
+New crate `qfs-txn` (pure orchestration over the `Driver` trait; no vendor types):
 
 - `enum CommitStrategy { SingleSourceAcid(SourceId), CrossSourceSaga }` — chosen by the planner
   by inspecting which sources a plan's leaves touch.
@@ -66,14 +66,14 @@ New crate `cfs-txn` (pure orchestration over the `Driver` trait; no vendor types
 - `enum CpStep { Copy, Verify, Delete }` — `mv`/`cp` across mounts compiles to this triple so a crash
   between steps is recoverable from the ledger (verify is idempotent; delete is keyed).
 
-Touches: `cfs-plan` (effect-plan node gains `precondition` + `effect_key`), `cfs-runtime` interpreter
+Touches: `qfs-plan` (effect-plan node gains `precondition` + `effect_key`), `qfs-runtime` interpreter
 (`#10`) commit entrypoint dispatches on `CommitStrategy`, `Driver` trait (declares `Transactional`,
 exposes `apply_effect(effect, precondition) -> LegOutcome`). Purity invariant preserved: planning still
 produces a `Plan`; only the `commit` entrypoint is impure.
 
 ## Implementation steps
 
-1. Add `precondition: Precondition` and `effect_key: EffectKey` to the effect-plan node in `cfs-plan`;
+1. Add `precondition: Precondition` and `effect_key: EffectKey` to the effect-plan node in `qfs-plan`;
    thread `@version`/ETag captured during reads into the node that writes back.
 2. Define `EffectKey` derivation (canonical arg serialization, stable hash) + golden tests for stability.
 3. Extend `Driver` with `apply_effect(&self, &Effect, &Precondition) -> LegOutcome` and the optional
@@ -104,8 +104,8 @@ produces a `Plan`; only the `commit` entrypoint is impure.
   material or full payloads (RFD §10: credentials never logged); redact at the `EffectDescriptor` boundary.
 - **Observability.** Emit a structured `RecoveryReport` per commit; the ledger is the audit-of-record.
   Real sink/circuit-breakers are E8 — keep the `AuditLedger` trait the only seam so swapping is trivial.
-- **Coding standards.** `cfs-txn` stays pure-orchestration; vendor/SDK ETag/txn types are converted to
-  owned DTOs (`Version`, `Etag`) at the driver boundary — they must not appear in `cfs-txn` signatures.
+- **Coding standards.** `qfs-txn` stays pure-orchestration; vendor/SDK ETag/txn types are converted to
+  owned DTOs (`Version`, `Etag`) at the driver boundary — they must not appear in `qfs-txn` signatures.
 
 ## Acceptance criteria
 

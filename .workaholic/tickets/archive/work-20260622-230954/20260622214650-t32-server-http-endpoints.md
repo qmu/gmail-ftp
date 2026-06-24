@@ -14,13 +14,13 @@ depends_on: [20260622214650-t31-server-binding-ddl.md]
 ## Overview
 Delivers the HTTP serving binding for `CREATE ENDPOINT <method> <route> AS <query>`: turning
 endpoint config rows in the `/server/endpoints` registry into live HTTP routes, PostgREST/
-Hasura-style, but over the **federated** cfs model rather than a single database. Implements
+Hasura-style, but over the **federated** qfs model rather than a single database. Implements
 RFD §8 ("Bindings = what causes a plan to run"; `ENDPOINT`→Worker/route) and the §6 runtime
 principle that an HTTP request is simply *a cause that makes a plan run*. Each request binds
 its path/query params into the endpoint's stored query, evaluates that query (the **pure**
 query side of the language, RFD §3), and encodes the resulting rows via the codec registry
 (json/csv) into an HTTP response. By policy default an endpoint query is **read-only**: it
-serves the query face of cfs, not effects — write endpoints are gated and deferred. This is
+serves the query face of qfs, not effects — write endpoints are gated and deferred. This is
 the request-driven half of the watchtower server; cron `JOB` firing and inbound `WEBHOOK`/
 `TRIGGER` ingestion are sibling bindings.
 
@@ -38,7 +38,7 @@ In scope:
   registration unless its `POLICY` explicitly allows writes (enforcement seam only; full POLICY
   engine is t34).
 - HTTP status/error mapping from structured engine errors (`thiserror`) to JSON problem bodies.
-- `cfs serve` wiring so the HTTP listener starts under the `Runtime` supervisor.
+- `qfs serve` wiring so the HTTP listener starts under the `Runtime` supervisor.
 
 Out of scope (deferred):
 - Cron `JOB` scheduler + `LAST_RUN()` → sibling E7 ticket (binding sibling of t30).
@@ -52,7 +52,7 @@ Out of scope (deferred):
 - Pagination/`LIMIT`/streaming large result sets beyond a bounded buffer → follow-up.
 
 ## Key components
-Module `cfs-server::http` (new; behind the `serve` binary feature, native `axum` dep here only):
+Module `qfs-server::http` (new; behind the `serve` binary feature, native `axum` dep here only):
 - `binding.rs`
   - `struct HttpBinding { state: Arc<RwLock<ServerState>>, world: Arc<World>, listener: SocketAddr, handle: Option<ServerHandle> }`
   - `impl Binding for HttpBinding { fn kind(&self) -> BindingKind { BindingKind::Http } fn reconcile(&mut self, state: &ServerState) -> Result<()> }`
@@ -83,7 +83,7 @@ Module `cfs-server::http` (new; behind the `serve` binary feature, native `axum`
   add `codec: Option<CodecId>` and `policy: Option<Name>` fields if not already present (coordinate w/ t31 DDL).
 
 ## Implementation steps
-1. Add the `serve`-feature `axum`/`tower-http` deps to `cfs-server` (native only; keep core
+1. Add the `serve`-feature `axum`/`tower-http` deps to `qfs-server` (native only; keep core
    crates dep-free so the Worker target stays clean).
 2. Extend `EndpointDef` (or confirm with t31) to carry optional `codec` and `policy` handles.
 3. `params.rs`: implement `RoutePattern` parsing (`:p` / `{p}`) and `QueryArgs::bind` with a
@@ -125,7 +125,7 @@ Module `cfs-server::http` (new; behind the `serve` binary feature, native `axum`
   upstream cannot pin a Worker/handler.
 - **Worker portability**: keep `HttpBinding` behind the generic `Binding` trait so the same
   `EndpointDef`→query→codec pipeline maps to a Cloudflare Worker `fetch` handler later (E7);
-  isolate all `axum` types inside `cfs-server::http`.
+  isolate all `axum` types inside `qfs-server::http`.
 - **Directory/coding standards**: owned DTOs and `Row`/`Value` types only — no axum/serde_json
   vendor types leak past `http::`; small consumer-side traits (`Codec`, `Driver`, `Binding`);
   `thiserror` structured error enums; codecs via the registry, not ad-hoc serializers.

@@ -12,7 +12,7 @@ depends_on: [20260622214650-t06-name-resolution-call-and-aliases.md]
 # Standard library functions + driver-prelude mechanism
 
 ## Overview
-This ticket ships the cfs **standard library** of built-in functions and the
+This ticket ships the qfs **standard library** of built-in functions and the
 **driver-prelude registration mechanism** that lets a driver contribute pure alias
 functions (e.g. `fn SEND(d) = d |> CALL mail.send`) next to its procedures. It realizes
 RFD §3 ("closed core + three open registries" — specifically the *functions/procedures*
@@ -41,7 +41,7 @@ In scope:
   one-row `{status, headers, body}` relation; body decoded via codecs downstream).
 - The **prelude mechanism**: a `Prelude` DTO a driver returns, merged into the function
   registry namespaced/receiver-scoped so t06 can resolve it; alias bodies are parsed
-  cfs (`d |> CALL …`) so they obey the purity invariant by construction.
+  qfs (`d |> CALL …`) so they obey the purity invariant by construction.
 - A `StdlibRegistry` populating t06's `CallRegistry::core_fns()` + `prelude_aliases()`.
 
 Out of scope (deferred):
@@ -57,8 +57,8 @@ Out of scope (deferred):
   driver prelude only).
 
 ## Key components
-New module `crates/lang/src/stdlib/` (crate `cfs-stdlib`), depending on `cfs-ast` (t04),
-`cfs-types` (t05), and `cfs-resolve` (t06). Pure, no vendor types — drivers contribute via
+New module `crates/lang/src/stdlib/` (crate `qfs-stdlib`), depending on `qfs-ast` (t04),
+`qfs-types` (t05), and `qfs-resolve` (t06). Pure, no vendor types — drivers contribute via
 owned DTOs only.
 
 ```rust
@@ -84,7 +84,7 @@ pub struct EvalCtx<'a> {
     pub env: &'a dyn EnvSource,    // capability-gated; see Considerations
 }
 
-/// What a driver ships alongside its procs (RFD §5 Prelude). Bodies are cfs source.
+/// What a driver ships alongside its procs (RFD §5 Prelude). Bodies are qfs source.
 pub struct Prelude {
     pub driver: DriverId,
     pub aliases: Vec<AliasDecl>,   // e.g. AliasDecl{ name:"SEND", body:"d |> CALL mail.send" }
@@ -107,14 +107,14 @@ pub enum PreludeError {
 }
 ```
 
-Touches: `cfs-resolve` (`StdlibRegistry` implements `CallRegistry`), `cfs-types`
-(`FnSig` instances for each builtin), `cfs-ast` (re-uses pipe/CALL nodes to parse alias
+Touches: `qfs-resolve` (`StdlibRegistry` implements `CallRegistry`), `qfs-types`
+(`FnSig` instances for each builtin), `qfs-ast` (re-uses pipe/CALL nodes to parse alias
 bodies). Aggregates plug into the `AGGREGATE` AST node from t04.
 
 ## Implementation steps
 1. Define `BuiltinFn`, `BuiltinEval`, `EvalCtx`, `EnvSource`, `EvalError`.
 2. Implement scalar fns (string/path/date/number/`COALESCE`/`IF`) with `FnSig`s registered
-   in `cfs-types`; cover `BASENAME`/`SUBSTR` edge cases (unicode, empty, out-of-range).
+   in `qfs-types`; cover `BASENAME`/`SUBSTR` edge cases (unicode, empty, out-of-range).
 3. Implement context fns: `NOW`/`CURRENT_DATE` read from `EvalCtx` (frozen per statement),
    `LAST_RUN` from injected job state, `env(name)` via `EnvSource`.
 4. Implement aggregates via `AggregateFactory` (init/accumulate/finalize), wired to the
@@ -125,7 +125,7 @@ bodies). Aggregates plug into the `AGGREGATE` AST node from t04.
 6. Build `StdlibRegistry::with_core()`; implement `CallRegistry` for it so t06 resolves
    against it unchanged.
 7. Define the `Prelude`/`HasPrelude`/`AliasDecl` DTOs; implement `register_prelude` +
-   `parse_alias_bodies` (parse each body as cfs, assert `-> Plan`, detect duplicates).
+   `parse_alias_bodies` (parse each body as qfs, assert `-> Plan`, detect duplicates).
 8. Seed a test mail driver prelude (`SEND`(mail)) and assert it round-trips through t06's
    receiver-typed resolution (`mail-drafts |> SEND` desugars to `… |> CALL mail.send`).
 9. Wire `env()` and `READ`/`http.get` behind a capability/policy gate flag (default off in

@@ -62,8 +62,8 @@ Out-of-scope (deferred):
 
 ## Key components
 
-New crate module `cfs-core::driver` (declaration DTOs, pure, `wasm32`-safe) plus
-`cfs-driver` (registry + trait object glue). No vendor deps in the trait surface.
+New crate module `qfs-core::driver` (declaration DTOs, pure, `wasm32`-safe) plus
+`qfs-driver` (registry + trait object glue). No vendor deps in the trait surface.
 
 ```rust
 pub trait Driver: Send + Sync {
@@ -101,7 +101,7 @@ pub enum VersionSupport { None, Snapshot, Versioned }  // git refs / s3 versionI
 ## Implementation steps
 
 1. Define the declaration DTOs (`Archetype`, `Capabilities`/`Verb`, `ProcSig`/`Param`,
-   `PushdownProfile`, `VersionSupport`, `NodeDesc`) in `cfs-core::driver`; derive
+   `PushdownProfile`, `VersionSupport`, `NodeDesc`) in `qfs-core::driver`; derive
    `Debug`/`Clone`/`Serialize` for `-json DESCRIBE` and golden tests.
 2. Define the `Driver` trait over those DTOs + `Schema` (t05) and `PlanApplier`/`Plan`
    (t09); keep it object-safe (`Arc<dyn Driver>`).
@@ -121,7 +121,7 @@ pub enum VersionSupport { None, Snapshot, Versioned }  // git refs / s3 versionI
 
 - **Owned DTOs / no vendor leak (RFD §9):** the trait must compile with zero SDK deps;
   drivers translate vendor responses into `Schema`/`Row`/`Plan` internally. Enforce
-  with a workspace lint / dep-graph check so `cfs-core` never gains a vendor edge.
+  with a workspace lint / dep-graph check so `qfs-core` never gains a vendor edge.
 - **Capability gating is parse-time, not run-time (RFD §5):** the gate must run during
   resolution so an unsupported verb fails *before* a `Plan` exists — a hard
   ordering constraint with t06/evaluator. Genuinely tricky part: capabilities are
@@ -141,15 +141,15 @@ pub enum VersionSupport { None, Snapshot, Versioned }  // git refs / s3 versionI
   concurrency for read-then-write.
 - **Observability:** `DriverError`/`CapabilityError` are structured and carry enough
   context (driver, path, verb, supported set) for the audit log and AI feedback loop.
-- **Coding standards:** trait lives in `cfs-core::driver`; concrete drivers in their own
-  crates under `drivers/` (E4); registry in `cfs-driver`. Object-safe trait; no `async`
+- **Coding standards:** trait lives in `qfs-core::driver`; concrete drivers in their own
+  crates under `drivers/` (E4); registry in `qfs-driver`. Object-safe trait; no `async`
   in the introspective methods (keep them `wasm32`-pure).
 
 ## Acceptance criteria
 
-- `cargo build` + `cargo clippy -- -D warnings` green across the workspace; `cfs-core`
+- `cargo build` + `cargo clippy -- -D warnings` green across the workspace; `qfs-core`
   builds for `wasm32-unknown-unknown`.
-- A **no-vendor-deps** assertion on `cfs-core::driver` (dep-graph test) passes.
+- A **no-vendor-deps** assertion on `qfs-core::driver` (dep-graph test) passes.
 - **Capability golden test:** planning `UPDATE` against an append-only fixture node is
   rejected at resolve time with a structured `CapabilityError` listing the supported
   verbs; the error serializes stably (snapshot).

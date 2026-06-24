@@ -51,7 +51,7 @@ Out of scope (deferred):
 
 ## Key components
 
-New crate module `cfs-server/src/policy/`:
+New crate module `qfs-server/src/policy/`:
 
 - `mod.rs` — re-exports; `Verb` enum mirroring closed-core effects:
   `enum Verb { Select, Insert, Upsert, Update, Remove, Call }`.
@@ -78,7 +78,7 @@ New crate module `cfs-server/src/policy/`:
   path + operation, evaluates rules top-down, default-deny on no match.
 - `audit.rs` — `pub struct FiredPlanRecord { handler, policy, decision, effects, ts }`
   and `pub trait AuditSink { fn record(&self, r: FiredPlanRecord); }` (sink impl out of scope).
-- Touches `cfs-server` binding registry to store a `policy: Option<String>` ref on
+- Touches `qfs-server` binding registry to store a `policy: Option<String>` ref on
   each binding and resolve it at fire time; touches the interpreter entrypoint
   (`COMMIT`) so no plan from a handler runs unevaluated/unaudited.
 
@@ -122,7 +122,7 @@ New crate module `cfs-server/src/policy/`:
 - **Observability/audit**: every fired plan (allow *and* deny) produces a structured
   record; deny records include the offending verb/driver/rule index. Never log secrets
   (§10) — record driver name + path, not credentials or payloads.
-- **Owned DTOs**: `Policy`/`Rule` are cfs-owned; no vendor type leaks past the boundary.
+- **Owned DTOs**: `Policy`/`Rule` are qfs-owned; no vendor type leaks past the boundary.
 - **Hard part**: deriving `(Verb, driver)` from heterogeneous effect nodes uniformly
   (a git commit INSERT vs an S3 UPSERT vs a `CALL`). Resolve by having the effect-plan
   node (E2) already carry `verb` + target `path`, so policy reads them rather than

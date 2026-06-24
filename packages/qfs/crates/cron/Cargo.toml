@@ -1,0 +1,64 @@
+[package]
+name = "qfs-cron"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs JOB scheduler / cron binding (t33, RFD-0001 §8): the leaf binding crate that makes CREATE JOB <name> EVERY <interval> DO <plan> bindings (stored in /server/jobs by t31) fire on cadence. A THIN runtime — it constructs no effects and performs no service I/O; it only CAUSES an already-built Plan to commit through an INJECTED Committer (the purity invariant, RFD §3/§6). The PURE scheduler core (Schedule math + restricted-5-field cron parse, MissedPolicy due-set folding, dispatch orchestration over the Clock + JobStore + Committer traits, the injection-safe LAST_RUN() AST rewrite, and the deterministic hash(job, scheduled_for) run-id) has ZERO tokio / std::thread / global state and compiles for wasm32-unknown-unknown with --no-default-features (the CF Cron-Trigger entrypoint maps one fire -> one tick()). The native daemon (tokio interval loop + jitter + per-job timeout) is gated behind the default-on `native` feature; the t25/slack lesson is that the load-bearing wasm fence is the ABSENCE of `native` (tokio is optional), not a marker. Time instants are the project's standard i64 epoch SECONDS (matching JobDef.last_run + Value::Timestamp) — NO chrono. The run-id is the DETERMINISTIC hash(job, scheduled_for) over the dependency-free wasm-clean SHA-256 (FIPS 180-4, the recorded objstore choice) — better for idempotency than a random UUID (a retried fire for the same scheduled_for yields the same run-id -> ledger dedup) and pulls NO uuid dep and NO randomness into the pure path. last_run_at advances ONLY after a successful commit and to scheduled_for (NOT now), so a failed run re-covers the window on the next tick (at-least-once, idempotent); two concurrent dispatch for one due time -> exactly ONE commits (single-flight lease) and a retried run-id after success is a no-op (ledger dedup). A circuit-breaker auto-disables a flapping JOB after repeated failures with a ledger note. Each fire writes one audit RunRecord (job, run-id, scheduled-for, status, counts) carrying NO secrets and NO plan payloads (log-scrub test). A LEAF: only the `qfs` binary consumes it (the serve composition root, the cron sibling of qfs-http) — its feature-gated tokio loop dead-ends in the binary, and it does NOT depend on qfs-runtime (the REAL commit path is the injected Committer the binary builds from qfs-exec build_plan + the runtime applier), so the qfs-exec-consumer + runtime-leaf confinement guards stay green and qfs-server stays runtime-free."
+
+[features]
+default = ["native"]
+# The native side. The PURE scheduler core (Schedule/cron, MissedPolicy, dispatch orchestration
+# over the Clock/JobStore/Committer TRAITS, the LAST_RUN() rewrite, the deterministic run-id)
+# depends ONLY on qfs-core + qfs-parser — both tokio-free, wasm-clean spine crates — so it builds
+# for wasm32-unknown-unknown with `--no-default-features`. `native` gates the three things that
+# CANNOT be wasm-clean and are composition wiring anyway: (1) qfs-exec (the build_plan committer's
+# evaluator — pulls tokio's full feature set), (2) qfs-server (the Binding/registry seam — pulls
+# tokio `signal`/mio, no-wasm), and (3) tokio (the daemon interval loop). The load-bearing wasm
+# fence is the ABSENCE of `native` (these deps are `optional`), not any marker (the t25/slack
+# lesson). With `native` off, only the trait-side core compiles; the binary always builds with
+# `native` on, so the real CronBinding + RecordingCommitter + daemon are present in production.
+native = ["dep:qfs-exec", "dep:qfs-server", "dep:tokio"]
+
+[dependencies]
+# The hub: Plan / commit / RecordingApplier, the owned Value/Literal type model, the rehydratable
+# PlanSpec/StatementSpec (the t31 canonical DO body), and the Statement AST re-export. qfs-core's
+# closure is the tokio-free pure spine (qfs-plan's purity test forbids tokio there), so the pure
+# scheduler core stays wasm-clean through it.
+qfs-core = { path = "../core" }
+# The parser AST (Statement/Expr/FnRef/Literal) the injection-safe LAST_RUN() rewrite walks and
+# the PlanSpec rehydrates into. Reached directly for the AST node types only. tokio-free.
+qfs-parser = { path = "../parser" }
+# The shared pure crypto leaf (t34): the wasm-clean SHA-256 (FIPS 180-4) the deterministic
+# hash(job, scheduled_for) run-id and the last_plan_hash fingerprint derive from. A TRUE pure leaf
+# (zero deps, std-only) used in the PURE scheduler core, so it is NON-optional (always present) and
+# carries no native/runtime coupling into the wasm32 build — replacing this crate's former private
+# src/hash.rs copy.
+qfs-crypto-core = { path = "../crypto-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# The evaluator: build_plan turns a DO `Statement` into a `Plan` (resolve + capability-gate + plan
+# construction) for the RecordingCommitter PREVIEW path / the real committer. qfs-cron is a LEAF
+# integration consumer of the executor, the same role qfs-cmd / qfs-http play (the t29 CO-t29-4
+# allowlist is extended for qfs-cron). OPTIONAL behind `native`: it pulls tokio's full feature set
+# (no-wasm), so it is excluded from the pure wasm core.
+qfs-exec = { path = "../exec", optional = true }
+# The Binding/ServerState/JobDef registry + reconcile seam the CronBinding converges to. qfs-cron
+# is the one crate that legitimately binds qfs-server AND qfs-exec for the JOB cause (the cron
+# sibling of the t32 qfs-http leaf). OPTIONAL behind `native`: qfs-server pulls tokio `signal`
+# (mio, no-wasm), so the wasm core excludes it — the CronBinding is composition wiring the binary
+# always has.
+qfs-server = { path = "../server", optional = true }
+# The native daemon's interval loop + per-job timeout. tokio is used HERE for the cron timing
+# domain only; qfs-cron does NOT depend on qfs-runtime (it never drives the COMMIT interpreter —
+# the real applier is the injected Committer), so the runtime-leaf-confinement guard is untouched,
+# and as a terminal-consumed leaf tokio dead-ends in the binary. OPTIONAL + default-on so the pure
+# core builds for wasm32-unknown-unknown without pulling tokio.
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "time", "sync"], optional = true }
+
+[lints]
+workspace = true
