@@ -5,7 +5,7 @@ every backend — mail, drive, object storage, GitHub, Slack, SQL, git, Google A
 **one uniform, filesystem-shaped, pipe-SQL DSL**. It runs as a **CLI** locally, as a **daemon** on
 EC2, or (target) compiled to `wasm32` for Cloudflare Workers (RFD-0001 §1, §9).
 
-> This is the Rust rebuild of the original `gmail-ftp` project, generalized per
+> qfs generalizes the FTP-shell idea per
 > [RFD-0001](.workaholic/RFDs/0001-qfs-architecture.md): instead of one FTP-style client for one
 > service, qfs is the *closed-core grammar + open registries* control plane that the FTP-shell
 > idea generalizes to.
@@ -49,7 +49,7 @@ operating procedure ships embedded in the binary — run `qfs skill` (and `qfs s
 
 ```sh
 # Download, verify the sha256, and install the matching tarball for your OS/arch:
-curl -fsSL https://raw.githubusercontent.com/a-qmu-jp/gmail-ftp/main/packages/qfs/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/qmu/qfs/main/packages/qfs/install.sh | sh
 qfs --version
 ```
 

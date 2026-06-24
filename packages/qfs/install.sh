@@ -7,11 +7,11 @@
 # stored, or required (RFD §10) — this only downloads a public release artifact + its checksum.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/a-qmu-jp/gmail-ftp/main/packages/qfs/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/qmu/qfs/main/packages/qfs/install.sh | sh
 #   QFS_VERSION=v0.1.0 QFS_INSTALL_DIR=/usr/local/bin sh install.sh
 set -eu
 
-REPO="a-qmu-jp/gmail-ftp"
+REPO="qmu/qfs"
 INSTALL_DIR="${QFS_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${QFS_VERSION:-latest}"
 

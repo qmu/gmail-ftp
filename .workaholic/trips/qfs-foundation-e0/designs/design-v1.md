@@ -27,7 +27,7 @@ System-safety detection result: `{"is_provisioning": false, "system_changes_auth
 ## 1. Scope & inventory
 
 ### 1.1 What is being replaced
-The existing Go program (`main.go` + `internal/{audit,auth,gmail,shell}`) is the `gmail-ftp` FTP-style Gmail shell. Per RFD preamble it is **subsumed as a future driver, not merged or refactored**. E0 touches **none** of it; the Rust workspace is added alongside, and the Go tree stays compiling/untouched. No Go file is edited or deleted in this trip.
+The existing Go program (`main.go` + `internal/{audit,auth,gmail,shell}`) is an FTP-style Gmail shell. Per RFD preamble it is **subsumed as a future driver, not merged or refactored**. E0 touches **none** of it; the Rust workspace is added alongside, and the Go tree stays compiling/untouched. No Go file is edited or deleted in this trip.
 
 ### 1.2 Workspace crate list (t01) — exact members and E0 content
 

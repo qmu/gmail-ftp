@@ -1,5 +1,5 @@
 //! `qfs-driver-gmail` — the **first real `Driver`** (RFD-0001 §5, E4 t20) and a flagship of the
-//! thesis (§1): the legacy Go `gmail-ftp` is **subsumed**, not merged, as one mount at `/mail`
+//! thesis (§1): the Gmail mailbox is exposed as one mount at `/mail`
 //! under the uniform VFS + pipe-SQL DSL. It maps the mailbox onto the **Append/log archetype**:
 //! **labels = directories, messages = files, attachments = nested entries**, addressed by `id:`
 //! / `id:thread:<id>`.

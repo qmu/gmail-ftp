@@ -11,7 +11,7 @@
 
 [Unit]
 Description=qfs control-plane daemon (RFD-0001)
-Documentation=https://github.com/a-qmu-jp/gmail-ftp
+Documentation=https://github.com/qmu/qfs
 After=network-online.target
 Wants=network-online.target
 

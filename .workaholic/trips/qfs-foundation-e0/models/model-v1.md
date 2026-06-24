@@ -28,7 +28,7 @@ overturns them:
   threads / `std::fs` / sockets in `qfs-core/qfs-lang/qfs-plan/qfs-driver/qfs-codec`).
   This is a *boundary-integrity* constraint I assert here so E0 does not foreclose §1/§9.
 - **A4 — The Go program is a reference for boundaries, not code to port.** RFD §0 says
-  the Go `gmail-ftp` is *subsumed as one driver*, not merged. I mine it only for the
+  the Go FTP-style shell is *subsumed as one driver*, not merged. I mine it only for the
   seams that must survive the rewrite (below); no Go is carried over.
 
 ---
@@ -135,7 +135,7 @@ their relationships:
 
 ### Carry-over boundaries from the Go reference (A4)
 
-The Go `gmail-ftp` already discovered, in miniature, four of the seams the RFD
+The Go FTP-style shell already discovered, in miniature, four of the seams the RFD
 generalizes. Recording them protects translation fidelity — the rewrite must *keep* these
 boundaries, not rediscover them:
 

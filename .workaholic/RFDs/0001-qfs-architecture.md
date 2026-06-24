@@ -5,8 +5,7 @@ Author: a@qmu.jp
 Date: 2026-06-22
 
 > This RFD is the single source of truth for the rebuild. Every ticket references it.
-> We are **starting from zero** in this repository (Rust). The existing Go `gmail-ftp`
-> and `../gdrive-ftp` are **subsumed** as two drivers; they are not merged or refactored.
+> We are **starting from zero** in this repository (Rust). Prior FTP-style service shells (e.g. `../gdrive-ftp`) are **subsumed** as drivers; they are not merged or refactored.
 
 ## 1. Vision
 

@@ -13,7 +13,7 @@ edition = "2021"
 rust-version = "1.96"
 license = "MIT"
 authors = ["a@qmu.jp"]
-repository = "https://github.com/a-qmu-jp/gmail-ftp"
+repository = "https://github.com/qmu/qfs"
 
 # Shared dependency versions. Members opt in via `dep = { workspace = true }`.
 # Versions are caret-resolved against the pre-warmed cargo cache (A2 ground truth);
