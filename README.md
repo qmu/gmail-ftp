@@ -64,6 +64,9 @@ Or build from source (requires a Rust toolchain):
 cd packages/qfs && cargo build --release    # the native binary at packages/qfs/target/release/qfs
 ```
 
+After installing, `install.sh` prints a short **Next steps** guide (try it, connect a service,
+update, and where to read more). The [Quickstart](#quickstart-the-loop) below is the same loop.
+
 ## Quickstart (the loop)
 
 ```sh
