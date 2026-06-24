@@ -13,11 +13,12 @@
 //! and its argv contract), and locates the built `qfs` binary next to the test runner.
 //!
 //! ## Why scenario 1 uses the qfs-exec black-box API, not the binary
-//! The binary's `ReadRegistry` is intentionally EMPTY at this E0 stage (driver registration is the
-//! E4 seam), so `FROM /<src>` through the binary resolves to a structured capability error rather
-//! than rows. To exercise the real parse→resolve→plan→scan→residual→rows path with actual data,
-//! that one scenario drives the executor's public black-box API (`run_oneshot`/`block_on_read`)
-//! against a Planner-owned in-memory fake driver — and this header SAYS SO.
+//! The binary now wires the **local** read facet (see `from_local_reads_a_real_directory`, which
+//! drives `FROM /local/<dir>` through the real binary), but the other drivers' read registration is
+//! still pending, so `FROM /mail/<src>` through the binary resolves to a capability error. To
+//! exercise the real parse→resolve→plan→scan→residual→rows path with controlled over-returning
+//! data, that one scenario drives the executor's public black-box API (`run_oneshot`/
+//! `block_on_read`) against a Planner-owned in-memory fake mail driver — and this header SAYS SO.
 //!
 //! Scenario map (ticket acceptance criteria):
 //!  1. Headline read path + residual truthfulness (t20 closure) — via qfs-exec black-box API.
@@ -460,6 +461,36 @@ fn irreversible_commit_with_ack_applies_to_the_local_filesystem() {
     assert_eq!(json(&o.stdout)["committed"], true);
     assert!(!real.exists(), "the REMOVE actually deleted the file");
     let _ = std::fs::remove_dir_all(real.parent().unwrap());
+}
+
+#[test]
+fn from_local_reads_a_real_directory() {
+    // The binary wires the local-FS read facet into `qfs run`, so `FROM /local/<dir>` scans the
+    // real host directory (rooted at `/`, so /local/<abs> -> /<abs>).
+    let dir = std::env::temp_dir().join(format!("qfs-e2e-{}-read", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("one.txt"), b"a").unwrap();
+    std::fs::write(dir.join("two.txt"), b"bb").unwrap();
+    let vfs = format!("/local{}", dir.to_string_lossy());
+    let o = qfs(&[
+        "run",
+        "-e",
+        &format!("FROM {vfs} |> SELECT name, size"),
+        "--json",
+    ]);
+    assert_eq!(o.code, 0, "FROM /local read exits 0: {:?}", o.stderr);
+    let v = json(&o.stdout);
+    let names: Vec<&str> = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"one.txt") && names.contains(&"two.txt"),
+        "lists the real files: {names:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

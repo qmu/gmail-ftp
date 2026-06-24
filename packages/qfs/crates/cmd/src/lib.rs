@@ -82,6 +82,14 @@ pub enum AccountAction {
 /// like the shell / serve / describe launchers. Returns the process exit code.
 pub type AccountLauncher<'a> = dyn Fn(&AccountAction) -> i32 + 'a;
 
+/// The injected **run-context provider**: the binary supplies the `(Engine, ReadRegistry)` for
+/// `qfs run` — the [`Engine`] whose mount registry has the real drivers (so a `FROM …` source
+/// resolves + plans + pushes down) and the [`qfs_exec::ReadRegistry`] of `ReadDriver` scan facets
+/// that execute the read. Both live in the binary (which owns the runtime-coupled local adapter) —
+/// NOT in qfs-cmd, which stays off qfs-driver-local. Mirrors the describe / shell / commit
+/// injections.
+pub type RunContextProvider<'a> = dyn Fn() -> (Engine, qfs_exec::ReadRegistry) + 'a;
+
 /// qfs — one binary that is both a CLI and a server, exposing every external
 /// service through one uniform, filesystem-shaped, pipe-SQL DSL (RFD-0001 §1).
 #[derive(Parser, Debug)]
@@ -212,6 +220,11 @@ enum AccountVerb {
 /// binary supplies the runtime-coupled local read facet + REPL driver). Returns the intended
 /// process exit code; the binary forwards it to `std::process::exit`.
 #[must_use]
+// The binary's single composition-root entrypoint: each argument is a distinct injected seam
+// (shell / serve / describe / skill / account / commit-applier / run-context) the leaf binary
+// supplies so qfs-cmd stays off the concrete driver/runtime/secrets crates. The count is the
+// surface of that injection, not incidental coupling.
+#[allow(clippy::too_many_arguments)]
 pub fn run<I, T>(
     args: I,
     shell: &ShellLauncher,
@@ -220,6 +233,7 @@ pub fn run<I, T>(
     skill: &SkillProvider,
     account: &AccountLauncher,
     apply: &qfs_exec::WorldApply,
+    run_ctx: &RunContextProvider,
 ) -> i32
 where
     I: IntoIterator<Item = T>,
@@ -249,9 +263,8 @@ where
         OutputMode::Human
     };
 
-    // The Engine and Session are constructed here and threaded into dispatch; at E0
-    // they carry only empty registries (the seam the later epics fill).
-    let engine = Engine::new();
+    // The Session carries the resolved output mode. (The run Engine is no longer built here — the
+    // run path builds it from the injected RunContextProvider, which carries the real drivers.)
     let mut session = Session::new();
     session.output = output;
 
@@ -268,7 +281,6 @@ where
     }) = &cli.cmd
     {
         return dispatch_run(
-            &engine,
             RunOpts {
                 stmt: stmt.clone(),
                 expr: expr.clone(),
@@ -279,6 +291,7 @@ where
                 quiet: *quiet,
             },
             apply,
+            run_ctx,
         );
     }
 
@@ -381,7 +394,7 @@ struct RunOpts {
 /// stdin), choose the output format (explicit flag wins; else `table` on a TTY, `json` when
 /// piped), and hand off to the execution layer, which renders the result and returns the
 /// stable exit code. Logic-free: all execution lives in `qfs-exec`.
-fn dispatch_run(engine: &Engine, opts: RunOpts, apply: &qfs_exec::WorldApply) -> i32 {
+fn dispatch_run(opts: RunOpts, apply: &qfs_exec::WorldApply, run_ctx: &RunContextProvider) -> i32 {
     use std::io::IsTerminal;
 
     // Resolve the statement source. A positional `-` means "read from stdin".
@@ -399,12 +412,12 @@ fn dispatch_run(engine: &Engine, opts: RunOpts, apply: &qfs_exec::WorldApply) ->
     let stdout_is_tty = std::io::stdout().is_terminal();
     let fmt = resolve_format(&opts, stdout_is_tty);
 
-    // The read-driver registry. At the cmd boundary it is empty: real driver registration
-    // (read facet) is the E4/bootstrap seam this consumes read-only. With no read driver a
-    // `FROM /x` resolves to a structured capability error (exit 3) rather than a panic.
-    let reads = qfs_exec::ReadRegistry::new();
+    // The run context: the binary supplies the Engine (mounts with the real drivers, so a `FROM`
+    // source resolves + plans + pushes down) and the ReadRegistry (the scan facets). With no
+    // driver for a mount, a `FROM /x` resolves to a structured capability error (exit 3).
+    let (engine, reads) = run_ctx();
     let ctx = qfs_exec::ExecCtx {
-        engine,
+        engine: &engine,
         reads: &reads,
         // The binary injects the real interpreter-backed commit; qfs-cmd stays off qfs-runtime.
         world_apply: Some(apply),
@@ -666,6 +679,12 @@ mod tests {
         Ok(())
     }
 
+    /// A stub run-context: an empty engine + empty read registry (read tests use the qfs-exec
+    /// black-box API; the binary supplies the real local-driver context).
+    fn stub_run_ctx() -> (Engine, qfs_exec::ReadRegistry) {
+        (Engine::new(), qfs_exec::ReadRegistry::new())
+    }
+
     /// Run with the no-op shell + serve launchers + empty describe + stub skill + stub account
     /// providers (every non-shell/serve/describe/skill/account test path ignores them).
     fn run_t<I, T>(args: I) -> i32
@@ -681,6 +700,7 @@ mod tests {
             &stub_skill,
             &stub_account,
             &noop_apply,
+            &stub_run_ctx,
         )
     }
 
@@ -688,9 +708,7 @@ mod tests {
     fn run_dispatch_resolves_single_statement_source() {
         // t29: `qfs run` now dispatches into the execution layer. Resolving exactly one
         // statement source is a usage gate; zero sources is exit 2 (usage).
-        let engine = Engine::new();
         let code = dispatch_run(
-            &engine,
             RunOpts {
                 stmt: None,
                 expr: None,
@@ -701,6 +719,7 @@ mod tests {
                 quiet: false,
             },
             &noop_apply,
+            &stub_run_ctx,
         );
         assert_eq!(code, 2, "no statement source is a usage error (exit 2)");
     }
@@ -722,6 +741,7 @@ mod tests {
             &stub_skill,
             &stub_account,
             &noop_apply,
+            &stub_run_ctx,
         );
         assert!(
             launched.get(),
@@ -769,6 +789,7 @@ mod tests {
             &stub_skill,
             &stub_account,
             &noop_apply,
+            &stub_run_ctx,
         );
         assert!(
             launched.get(),
@@ -848,7 +869,8 @@ mod tests {
                 &empty_describe,
                 &provider,
                 &stub_account,
-                &noop_apply
+                &noop_apply,
+                &stub_run_ctx
             ),
             0
         );
@@ -861,7 +883,8 @@ mod tests {
                 &empty_describe,
                 &provider,
                 &stub_account,
-                &noop_apply
+                &noop_apply,
+                &stub_run_ctx
             ),
             0
         );
