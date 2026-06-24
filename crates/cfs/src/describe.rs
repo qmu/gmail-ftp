@@ -7,8 +7,9 @@
 //! (`describe` / `capabilities` / `procedures` / `prelude` / `pushdown`) — it never reaches
 //! `Driver::applier`, so no credential is resolved, no socket is opened, no I/O happens (RFD §3
 //! purity invariant). Each driver is therefore constructed with its **public, cred-free mock
-//! client** (`Mock*Client` — explicitly "no socket, no credentials") or an **empty registry**
-//! (`ObjRegistry::new()`), which the introspective half never touches.
+//! client** (`Mock*Client` — explicitly "no socket, no credentials") or a registry carrying a
+//! representative bucket on a cred-free `MockObjectBackend` (s3/r2), which the introspective
+//! half reads for capabilities but never *applies*.
 //!
 //! ## Why the binary owns this
 //! cfs-cmd must stay off the concrete `cfs-driver-*` crates (the dep_direction guard). The binary
@@ -60,12 +61,28 @@ pub fn describe_registry() -> MountRegistry {
         Arc::new(cfs_driver_ga::GaDriver::new(Arc::new(
             cfs_driver_ga::MockGaClient::default(),
         ))),
-        // Blob: S3 + R2 (path-based describe over an empty bucket registry).
+        // Blob: S3 + R2 over a registry carrying ONE representative bucket (`bucket`), built on
+        // the public, cred-free `MockObjectBackend` (in-memory fixtures — no creds, no socket, no
+        // network). Per-node capabilities are gated on a *registered* bucket (a registration
+        // requirement, not a credential one), so registering this one representative bucket lets
+        // `cfs describe /s3/bucket/key` — and the t40 driver catalog — surface S3/R2's real blob
+        // verbs instead of an empty set. The mock backend is never *applied* (DESCRIBE reads only
+        // the introspective half), so no I/O ever happens.
         Arc::new(cfs_driver_objstore::S3Driver::new(
-            cfs_driver_objstore::ObjRegistry::new(),
+            cfs_driver_objstore::ObjRegistry::new().with_bucket(
+                "bucket",
+                cfs_driver_objstore::Bucket::new(Arc::new(
+                    cfs_driver_objstore::MockObjectBackend::new(),
+                )),
+            ),
         )),
         Arc::new(cfs_driver_objstore::R2Driver::new(
-            cfs_driver_objstore::ObjRegistry::new(),
+            cfs_driver_objstore::ObjRegistry::new().with_bucket(
+                "bucket",
+                cfs_driver_objstore::Bucket::new(Arc::new(
+                    cfs_driver_objstore::MockObjectBackend::new(),
+                )),
+            ),
         )),
     ];
 

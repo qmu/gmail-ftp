@@ -64,7 +64,11 @@ fn representative_path(mount: &str) -> String {
     match mount {
         "/local" => "/local/x.txt".to_string(),
         "/mail" => "/mail/drafts".to_string(),
-        "/drive" => "/drive/Reports".to_string(),
+        // A file/blob node under the My Drive corpus (the t39 corpus prefix). `/drive/Reports`
+        // would parse as neither corpus and fold to the empty capability set — under-selling the
+        // driver; a node under `/drive/my/...` shows Drive's real blob verbs (Ls/Select/Insert/
+        // Upsert/Cp/Mv) the agent can plan against.
+        "/drive" => "/drive/my/Reports/report.pdf".to_string(),
         "/github" => "/github/o/r/pulls".to_string(),
         "/slack" => "/slack/ws/#general/messages".to_string(),
         "/ga" => "/ga/123456789".to_string(),

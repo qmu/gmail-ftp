@@ -9,21 +9,21 @@ Each backend is a **mount** in the paths registry (RFD §3). Every node maps ont
 
 ### `/drive` — BlobNamespace
 
-- example node: `/drive/Reports`
+- example node: `/drive/my/Reports/report.pdf`
 - native verbs: ls cp mv rm (+ universal upsert/remove)
 
 Universal verbs (✓ supported / ✗ rejected at parse time):
 
 | verb | supported |
 |------|-----------|
-| `SELECT` | ✗ |
-| `INSERT` | ✗ |
-| `UPSERT` | ✗ |
-| `UPDATE` | ✗ |
-| `REMOVE` | ✗ |
-| `LS` | ✗ |
-| `CP` | ✗ |
-| `MV` | ✗ |
+| `SELECT` | ✓ |
+| `INSERT` | ✓ |
+| `UPSERT` | ✓ |
+| `UPDATE` | ✓ |
+| `REMOVE` | ✓ |
+| `LS` | ✓ |
+| `CP` | ✓ |
+| `MV` | ✓ |
 | `RM` | ✗ |
 
 Procedures (`CALL drive.action(..)`):
@@ -155,15 +155,15 @@ Universal verbs (✓ supported / ✗ rejected at parse time):
 
 | verb | supported |
 |------|-----------|
-| `SELECT` | ✗ |
+| `SELECT` | ✓ |
 | `INSERT` | ✗ |
-| `UPSERT` | ✗ |
+| `UPSERT` | ✓ |
 | `UPDATE` | ✗ |
-| `REMOVE` | ✗ |
-| `LS` | ✗ |
-| `CP` | ✗ |
-| `MV` | ✗ |
-| `RM` | ✗ |
+| `REMOVE` | ✓ |
+| `LS` | ✓ |
+| `CP` | ✓ |
+| `MV` | ✓ |
+| `RM` | ✓ |
 
 Procedures: _none_
 
@@ -180,15 +180,15 @@ Universal verbs (✓ supported / ✗ rejected at parse time):
 
 | verb | supported |
 |------|-----------|
-| `SELECT` | ✗ |
+| `SELECT` | ✓ |
 | `INSERT` | ✗ |
-| `UPSERT` | ✗ |
+| `UPSERT` | ✓ |
 | `UPDATE` | ✗ |
-| `REMOVE` | ✗ |
-| `LS` | ✗ |
-| `CP` | ✗ |
-| `MV` | ✗ |
-| `RM` | ✗ |
+| `REMOVE` | ✓ |
+| `LS` | ✓ |
+| `CP` | ✓ |
+| `MV` | ✓ |
+| `RM` | ✓ |
 
 Procedures: _none_
 

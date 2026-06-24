@@ -18,6 +18,20 @@
 use std::collections::BTreeMap;
 use std::process::Command;
 
+/// The workspace's **terminal leaves** — the crates where tokio is allowed to dead-end because
+/// NOTHING depends on them (so a runtime edge cannot transit back into the spine). This is the
+/// single source for the "tokio dead-ends here" rationale shared by the runtime-confinement and
+/// terminal-sink guards:
+/// - `cfs` — the binary composition root (the true terminal sink).
+/// - `cfs-skill` — the `publish = false` assets crate whose only runtime reach is via dev-deps
+///   (the golden corpus), which never ship.
+/// - `xtask` — the `publish = false` build tool (t40) that links the `cfs` lib facet for doc
+///   generation; itself a leaf (nothing depends on xtask). See ADR-0007.
+///
+/// A crate added here must genuinely be a leaf — the guards below mechanically enforce that no
+/// other workspace crate depends back onto it.
+const TERMINAL_LEAVES: &[&str] = &["cfs", "cfs-skill", "xtask"];
+
 /// A minimal view of the `cargo metadata` JSON we need.
 struct Graph {
     /// package name -> set of direct dependency package names (normal + build + dev,
@@ -441,30 +455,13 @@ fn runtime_is_confined_to_plan_and_types() {
             .find(|(other, od)| {
                 other.as_str() != consumer.as_str()
                     && od.iter().any(|d| d == *consumer)
-                    // The `cfs` BINARY is the workspace's composition root — a true sink that
-                    // nothing depends on. Since t28 it wires the local read facet
-                    // (cfs-driver-local, a runtime consumer) into the shell, so it depends on a
-                    // runtime consumer. This does NOT widen tokio's reach: the binary is the
-                    // terminal node, so tokio still dead-ends (it cannot transit THROUGH the
-                    // binary back into the spine — nothing depends on the binary). Exempt it.
-                    && other.as_str() != "cfs"
-                    // t39: `cfs-skill` (an assets crate, `publish = false`) reaches the describe-
-                    // facet driver crates ONLY via DEV-dependencies (the golden corpus), which
-                    // `cargo metadata` lumps into this view. Those dev-deps can never transit tokio
-                    // into a SHIPPED artifact (compiled only for tests). Its sole NORMAL dep edge is
-                    // the binary's `cfs → cfs-skill` (CO-t39-1, shipping SKILL.md) — and cfs-skill's
-                    // OWN `[dependencies]` is empty, so it pulls no runtime crate normally. So
-                    // cfs-skill carries no normal runtime edge; its driver edges dead-end in tests.
-                    // Exempt it for the same "tokio dead-ends here" reason as the `cfs` binary.
-                    && other.as_str() != "cfs-skill"
-                    // t40: `xtask` (build-only tooling, `publish = false`) depends on the `cfs`
-                    // lib facet to reuse its doc generator. It pulls cfs-runtime transitively
-                    // through `cfs`, but xtask is ITSELF a terminal leaf — nothing depends on
-                    // xtask — so tokio reaching xtask STILL dead-ends and cannot transit back into
-                    // the spine. Exempt it for the same "tokio dead-ends here" reason as `cfs`.
-                    // See ADR-0007 and the terminal-sink guard above (which pins xtask as the sole
-                    // permitted dependent of `cfs`).
-                    && other.as_str() != "xtask"
+                    // The TERMINAL_LEAVES (`cfs` binary / `cfs-skill` assets / `xtask` build tool)
+                    // are exempt: each is a leaf where tokio dead-ends (nothing depends on it), so
+                    // depending on a runtime consumer does NOT let tokio transit back into the
+                    // spine. The shared rationale + per-crate justification lives on the
+                    // TERMINAL_LEAVES constant. (cfs wires cfs-driver-local since t28; cfs-skill's
+                    // runtime reach is dev-deps only; xtask links the cfs lib for doc-gen — t40.)
+                    && !TERMINAL_LEAVES.contains(&other.as_str())
             })
             .map(|(other, _)| other.clone());
         assert!(
