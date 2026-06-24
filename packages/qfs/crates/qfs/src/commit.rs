@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use qfs_exec::{ErrorKind, ExecError};
 use qfs_runtime::{CapabilitySet, DriverRegistry, Interpreter, LegStatus};
+use qfs_secrets::{AccountId, CredentialKey, EnvStore, Secrets};
 use qfs_types::DriverId;
 
 /// Apply `plan` to the World via the runtime interpreter. Returns `Ok(())` once every leg applied,
@@ -63,14 +64,77 @@ pub fn apply_plan(plan: &qfs_core::Plan) -> Result<(), ExecError> {
     Ok(())
 }
 
-/// The live apply-driver registry. **Local filesystem only** today (cred-free): rooted at `/` so a
-/// VFS path `/local/<p>` maps to the host path `/<p>` within the driver's sandbox; real
-/// `UPSERT`/`REMOVE` legs apply through its `LocalApplier`. Other drivers register here behind
-/// their live clients as they land.
+/// The live apply-driver registry: the real clients each effect leg applies through, keyed by the
+/// leg's [`DriverId`] (the same id the planner stamped on the `Target`).
+///
+/// - **local** filesystem (cred-free): rooted at `/` so a VFS path `/local/<p>` maps to host
+///   `/<p>` within the driver's sandbox; real `UPSERT`/`REMOVE` legs apply through its
+///   `LocalApplier`.
+/// - **github** + **slack** (credentialed HTTP): the real [`reqwest`](crate::transport)
+///   transport + the encrypted credential store. Always registered so a `/github` or `/slack`
+///   commit leg routes; the PAT / bot token is resolved **lazily at request time**, so a missing
+///   credential surfaces as a clear per-leg auth error (never a panic, never a silent no-op).
+///
+/// Credentialed Google / SQL / object-store drivers register here as their production clients
+/// (OAuth, connection pools, SigV4) land — each its own execution+auth slice.
 fn live_registry() -> DriverRegistry {
     let local = qfs_driver_local::LocalFsDriver::new("/");
-    DriverRegistry::new().with(
+    let mut reg = DriverRegistry::new().with(
         DriverId::new("local"),
         Arc::new(qfs_driver_local::local_apply_driver(&local)),
-    )
+    );
+
+    // GitHub: the real REST client over the production reqwest transport + the resolved credential.
+    if let Some((gh_store, gh_cred)) = networked_credential("github") {
+        let gh_client = Arc::new(qfs_driver_github::RestGitHubClient::new(
+            crate::transport::github_transport(),
+            gh_store,
+            gh_cred,
+        ));
+        let gh_driver = qfs_driver_github::GitHubDriver::new(gh_client);
+        reg = reg.with(
+            DriverId::new("github"),
+            Arc::new(qfs_driver_github::github_apply_driver(&gh_driver)),
+        );
+    }
+
+    // Slack: same shape (the shared reqwest transport, Slack's body-error rule on).
+    if let Some((sl_store, sl_cred)) = networked_credential("slack") {
+        let sl_client = Arc::new(qfs_driver_slack::RestSlackClient::new(
+            crate::transport::slack_transport(),
+            sl_store,
+            sl_cred,
+            qfs_driver_slack::BodyErrorRule::On,
+        ));
+        let sl_driver = qfs_driver_slack::SlackDriver::new(sl_client);
+        reg = reg.with(
+            DriverId::new("slack"),
+            Arc::new(qfs_driver_slack::slack_apply_driver(&sl_driver)),
+        );
+    }
+
+    reg
+}
+
+/// Resolve the `(store, credential key)` a networked driver applies with. Reads the **same**
+/// credential `qfs account add <driver> <name>` wrote: the encrypted [`LocalStore`] when
+/// `QFS_PASSPHRASE` + the vault exist, else the process-env store (`QFS_SECRET_*`, the agent /
+/// CI path). The account is the one `qfs account use <driver> <name>` selected (the plaintext
+/// `.active` sidecar), defaulting to `default`. The secret is **not** read here — the client reads
+/// it lazily at request-build time, so a missing/locked credential becomes a clear per-leg auth
+/// error at commit, never a panic at registry build. Returns `None` only if the account id cannot
+/// be constructed (impossible for the literal `default` fallback) — in which case the driver is
+/// simply left unregistered rather than panicking.
+fn networked_credential(driver: &str) -> Option<(Arc<dyn Secrets>, CredentialKey)> {
+    let store: Arc<dyn Secrets> = match crate::account::open_store_for_commit() {
+        Some(local) => Arc::new(local),
+        None => Arc::new(EnvStore::from_process_env()),
+    };
+    let account = crate::account::active_account(driver).unwrap_or_else(|| "default".to_string());
+    // `default` is always a valid account name; an invalid persisted selection falls back to it.
+    let acct = AccountId::new(&account)
+        .or_else(|_| AccountId::new("default"))
+        .ok()?;
+    let cred = CredentialKey::new(qfs_secrets::DriverId(driver.to_string()), acct);
+    Some((store, cred))
 }

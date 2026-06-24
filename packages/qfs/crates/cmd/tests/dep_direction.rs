@@ -265,6 +265,13 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         "qfs-driver-slack",
         "qfs-driver-ga",
         "qfs-driver-objstore",
+        // t-exec networked commit: the binary owns the ONE real reqwest HTTP transport
+        // (src/transport.rs), bridging qfs-driver-http's confined `ReqwestClient` onto the github +
+        // slack `HttpTransport` seams (a pure delegate — they share qfs-http-core DTOs). reqwest
+        // dead-ends here in the terminal leaf, so the driver crates stay transport-agnostic and
+        // qfs-cmd/qfs-exec stay off the wire client. qfs-driver-http is already in the
+        // runtime-consumer allowlist; this is its only allowed dependent besides the driver layer.
+        "qfs-driver-http",
         // t39 CO-t39-1: the binary links the embedded agent skill so `qfs skill` ships SKILL.md in
         // the artifact (the NORMAL dep edge that keeps the `include_str!` consts from being
         // dead-stripped). qfs-skill's own `[dependencies]` is EMPTY — it carries no runtime/driver

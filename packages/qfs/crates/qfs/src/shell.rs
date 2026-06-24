@@ -143,7 +143,24 @@ fn local_engine_and_reads(root: PathBuf) -> (Engine, ReadRegistry) {
 /// composition. Other drivers join here as their read facets land.
 #[must_use]
 pub fn run_engine_and_reads() -> (Engine, ReadRegistry) {
-    local_engine_and_reads(PathBuf::from("/"))
+    let (mut engine, reads) = local_engine_and_reads(PathBuf::from("/"));
+    // Register the networked drivers' **cred-free** facets as mounts so `/github` and `/slack`
+    // statements PLAN (the planner is pure — it reads only describe/capabilities/pushdown, never
+    // a client; DESCRIBE is cred-free). The real credentialed clients that actually APPLY a commit
+    // leg live in the apply registry (`commit.rs`), keyed by the same driver id the planner stamps.
+    // The cred-free mock clients here are never called (no read facet is registered for them, and
+    // planning never touches `Driver::applier`).
+    let _ = engine
+        .mounts
+        .register(Arc::new(qfs_driver_github::GitHubDriver::new(Arc::new(
+            qfs_driver_github::MockGitHubClient::default(),
+        ))));
+    let _ = engine
+        .mounts
+        .register(Arc::new(qfs_driver_slack::SlackDriver::new(Arc::new(
+            qfs_driver_slack::MockSlackClient::default(),
+        ))));
+    (engine, reads)
 }
 
 /// Render one [`Outcome`] to `out` (human text). The shell reuses qfs-exec's renderers for the

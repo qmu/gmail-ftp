@@ -55,6 +55,35 @@ fn open_store() -> Result<(LocalStore, PathBuf), String> {
     Ok((store, cred))
 }
 
+/// Open the credential store for the **commit resolver** (read path): the same encrypted
+/// [`LocalStore`] `account add` writes to, when `QFS_PASSPHRASE` + the vault both exist. Returns
+/// `None` (best-effort, never an error) when the store cannot be unlocked — the commit registry
+/// then falls back to the env-var store, and a missing credential surfaces lazily as a clear
+/// per-leg auth error rather than a panic. Never logs the passphrase.
+#[must_use]
+pub fn open_store_for_commit() -> Option<LocalStore> {
+    open_store().ok().map(|(store, _)| store)
+}
+
+/// The persisted active account name for `driver`, read from the plaintext `<credentials>.active`
+/// sidecar (selectors only — no secret, so no passphrase is needed to read it). This is the same
+/// selection `qfs account use <driver> <account>` writes; the commit resolver consumes it to pick
+/// which credential to apply with. Returns `None` when unset/unreadable.
+#[must_use]
+pub fn active_account(driver: &str) -> Option<String> {
+    let cred = default_credentials_path()?;
+    let body = std::fs::read_to_string(active_path(&cred)).ok()?;
+    body.lines().find_map(|line| {
+        let mut it = line.splitn(2, '\t');
+        match (it.next(), it.next()) {
+            (Some(d), Some(acct)) if d == driver && !acct.trim().is_empty() => {
+                Some(acct.trim().to_string())
+            }
+            _ => None,
+        }
+    })
+}
+
 /// `<credentials>.salt` — the per-store KDF salt sidecar.
 fn salt_path(cred: &std::path::Path) -> PathBuf {
     let mut p = cred.as_os_str().to_owned();

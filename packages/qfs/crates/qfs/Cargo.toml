@@ -79,6 +79,12 @@ qfs-secrets = { path = "../secrets" }
 # allowlisted runtime leaf (tokio dead-ends here). qfs-types supplies the owned DriverId key.
 qfs-runtime = { path = "../runtime" }
 qfs-types = { path = "../types" }
+# t-exec networked-commit wiring: the binary owns the ONE real `reqwest` HTTP transport (in
+# src/transport.rs), bridging qfs-driver-http's confined `ReqwestClient` onto the github + slack
+# `HttpTransport` seams (they share qfs-http-core DTOs, so it is a pure delegate). reqwest dead-ends
+# here in the terminal leaf — the driver crates stay transport-agnostic + mockable, and qfs-cmd
+# stays off both. github/slack are already linked above (describe); this only adds the wire client.
+qfs-driver-http = { path = "../driver-http" }
 # t36 deployment host-adapter seam: the binary composes the daemon's TokioHost: RuntimeHost,
 # REUSING the existing qfs-http/qfs-cron/qfs-watchtower serve composition behind the trait, and
 # wires the fsync'd FileDurableStore + the on-disk AuditLedger. `host-daemon` is the EC2/Linux

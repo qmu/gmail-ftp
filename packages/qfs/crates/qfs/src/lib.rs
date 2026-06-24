@@ -28,5 +28,6 @@ pub mod host;
 pub mod serve;
 pub mod serve_builtins;
 pub mod shell;
+pub mod transport;
 pub mod version;
 pub mod watchtower;

@@ -1081,6 +1081,7 @@ dependencies = [
  "qfs-driver-gdrive",
  "qfs-driver-github",
  "qfs-driver-gmail",
+ "qfs-driver-http",
  "qfs-driver-local",
  "qfs-driver-objstore",
  "qfs-driver-slack",
