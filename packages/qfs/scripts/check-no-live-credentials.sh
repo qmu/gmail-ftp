@@ -15,9 +15,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # The paths to scan: the authoritative docs, the generated reference, golden fixtures, the
-# installer, and the release output dir if it exists. `docs/` lives at the repo root, one level
-# above this packages/qfs workspace (ROOT).
-SCAN_PATHS=("README.md" "../docs" "install.sh")
+# installer, and the release output dir if it exists. `README.md` and `docs/` live at the repo
+# root, one level above this packages/qfs workspace (ROOT).
+SCAN_PATHS=("../README.md" "../docs" "install.sh")
 [ -d dist ] && SCAN_PATHS+=("dist")
 # Golden fixtures across the workspace (checked-in expected outputs an example might embed creds in).
 while IFS= read -r d; do SCAN_PATHS+=("$d"); done < <(

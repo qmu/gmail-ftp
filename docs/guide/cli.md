@@ -96,7 +96,7 @@ The long form prints the version, the exact build commit, and the target it was 
 when reporting an issue:
 
 ```text
-qfs 0.0.1
+qfs 0.0.2
 commit:  <git-sha>
 target:  x86_64-unknown-linux-gnu
 ```
