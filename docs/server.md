@@ -20,7 +20,7 @@
 
 `CREATE POLICY` gates writes by verb / path / irreversibility — an irreversible effect (`REMOVE`, `CALL mail.send`) can be blocked or required to be explicitly acknowledged. **Credentials are never inline in a config**: a binding references a stored account by handle (`qfs account add <driver> <name>`), and no token is ever written to a config, a log, or a generated doc. Examples below use placeholder handles only.
 
-```text
+```qfs
 CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5
 CREATE TRIGGER notify ON /mail/inbox DO INSERT INTO /slack/acme/general/messages VALUES (NEW.subject)
 CREATE JOB nightly EVERY '1h' DO REMOVE /tmp/scratch WHERE age > 7

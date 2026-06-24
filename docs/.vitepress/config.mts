@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitepress'
+import { qfsGrammar } from './qfs.tmLanguage.js'
 
 // VitePress config for the qfs documentation site.
 // srcDir is this `docs/` tree (the site is launched with `vitepress dev docs`), so the links
@@ -7,13 +8,15 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   title: 'qfs',
   description: 'One query language for every service you use — mail, databases, GitHub, Slack, files, git, the cloud.',
-  // The generated reference docs cross-link each other relatively; don't fail the build on a link
-  // VitePress can't statically resolve.
   ignoreDeadLinks: true,
+  markdown: {
+    // Register the custom qfs highlighter so ```qfs blocks are syntax-highlighted.
+    languages: [qfsGrammar as any],
+  },
   themeConfig: {
     nav: [
-      { text: 'Guide', link: '/guide/introduction' },
-      { text: 'Showcase', link: '/showcase' },
+      { text: 'Get started', link: '/guide/getting-started' },
+      { text: 'Cookbook', link: '/cookbook/' },
       {
         text: 'Reference',
         items: [
@@ -24,54 +27,76 @@ export default defineConfig({
         ],
       },
     ],
-    sidebar: [
-      {
-        text: 'Getting started',
-        items: [
-          { text: 'Why qfs?', link: '/guide/introduction' },
-          { text: 'Installation', link: '/guide/installation' },
-          { text: 'Your first queries', link: '/guide/getting-started' },
-          { text: 'Core concepts', link: '/guide/concepts' },
-        ],
-      },
-      {
-        text: 'Showcase',
-        items: [{ text: 'What it can do', link: '/showcase' }],
-      },
-      {
-        text: 'Using qfs',
-        items: [
-          { text: 'CLI reference', link: '/guide/cli' },
-          { text: 'Interactive shell', link: '/guide/shell' },
-          { text: 'Accounts & credentials', link: '/guide/accounts' },
-        ],
-      },
-      {
-        text: 'Reference (generated)',
-        items: [
-          { text: 'Language', link: '/language' },
-          { text: 'Driver catalog', link: '/drivers' },
-          { text: 'Server guide', link: '/server' },
-          { text: 'Docs map', link: '/README' },
-        ],
-      },
-      {
-        text: 'Architecture Decisions',
-        items: [
-          { text: '0001 — Parser library', link: '/adr/0001-parser-library' },
-          { text: '0002 — Local combine engine', link: '/adr/0002-local-combine-engine' },
-          { text: '0003 — Git object access', link: '/adr/0003-git-object-access' },
-          { text: '0004 — HTTP serving', link: '/adr/0004-http-serving' },
-          { text: '0005 — Deployment hosts', link: '/adr/0005-deployment-hosts' },
-          { text: '0006 — Test harness', link: '/adr/0006-test-harness' },
-          { text: '0007 — Docs and distribution', link: '/adr/0007-docs-and-distribution' },
-        ],
-      },
-      {
-        text: 'Security',
-        items: [{ text: 'Threat model', link: '/security/threat-model' }],
-      },
-    ],
+    sidebar: {
+      '/cookbook/': [
+        {
+          text: 'Cookbook',
+          items: [
+            { text: 'Overview', link: '/cookbook/' },
+            { text: 'Mail', link: '/cookbook/mail' },
+            { text: 'Databases', link: '/cookbook/databases' },
+            { text: 'Files & storage', link: '/cookbook/files' },
+            { text: 'Cross-service', link: '/cookbook/cross-service' },
+            { text: 'Code: git, GitHub, Slack', link: '/cookbook/code' },
+            { text: 'Automation (server)', link: '/cookbook/automation' },
+          ],
+        },
+      ],
+      '/': [
+        {
+          text: 'Get started',
+          items: [
+            { text: 'Installation', link: '/guide/installation' },
+            { text: 'Your first queries', link: '/guide/getting-started' },
+            { text: 'How qfs works', link: '/guide/concepts' },
+          ],
+        },
+        {
+          text: 'Cookbook',
+          items: [
+            { text: 'Overview', link: '/cookbook/' },
+            { text: 'Mail', link: '/cookbook/mail' },
+            { text: 'Databases', link: '/cookbook/databases' },
+            { text: 'Files & storage', link: '/cookbook/files' },
+            { text: 'Cross-service', link: '/cookbook/cross-service' },
+            { text: 'Code: git, GitHub, Slack', link: '/cookbook/code' },
+            { text: 'Automation (server)', link: '/cookbook/automation' },
+          ],
+        },
+        {
+          text: 'Using qfs',
+          items: [
+            { text: 'CLI reference', link: '/guide/cli' },
+            { text: 'Interactive shell', link: '/guide/shell' },
+            { text: 'Accounts & credentials', link: '/guide/accounts' },
+          ],
+        },
+        {
+          text: 'Reference (generated)',
+          items: [
+            { text: 'Language', link: '/language' },
+            { text: 'Driver catalog', link: '/drivers' },
+            { text: 'Server guide', link: '/server' },
+          ],
+        },
+        {
+          text: 'Architecture Decisions',
+          items: [
+            { text: '0001 — Parser library', link: '/adr/0001-parser-library' },
+            { text: '0002 — Local combine engine', link: '/adr/0002-local-combine-engine' },
+            { text: '0003 — Git object access', link: '/adr/0003-git-object-access' },
+            { text: '0004 — HTTP serving', link: '/adr/0004-http-serving' },
+            { text: '0005 — Deployment hosts', link: '/adr/0005-deployment-hosts' },
+            { text: '0006 — Test harness', link: '/adr/0006-test-harness' },
+            { text: '0007 — Docs and distribution', link: '/adr/0007-docs-and-distribution' },
+          ],
+        },
+        {
+          text: 'Security',
+          items: [{ text: 'Threat model', link: '/security/threat-model' }],
+        },
+      ],
+    },
     socialLinks: [{ icon: 'github', link: 'https://github.com/qmu/qfs' }],
     search: { provider: 'local' },
   },

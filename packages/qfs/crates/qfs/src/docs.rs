@@ -182,7 +182,11 @@ pub fn render_drivers() -> String {
          one of four archetypes (Blob, Relational, Append, ObjectGraph) — that decides which verbs \
          it supports. A path only offers the verbs that make sense for it; using an unsupported \
          verb is **rejected immediately with a clear error**, never half-applied. The catalog \
-         below is generated from your installed binary, so it always matches what you have.\n"
+         below is generated from your installed binary, so it always matches what you have.\n\n\
+         The verbs are always `SELECT` / `INSERT` / `UPSERT` / `UPDATE` / `REMOVE` (plus `CALL`). \
+         Where a `native verbs` line mentions `ls`/`cp`/`mv`/`rm`, those are just familiar \
+         filesystem **aliases** for the same verbs in the interactive shell (`ls` is a `SELECT`, \
+         `cp` an `UPSERT`, `rm` a `REMOVE`) — not a second set of operations.\n"
     );
 
     let _ = writeln!(s, "## Drivers\n");
@@ -256,7 +260,7 @@ pub fn render_server() -> String {
     );
     let _ = writeln!(
         s,
-        "```text\n\
+        "```qfs\n\
          CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5\n\
          CREATE TRIGGER notify ON /mail/inbox DO INSERT INTO /slack/acme/general/messages VALUES (NEW.subject)\n\
          CREATE JOB nightly EVERY '1h' DO REMOVE /tmp/scratch WHERE age > 7\n\

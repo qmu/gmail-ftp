@@ -22,8 +22,9 @@ in. You address a single item the same way you'd point at a file.
 
 Some paths take a **coordinate**. Git, for example, lets you read a file as of a tag or commit:
 
-```text
-FROM /git/myrepo@v1.2/src/main.rs |> SELECT path
+```qfs
+FROM /git/myrepo@v1.2/src/main.rs
+|> SELECT path
 ```
 
 ## 2. Four archetypes
@@ -34,32 +35,55 @@ useful to know the family:
 
 | Archetype | Shaped like | Verbs you get | Examples |
 | --- | --- | --- | --- |
-| **Blob namespace** | A folder of files | `ls`, `cp`, `mv`, `rm`, `upsert` | Local files, S3/R2, Drive |
+| **Blob namespace** | A folder of files | `SELECT`, `UPSERT`, `REMOVE` | Local files, S3/R2, Drive |
 | **Relational table** | A SQL table | `SELECT`, `JOIN`, `INSERT`, `UPDATE`, `UPSERT` | Postgres, MySQL, D1 |
 | **Append log** | A feed you add to | `SELECT` (tail), `INSERT` (append) | Mail, Slack, queues |
-| **Object graph** | Things with actions | CRUD + `CALL` procedures | GitHub, Linear |
+| **Object graph** | Things with actions | `SELECT`, `INSERT`, `UPDATE`, `REMOVE`, `CALL` | GitHub, Linear |
 
 The key rule: **a path only offers the verbs that make sense for it.** You can't `UPDATE` a Slack
 message (an append log doesn't support it) — and qfs rejects it up front with a clear error instead
 of failing halfway. `describe` always shows the supported set.
+
+### "Wait — what about `ls`, `cp`, `mv`, `rm`?"
+
+There is **one** set of verbs: `SELECT`, `INSERT`, `UPSERT`, `UPDATE`, `REMOVE` (plus `CALL`).
+`ls`/`cp`/`mv`/`rm` are **not** a second set — they're familiar filesystem *names* for those same
+verbs, available in the [interactive shell](/guide/shell) because a blob namespace looks like a
+folder of files:
+
+| Shell shorthand | is just | the real verb |
+| --- | --- | --- |
+| `ls <dir>` | listing a folder | `SELECT` over the directory |
+| `cat <file>` | reading a file | `FROM <file>` |
+| `cp <a> <b>` | copying | `UPSERT INTO <b> FROM <a>` |
+| `mv <a> <b>` | moving | copy, then `REMOVE <a>` |
+| `rm <file>` | deleting | `REMOVE <file>` |
+
+So when the [driver catalog](/drivers) lists `ls cp mv rm` for a file store, that's just a hint that
+those friendly aliases work there — underneath, it's the same `SELECT`/`UPSERT`/`REMOVE` you use
+everywhere else.
 
 ## 3. The pipe-SQL language
 
 You query and change paths with one small SQL-like language. A query is a **source** followed by
 **stages** joined by `|>` (a pipe):
 
-```text
-FROM /sql/pg/orders |> WHERE total > 100 |> SELECT id, total |> ORDER BY total DESC |> LIMIT 5
+```qfs
+FROM /sql/pg/orders
+|> WHERE total > 100
+|> SELECT id, total
+|> ORDER BY total DESC
+|> LIMIT 5
 ```
 
-Read it left to right: start from a table, keep the big orders, pick two columns, sort, take five.
+Read it top to bottom: start from a table, keep the big orders, pick two columns, sort, take five.
 
 The read/transform stages you'll use most:
 
 | Stage | Does |
 | --- | --- |
 | `WHERE <condition>` | Filter rows (`=`, `<`, `>`, `LIKE`, `IN`, `BETWEEN`, `AND`/`OR`) |
-| `SELECT <cols>` | Pick columns; rename with `AS`; call functions like `UPPER(name) AS u` |
+| `SELECT <cols>` | Pick columns; rename with `AS` (e.g. `subject AS title`) |
 | `EXTEND <col> = <expr>` | Add a computed column |
 | `JOIN <path> ON <cond>` | Combine with another path — **even on a different service** |
 | `AGGREGATE <fn> AS <name>` | Summarize (`AGGREGATE count(id) AS n`) |
@@ -98,20 +122,24 @@ Because every service is the same kind of path, qfs can **combine them in a sing
 pushes the parts a service can do natively (a `WHERE`, a `LIMIT`) *down* to that service, then does
 the rest — joins, extra filtering, sorting — locally:
 
-```text
-FROM /sql/pg/orders |> JOIN /github/acme/web/issues ON id = issue_id |> SELECT id, title
+```qfs
+FROM /sql/pg/orders
+|> JOIN /github/acme/web/issues ON id = issue_id
+|> SELECT id, title
 ```
 
-That's a Postgres table joined to GitHub issues in one line. `describe` shows each path's
-**pushdown** so you know what runs where. The [Showcase](/showcase) is full of these.
+That's a Postgres table joined to GitHub issues in one query. `describe` shows each path's
+**pushdown** so you know what runs where. The [Cookbook](/cookbook/cross-service) is full of these.
 
 ### Codecs: formats are just another stage
 
 A blob of bytes becomes rows with `DECODE`, and rows become bytes with `ENCODE`. Supported formats:
 `json`, `jsonl`, `yaml`, `toml`, `csv`, `md`. So converting a file's format is one line:
 
-```text
-FROM /local/config.json |> DECODE json |> ENCODE yaml
+```qfs
+FROM /local/config.json
+|> DECODE json
+|> ENCODE yaml
 ```
 
 ## Credentials, briefly
@@ -120,4 +148,4 @@ FROM /local/config.json |> DECODE json |> ENCODE yaml
 once with `qfs account add <service> <name>` — and qfs never prints it back. See
 [Accounts & credentials](/guide/accounts).
 
-**Next:** put it all together in [the Showcase →](/showcase)
+**Next:** put it all together in [the Cookbook →](/cookbook/)

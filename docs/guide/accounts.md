@@ -51,7 +51,7 @@ output, logs, or a `describe` report. On the **server**, you can go further and 
 [`POLICY`](/server) that allows only specific verbs on specific paths — so an automation or an AI
 agent can act, but only within the bounds you set:
 
-```text
+```qfs
 CREATE POLICY api ALLOW SELECT DENY INSERT, UPDATE, REMOVE, CALL
 CREATE POLICY uploads ALLOW UPSERT ON 's3/*'
 ```

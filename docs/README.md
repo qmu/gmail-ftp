@@ -4,19 +4,18 @@ Welcome to the qfs docs. Here's the map.
 
 ## Start here
 
-- **[Why qfs?](/guide/introduction)** — the idea, and why one query language for every service is
-  worth it.
 - **[Installation](/guide/installation)** — get the binary (no credentials needed to start).
 - **[Your first queries](/guide/getting-started)** — the describe → preview → commit loop, with
   real output.
-
-## Learn it
-
-- **[Core concepts](/guide/concepts)** — paths, the four archetypes, the pipe-SQL language,
+- **[How qfs works](/guide/concepts)** — paths, the four archetypes, the pipe-SQL language,
   preview vs. commit, and cross-service joins.
-- **[Showcase](/showcase)** — a tour of real problems and the single statement that solves each:
-  inbox triage, database queries, cross-service joins, format conversion, file backup, automation,
-  and more.
+
+## The Cookbook
+
+- **[Cookbook](/cookbook/)** — real problems and the single statement that solves each:
+  [mail](/cookbook/mail), [databases](/cookbook/databases),
+  [files & storage](/cookbook/files), [cross-service joins](/cookbook/cross-service),
+  [code](/cookbook/code), and [automation](/cookbook/automation).
 
 ## Use it
 

@@ -61,7 +61,14 @@ PREVIEW: 1 effect(s)
 
 The preview shows what *would* happen: one INSERT, one row affected. No draft was created.
 
-A read query previews as the query itself (reads change nothing):
+A read query previews as the query itself (reads change nothing). Longer queries read best with
+each `|>` pipe on its own line:
+
+```qfs
+FROM /mail/inbox
+|> WHERE subject LIKE '%invoice%'
+|> SELECT date, from, subject
+```
 
 ```sh
 qfs run "FROM /mail/inbox |> WHERE subject LIKE '%invoice%' |> SELECT date, from, subject"
@@ -112,8 +119,8 @@ See [Accounts & credentials](/guide/accounts) for details.
 
 ## Where to go next
 
-- **[The Showcase](/showcase)** — see how far the query language goes: cross-service joins, format
-  conversion, automation, and more.
-- **[Core concepts](/guide/concepts)** — paths, archetypes, previews, and federation explained.
+- **[The Cookbook](/cookbook/)** — dozens of real recipes: cross-service joins, format conversion,
+  automation, and more.
+- **[How qfs works](/guide/concepts)** — paths, archetypes, previews, and federation explained.
 - **[CLI reference](/guide/cli)** — every command and flag.
 - **[Interactive shell](/guide/shell)** — explore your services like a filesystem.

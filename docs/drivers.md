@@ -5,6 +5,8 @@
 
 Every service is mounted at a path prefix (e.g. `/mail`, `/s3`). Each one has a shape — one of four archetypes (Blob, Relational, Append, ObjectGraph) — that decides which verbs it supports. A path only offers the verbs that make sense for it; using an unsupported verb is **rejected immediately with a clear error**, never half-applied. The catalog below is generated from your installed binary, so it always matches what you have.
 
+The verbs are always `SELECT` / `INSERT` / `UPSERT` / `UPDATE` / `REMOVE` (plus `CALL`). Where a `native verbs` line mentions `ls`/`cp`/`mv`/`rm`, those are just familiar filesystem **aliases** for the same verbs in the interactive shell (`ls` is a `SELECT`, `cp` an `UPSERT`, `rm` a `REMOVE`) — not a second set of operations.
+
 ## Drivers
 
 ### `/drive` — BlobNamespace
