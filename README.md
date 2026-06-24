@@ -95,7 +95,7 @@ for (RFD §9):
 ```
 $ cfs --version
 cfs 0.0.0
-commit:  f068a38
+commit:  <git-sha>
 target:  x86_64-unknown-linux-gnu
 wasm32:  false
 ```
