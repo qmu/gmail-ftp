@@ -18,6 +18,34 @@ VERSION="${QFS_VERSION:-latest}"
 say()  { printf 'qfs-install: %s\n' "$1" >&2; }
 die()  { printf 'qfs-install: error: %s\n' "$1" >&2; exit 1; }
 
+# Printed after a successful install: how to test it, authenticate, update, and find the docs.
+# Every command here is real; the "try it" ones work offline with no credentials.
+next_steps() {
+  cat >&2 <<'EOF'
+
+  ✓ qfs is installed. Next steps:
+
+  1) Try it — no account needed; PREVIEW changes nothing:
+       qfs describe /mail/drafts
+       qfs run "INSERT INTO /mail/drafts VALUES ('a@b.com','Hi','Body')"
+     (qfs run PREVIEWs by default; add --commit to actually apply.)
+
+  2) Connect a service — only needed to apply real changes:
+       qfs account add mail work      # then: qfs account list
+     Your credential is stored locally and never printed back.
+
+  3) Update qfs later — re-run the installer (always fetches the latest):
+       curl -fsSL https://raw.githubusercontent.com/qmu/qfs/main/packages/qfs/install.sh | sh
+     Pin a version with QFS_VERSION=vX.Y.Z.
+
+  4) Learn more:
+       https://github.com/qmu/qfs#readme
+       https://github.com/qmu/qfs/blob/main/docs/guide/getting-started.md
+       qfs skill      # the operating procedure for AI agents
+
+EOF
+}
+
 # --- Detect OS + arch and map to a release target triple ---------------------------------------
 detect_target() {
   os="$(uname -s)"
@@ -103,6 +131,7 @@ main() {
     *) say "note: $INSTALL_DIR is not on your PATH — add it to run 'qfs' directly" ;;
   esac
   "$INSTALL_DIR/qfs" --version || die "installed binary did not run"
+  next_steps
 }
 
 main "$@"
