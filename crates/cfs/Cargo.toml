@@ -24,6 +24,13 @@ cfs-cmd = { path = "../cmd" }
 cfs-core = { path = "../core" }
 cfs-exec = { path = "../exec" }
 cfs-driver-local = { path = "../driver-local" }
+# t39 CO-t39-1 `cfs skill` composition root: the binary links the embedded agent skill so SKILL.md
+# (and the example corpus) genuinely SHIP in the artifact and an AI agent can discover the uniform
+# DESCRIBE->statement->PREVIEW->COMMIT loop by RUNNING the binary (`cfs skill`). This is a NORMAL dep
+# edge (not a dev-dep), required so the `include_str!` consts are reachable and not dead-stripped.
+# cfs-skill's own `[dependencies]` is empty (its driver edges are dev-deps for the golden corpus
+# only), so this edge adds ZERO transitive runtime/driver weight to the binary.
+cfs-skill = { path = "../skill" }
 # t39 `cfs describe` composition root: the binary owns the **describe-only** driver registry the
 # subcommand consults. DESCRIBE is PURE (no creds, no I/O, no network), so each driver is built
 # with its public, cred-free mock client (gmail/gdrive/github/slack/ga) or an empty registry

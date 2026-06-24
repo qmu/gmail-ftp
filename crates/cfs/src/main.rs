@@ -28,6 +28,10 @@ fn main() {
         // ever called). Built here in the binary composition root; cfs-cmd stays off the driver
         // crates and consults it through the injected DescribeProvider.
         &describe::describe_registry,
+        // t39 CO-t39-1: the embedded agent skill the binary ships. `cfs skill [--examples]` prints
+        // `cfs_skill::render(..)` — this NORMAL `cfs → cfs-skill` edge is what makes SKILL.md ship in
+        // the artifact and be discoverable from the running binary.
+        &cfs_skill::render,
     );
     std::process::exit(code);
 }

@@ -52,6 +52,15 @@ pub type ServeLauncher<'a> = dyn Fn(&std::path::Path) -> i32 + 'a;
 /// is never reached.
 pub type DescribeProvider<'a> = dyn Fn() -> cfs_core::MountRegistry + 'a;
 
+/// The injected **skill provider** (t39 CO-t39-1): the binary supplies the embedded agent skill
+/// text (`cfs_skill::render`) that `cfs skill` prints. It lives in the binary composition root —
+/// NOT in cfs-cmd, which stays logic-free — so the `cfs → cfs-skill` NORMAL dep edge (the edge that
+/// makes `SKILL.md` genuinely SHIP in the binary artifact rather than get dead-stripped) lands on
+/// the terminal binary, and cfs-cmd only knows "the `skill` subcommand → call this with the
+/// `--examples` flag → print the returned text". `cfs-skill` has an empty `[dependencies]`, so the
+/// edge adds zero transitive runtime weight. The argument is `include_examples`.
+pub type SkillProvider<'a> = dyn Fn(bool) -> String + 'a;
+
 /// cfs — one binary that is both a CLI and a server, exposing every external
 /// service through one uniform, filesystem-shaped, pipe-SQL DSL (RFD-0001 §1).
 #[derive(Parser, Debug)]
@@ -116,6 +125,16 @@ enum Command {
         #[arg(long = "format", value_name = "FORMAT")]
         format: Option<String>,
     },
+    /// Print the embedded AI operating-procedure skill (`SKILL.md`) and exit (t39).
+    ///
+    /// This is how an AI agent discovers the uniform loop — DESCRIBE → write a cfs statement →
+    /// PREVIEW → COMMIT — directly from the running binary (the skill ships embedded via
+    /// `include_str!`). `--examples` also dumps the worked-example corpus (one per driver).
+    Skill {
+        /// Also print the embedded worked-example corpus (one canonical example per driver).
+        #[arg(long = "examples")]
+        examples: bool,
+    },
     /// Start the server from a `.cfs` config file (RFD-0001 §8).
     Serve {
         /// Path to the `.cfs` server config.
@@ -177,6 +196,7 @@ pub fn run<I, T>(
     shell: &ShellLauncher,
     serve: &ServeLauncher,
     describe: &DescribeProvider,
+    skill: &SkillProvider,
 ) -> i32
 where
     I: IntoIterator<Item = T>,
@@ -246,6 +266,14 @@ where
         return dispatch_describe(path, format.as_deref(), cli.json, describe);
     }
 
+    // `cfs skill` prints the embedded operating procedure (and optionally the example corpus) and
+    // exits 0. Logic-free: the binary owns the `cfs-skill` const (the NORMAL dep edge that makes the
+    // skill genuinely ship in the artifact); cfs-cmd only routes to the injected provider.
+    if let Some(Command::Skill { examples }) = &cli.cmd {
+        print!("{}", skill(*examples));
+        return 0;
+    }
+
     // No subcommand → the interactive shell, run by the injected launcher (which owns the
     // runtime-coupled local read facet + REPL driver; see [`ShellLauncher`]). It returns the
     // process exit code directly.
@@ -256,7 +284,10 @@ where
 
     let outcome = match cli.cmd {
         // Handled above; unreachable here but kept total.
-        Some(Command::Run { .. }) | Some(Command::Describe { .. }) | None => Ok(()),
+        Some(Command::Run { .. })
+        | Some(Command::Describe { .. })
+        | Some(Command::Skill { .. })
+        | None => Ok(()),
         // `serve` is dispatched through the injected launcher (the binary composition root that
         // wires the HTTP binding); it returns the process exit code directly.
         Some(Command::Serve { config }) => {
@@ -580,14 +611,24 @@ mod tests {
         cfs_core::MountRegistry::new()
     }
 
-    /// Run with the no-op shell + serve launchers + empty describe provider (every non-shell/
-    /// serve/describe test path ignores them).
+    /// A stand-in skill provider for the dispatch tests (the real embedded skill is wired + tested
+    /// in the binary crate). Returns a minimal loop-landmarked text so the `skill` arm is total.
+    fn stub_skill(examples: bool) -> String {
+        if examples {
+            "DESCRIBE PREVIEW COMMIT\n## Example corpus\n".to_string()
+        } else {
+            "DESCRIBE PREVIEW COMMIT\n".to_string()
+        }
+    }
+
+    /// Run with the no-op shell + serve launchers + empty describe + stub skill providers (every
+    /// non-shell/serve/describe/skill test path ignores them).
     fn run_t<I, T>(args: I) -> i32
     where
         I: IntoIterator<Item = T>,
         T: Into<OsString> + Clone,
     {
-        run(args, &noop_shell, &|_cfg| 0, &empty_describe)
+        run(args, &noop_shell, &|_cfg| 0, &empty_describe, &stub_skill)
     }
 
     #[test]
@@ -624,6 +665,7 @@ mod tests {
             },
             &|_cfg| 0,
             &empty_describe,
+            &stub_skill,
         );
         assert!(
             launched.get(),
@@ -668,6 +710,7 @@ mod tests {
                 0
             },
             &empty_describe,
+            &stub_skill,
         );
         assert!(
             launched.get(),
@@ -724,6 +767,43 @@ mod tests {
     fn help_exits_zero_without_panic() {
         let code = run_t(["cfs", "--help"]);
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn skill_subcommand_dispatches_to_the_provider_and_exits_zero() {
+        // `cfs skill` (and `cfs skill --examples`) route to the injected SkillProvider and exit 0.
+        // The real embedded SKILL.md is wired + content-checked in the binary crate; here we only
+        // assert the dispatch + flag plumbing through clap.
+        let saw_examples = std::cell::Cell::new(false);
+        let provider = |examples: bool| {
+            saw_examples.set(examples);
+            "DESCRIBE PREVIEW COMMIT\n".to_string()
+        };
+        assert_eq!(
+            run(
+                ["cfs", "skill"],
+                &noop_shell,
+                &|_| 0,
+                &empty_describe,
+                &provider
+            ),
+            0
+        );
+        assert!(!saw_examples.get(), "`cfs skill` passes examples=false");
+        assert_eq!(
+            run(
+                ["cfs", "skill", "--examples"],
+                &noop_shell,
+                &|_| 0,
+                &empty_describe,
+                &provider
+            ),
+            0
+        );
+        assert!(
+            saw_examples.get(),
+            "`cfs skill --examples` passes examples=true"
+        );
     }
 
     #[test]

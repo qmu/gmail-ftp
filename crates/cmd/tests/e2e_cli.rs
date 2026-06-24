@@ -733,3 +733,41 @@ fn account_stub_prints_no_credential_material() {
         "account stub leaked the planted credential value: {blob}"
     );
 }
+
+// ===================================================================================
+// t39 CO-t39-1: the embedded agent skill SHIPS in the binary and is discoverable by
+// RUNNING it. This spawns the REAL built `cfs` binary, so a green test proves the
+// `include_str!`'d SKILL.md is reachable from the artifact (not dead-stripped).
+// ===================================================================================
+
+#[test]
+fn skill_subcommand_ships_the_embedded_loop_from_the_binary() {
+    // `cfs skill` prints the embedded operating procedure and exits 0.
+    let out = cfs(&["skill"]);
+    assert_eq!(out.code, 0, "`cfs skill` exits 0; stderr: {}", out.stderr);
+    // The four-step loop landmarks must be present — the embed genuinely shipped.
+    for landmark in ["DESCRIBE", "PREVIEW", "COMMIT"] {
+        assert!(
+            out.stdout.contains(landmark),
+            "`cfs skill` stdout is missing the loop landmark `{landmark}` (embed did not ship?)"
+        );
+    }
+    // The skill never leaks a credential shape (RFD §10).
+    assert!(!out.stdout.contains("Bearer "));
+
+    // `cfs skill --examples` ALSO dumps the worked-example corpus.
+    let ex = cfs(&["skill", "--examples"]);
+    assert_eq!(
+        ex.code, 0,
+        "`cfs skill --examples` exits 0; stderr: {}",
+        ex.stderr
+    );
+    assert!(
+        ex.stdout.contains("Example corpus"),
+        "`cfs skill --examples` must append the example corpus"
+    );
+    assert!(
+        ex.stdout.len() > out.stdout.len(),
+        "`--examples` output should be longer than the bare skill"
+    );
+}

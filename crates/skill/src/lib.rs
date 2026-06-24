@@ -87,6 +87,26 @@ impl Example {
     }
 }
 
+/// Render the embedded skill for `cfs skill`: [`SKILL_MD`] alone, or — when `include_examples` —
+/// `SKILL_MD` followed by the [`EXAMPLES`] corpus (each driver's canonical `.cfs` asset under a
+/// stable `## Examples` heading). Pure string assembly over the `include_str!` consts — no I/O, no
+/// allocation beyond the joined output — so the binary's `cfs skill` arm stays logic-free.
+#[must_use]
+pub fn render(include_examples: bool) -> String {
+    if !include_examples {
+        return SKILL_MD.to_string();
+    }
+    let mut out = String::with_capacity(SKILL_MD.len() + 2048);
+    out.push_str(SKILL_MD);
+    out.push_str("\n\n## Example corpus (embedded golden examples)\n");
+    for ex in EXAMPLES {
+        out.push_str(&format!("\n### {}\n```text\n", ex.driver));
+        out.push_str(ex.source.trim_end());
+        out.push_str("\n```\n");
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +161,30 @@ mod tests {
             // No example smuggles a credential shape into the shipped asset (secrets never appear).
             assert!(!stmt.to_lowercase().contains("token"));
             assert!(!stmt.contains("Bearer "));
+        }
+    }
+
+    #[test]
+    fn render_emits_the_loop_and_optionally_the_corpus() {
+        // The plain render is exactly SKILL_MD (what `cfs skill` prints).
+        let plain = render(false);
+        assert_eq!(plain, SKILL_MD);
+        for landmark in ["DESCRIBE", "PREVIEW", "COMMIT"] {
+            assert!(plain.contains(landmark), "render(false) lost `{landmark}`");
+        }
+        // `--examples` appends the corpus under a stable heading, with every driver's statement.
+        let full = render(true);
+        assert!(
+            full.starts_with(SKILL_MD),
+            "render(true) keeps SKILL.md first"
+        );
+        assert!(full.contains("## Example corpus"));
+        for ex in EXAMPLES {
+            assert!(
+                full.contains(ex.statement()),
+                "render(true) is missing the `{}` example statement",
+                ex.driver
+            );
         }
     }
 }

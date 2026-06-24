@@ -224,6 +224,12 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         "cfs-driver-slack",
         "cfs-driver-ga",
         "cfs-driver-objstore",
+        // t39 CO-t39-1: the binary links the embedded agent skill so `cfs skill` ships SKILL.md in
+        // the artifact (the NORMAL dep edge that keeps the `include_str!` consts from being
+        // dead-stripped). cfs-skill's own `[dependencies]` is EMPTY — it carries no runtime/driver
+        // code (its driver edges are dev-deps for the golden corpus only) — so this edge adds zero
+        // transitive weight and no runtime/driver coupling to the terminal binary.
+        "cfs-skill",
     ];
     let workspace_prefixed: Vec<&String> =
         bin_deps.iter().filter(|d| d.starts_with("cfs")).collect();
@@ -421,12 +427,14 @@ fn runtime_is_confined_to_plan_and_types() {
                     // terminal node, so tokio still dead-ends (it cannot transit THROUGH the
                     // binary back into the spine — nothing depends on the binary). Exempt it.
                     && other.as_str() != "cfs"
-                    // t39: `cfs-skill` is a DEV-ONLY assets crate (`publish = false`) — its edges
-                    // onto the describe-facet driver crates are dev-dependencies (the golden
-                    // corpus), which `cargo metadata` lumps into this view. A dev-dep can never
-                    // transit tokio into a SHIPPED artifact (compiled only for tests), and nothing
-                    // depends on cfs-skill (it is a terminal sink). Exempt it for the same "tokio
-                    // dead-ends here" reason as the `cfs` binary.
+                    // t39: `cfs-skill` (an assets crate, `publish = false`) reaches the describe-
+                    // facet driver crates ONLY via DEV-dependencies (the golden corpus), which
+                    // `cargo metadata` lumps into this view. Those dev-deps can never transit tokio
+                    // into a SHIPPED artifact (compiled only for tests). Its sole NORMAL dep edge is
+                    // the binary's `cfs → cfs-skill` (CO-t39-1, shipping SKILL.md) — and cfs-skill's
+                    // OWN `[dependencies]` is empty, so it pulls no runtime crate normally. So
+                    // cfs-skill carries no normal runtime edge; its driver edges dead-end in tests.
+                    // Exempt it for the same "tokio dead-ends here" reason as the `cfs` binary.
                     && other.as_str() != "cfs-skill"
             })
             .map(|(other, _)| other.clone());

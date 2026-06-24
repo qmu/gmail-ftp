@@ -122,13 +122,15 @@ network, no live creds**.
 3. **PREVIEW** — one **irreversible** `CALL` node. Affected: 1 PR.
 4. **COMMIT** — needs `--commit --commit-irreversible`. A merge cannot be undone — treat it as a gate.
 
-### slack — append_log (`INSERT INTO /slack/#chan/messages VALUES …`)
+### slack — append_log (`INSERT INTO /slack/<ws>/<channel>/messages VALUES …`)
 
-1. **DESCRIBE** `cfs describe '/slack/acme/#general/messages' -json` → `"archetype":
-   "append_log"`, `verbs.insert: true`.
+1. **DESCRIBE** `cfs describe /slack/acme/general/messages -json` → `"archetype": "append_log"`,
+   `verbs.insert: true`. (A channel segment is a normal **path segment**: a bare `general` or a
+   symbolic `#general` both address the channel — the same path rules as any other driver, no
+   special case. Use the bare form in a write target.)
 2. **Statement** — append a message to a channel:
    ```text
-   INSERT INTO /slack/acme/#general/messages VALUES ('Deploy finished ✅')
+   INSERT INTO /slack/acme/general/messages VALUES ('Deploy finished')
    ```
 3. **PREVIEW** — one reversible `INSERT` (append). Affected: 1 message.
 4. **COMMIT** — `--commit` posts it. An append log only supports `SELECT(tail)` + `INSERT(append)`
