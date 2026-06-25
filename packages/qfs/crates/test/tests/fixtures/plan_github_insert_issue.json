@@ -3,9 +3,27 @@
   "nodes": [
     {
       "args": {
-        "rows": [],
+        "rows": [
+          {
+            "values": [
+              {
+                "Text": "Tracking bug"
+              }
+            ]
+          }
+        ],
         "schema": {
-          "columns": []
+          "columns": [
+            {
+              "name": "title",
+              "nullable": true,
+              "provenance": {
+                "driver": null,
+                "source_col": null
+              },
+              "ty": "Unknown"
+            }
+          ]
         }
       },
       "est_affected": {

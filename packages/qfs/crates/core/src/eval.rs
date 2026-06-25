@@ -30,14 +30,14 @@
 
 use qfs_driver::{Driver, Path};
 use qfs_parser::{
-    EffectBody, EffectStmt, EffectVerb, PipeOp, Pipeline, PlanWrap, Projection, Source, Statement,
-    Values,
+    EffectBody, EffectStmt, EffectVerb, Expr, Literal, PipeOp, Pipeline, PlanWrap, Projection,
+    Source, Statement, Values,
 };
 use qfs_plan::{
     kind_for_verb, Affected, EffectKind, EffectNode, NodeId, Plan, PlanBuilder, ProcId, Target,
     VfsPath,
 };
-use qfs_types::{Column, ColumnType, DriverId, Name, Schema};
+use qfs_types::{Column, ColumnType, DriverId, Name, Row, RowBatch, Schema, Value};
 
 use crate::registry::MountRegistry;
 use crate::resolve::{write_verb_for, ResolveError, Resolver};
@@ -199,6 +199,13 @@ pub enum EvalError {
         /// The path that failed to route to a mounted driver.
         path: String,
     },
+    /// An `INSERT … VALUES` cell was not a constant the planner can lower to a literal effect
+    /// payload (a function call, column reference, or other runtime expression). VALUES must be
+    /// constants — use an `INSERT … FROM <query>` for computed rows. Carries a secret-free detail.
+    NonLiteralValues {
+        /// A machine-facing description of the offending expression form.
+        detail: String,
+    },
 }
 
 impl EvalError {
@@ -210,6 +217,7 @@ impl EvalError {
             EvalError::Type(e) => e.code(),
             EvalError::Fn(e) => e.code(),
             EvalError::UnroutedPath { .. } => "unrouted_path",
+            EvalError::NonLiteralValues { .. } => "non_literal_values",
         }
     }
 }
@@ -535,10 +543,28 @@ impl<'r> Evaluator<'r> {
             EffectBody::Values(_) | EffectBody::SetWhere { .. } => None,
         };
 
-        // The write node itself. `REMOVE` is inherently irreversible (set in `new`);
-        // the affected estimate is honest (`Unknown`) for a filter-driven effect.
+        // The literal `VALUES` row payload the effect WRITES — lowered here into the effect node's
+        // `args` (a `RowBatch`) so the applier actually receives the rows. Column names come from
+        // the explicit `VALUES (a,b)` list when present, else the target node's described columns
+        // in order (the applier maps the row's named columns onto the backend columns). WITHOUT
+        // this, an `INSERT … VALUES` reaches the applier with an empty payload — a silent no-op.
+        let values_args: Option<RowBatch> = match &effect.body {
+            EffectBody::Values(v) => Some(self.values_row_batch(effect, v)?),
+            EffectBody::SetWhere { set, filter } => Some(setwhere_row_batch(set, filter.as_ref())?),
+            EffectBody::Pipeline(_) => None,
+        };
+
+        // The write node itself. `REMOVE` is inherently irreversible (set in `new`). The row
+        // payload is attached FIRST, then the honest affected estimate LAST: `INSERT … VALUES` is
+        // `Exact(n)`, while a filter-driven `UPDATE`/`REMOVE` stays `Unknown` (the synthetic
+        // key+set row is NOT the affected-row count) — so `with_affected` must win over the
+        // `with_args` row-count refinement.
         let write_id = builder.next_id();
-        let write = EffectNode::new(write_id, kind, target).with_affected(write_affected(effect));
+        let mut write = EffectNode::new(write_id, kind, target);
+        if let Some(args) = values_args {
+            write = write.with_args(args);
+        }
+        write = write.with_affected(write_affected(effect));
         builder.push(write);
         if let Some(parent) = dep {
             builder.depends_on(write_id, parent);
@@ -554,6 +580,54 @@ impl<'r> Evaluator<'r> {
         }
 
         Ok(plan)
+    }
+
+    /// Lower an `INSERT … VALUES` body into the effect's row payload [`RowBatch`]. Each cell is a
+    /// constant evaluated to a [`Value`]; the column names come from the explicit `VALUES (a,b)`
+    /// list when present, else the target node's described columns (truncated to the row width) so
+    /// the applier maps each named cell onto the right backend column. A non-constant cell is a
+    /// structured [`EvalError::NonLiteralValues`] (use `INSERT … FROM <query>` for computed rows),
+    /// never a silently-dropped value.
+    fn values_row_batch(
+        &self,
+        effect: &EffectStmt,
+        values: &Values,
+    ) -> Result<RowBatch, EvalError> {
+        let width = values.rows.first().map_or(0, Vec::len);
+        // Column names: explicit list, else the target's described columns in order.
+        let columns: Vec<Column> = match &values.columns {
+            Some(cols) => cols
+                .iter()
+                .map(|name| Column::new(name.clone(), ColumnType::Unknown, true))
+                .collect(),
+            None => {
+                // Prefer the target's described columns (so a routed table names each cell for the
+                // applier); fall back to positional `col{i}` when the target is unrouted or narrower
+                // than the row — so a PREVIEW works with no mount (mirroring `values_schema`), never
+                // erroring just because the row payload is being built.
+                let described = self
+                    .effect_input_schema(effect)
+                    .map(|s| s.columns)
+                    .unwrap_or_default();
+                (0..width)
+                    .map(|i| {
+                        described.get(i).cloned().unwrap_or_else(|| {
+                            Column::new(format!("col{i}"), ColumnType::Unknown, true)
+                        })
+                    })
+                    .collect()
+            }
+        };
+        let schema = Schema::new(columns);
+        let mut rows = Vec::with_capacity(values.rows.len());
+        for row in &values.rows {
+            let mut cells = Vec::with_capacity(row.len());
+            for expr in row {
+                cells.push(literal_value(expr)?);
+            }
+            rows.push(Row::new(cells));
+        }
+        Ok(RowBatch::new(schema, rows))
     }
 
     /// The schema the effect reads/writes against — the sub-pipeline's output schema for a
@@ -696,6 +770,103 @@ fn describe_schema(driver: &dyn Driver, vfs: &str) -> Result<Schema, EvalError> 
 
 /// Infer the schema of an inline `VALUES` relation from its first row (RFD §4). Explicit
 /// column names are honoured; otherwise positional `col0, col1, …` names are synthesised.
+/// Lower an `UPDATE … SET … WHERE …` / `REMOVE … WHERE …` body into the effect's row payload. The
+/// row carries the `SET` columns (the new values) plus the equality-key columns extracted from the
+/// `WHERE` (`col = <const>` leaves) — exactly what a key-addressed applier (e.g. the SQL driver)
+/// splits into `SET <non-key>` + `WHERE <key>`. A bare `REMOVE … WHERE id = 1` yields a one-column
+/// `[id]` row; a non-equality filter contributes no key column (the applier then rejects an
+/// un-keyed whole-table write, honestly). Constants only — a non-literal `SET`/`WHERE` value is a
+/// structured [`EvalError::NonLiteralValues`].
+fn setwhere_row_batch(
+    set: &[qfs_parser::Assignment],
+    filter: Option<&Expr>,
+) -> Result<RowBatch, EvalError> {
+    let mut cols: Vec<Column> = Vec::new();
+    let mut vals: Vec<Value> = Vec::new();
+    for assign in set {
+        cols.push(Column::new(assign.name.clone(), ColumnType::Unknown, true));
+        vals.push(literal_value(&assign.value)?);
+    }
+    if let Some(f) = filter {
+        for (name, value) in collect_eq_constants(f) {
+            if !cols.iter().any(|c| c.name == name) {
+                cols.push(Column::new(name, ColumnType::Unknown, true));
+                vals.push(value);
+            }
+        }
+    }
+    Ok(RowBatch::new(Schema::new(cols), vec![Row::new(vals)]))
+}
+
+/// Collect `col = <const>` equality leaves from a `WHERE` predicate (recursing through `AND`),
+/// returning each as `(column, value)`. Non-equality leaves, `OR`, and non-constant right-hand
+/// sides are skipped — they carry no key the applier can address by, which the applier surfaces as
+/// an honest "supply the key column(s)" rejection rather than a wrong-row write.
+fn collect_eq_constants(expr: &Expr) -> Vec<(String, Value)> {
+    use qfs_parser::Op;
+    match expr {
+        Expr::Binary {
+            op: Op::And,
+            lhs,
+            rhs,
+        } => {
+            let mut out = collect_eq_constants(lhs);
+            out.extend(collect_eq_constants(rhs));
+            out
+        }
+        Expr::Binary {
+            op: Op::Eq,
+            lhs,
+            rhs,
+        } => match (lhs.as_ref(), rhs.as_ref()) {
+            (Expr::Col(col), Expr::Lit(lit)) | (Expr::Lit(lit), Expr::Col(col)) => {
+                vec![(col.clone(), literal_to_value(lit))]
+            }
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// Evaluate one `VALUES` cell expression to a constant [`Value`]. VALUES cells are constants by
+/// construction (RFD §4); a non-constant form (column ref, `fn(..)`, arithmetic) is rejected as a
+/// structured [`EvalError::NonLiteralValues`] rather than silently coerced — computed rows belong
+/// in an `INSERT … FROM <query>`.
+fn literal_value(expr: &Expr) -> Result<Value, EvalError> {
+    match expr {
+        Expr::Lit(lit) => Ok(literal_to_value(lit)),
+        // The lexer surfaces the bare keyword constants `true`/`false`/`null` as identifiers
+        // (`Expr::Col`); in a VALUES/SET cell they are the boolean / null literal, not a column
+        // reference (a real column ref in a constant cell is rejected below).
+        Expr::Col(name) => match name.to_ascii_lowercase().as_str() {
+            "true" => Ok(Value::Bool(true)),
+            "false" => Ok(Value::Bool(false)),
+            "null" => Ok(Value::Null),
+            _ => Err(EvalError::NonLiteralValues {
+                detail: format!("VALUES expects a constant, got column reference `{name}`"),
+            }),
+        },
+        other => Err(EvalError::NonLiteralValues {
+            detail: format!("VALUES expects a constant, got {other:?}"),
+        }),
+    }
+}
+
+/// Map a parser [`Literal`] to the canonical [`Value`]. `Size` lowers to its byte magnitude; a
+/// `Typed` introducer (`DATE '…'`) keeps its raw inner text (the backend parses it) — both are
+/// the honest, lossless lowering for the effect payload.
+fn literal_to_value(lit: &Literal) -> Value {
+    match lit {
+        Literal::Str(s) => Value::Text(s.clone()),
+        Literal::Int(n) => Value::Int(*n),
+        Literal::Float(f) => Value::Float(*f),
+        Literal::Bool(b) => Value::Bool(*b),
+        Literal::Null => Value::Null,
+        Literal::Size { value, .. } => Value::Int(*value as i64),
+        Literal::Typed { raw, .. } => Value::Text(raw.clone()),
+    }
+}
+
 fn values_schema(values: &Values) -> Schema {
     let width = values.rows.first().map_or(0, Vec::len);
     let mut cols = Vec::with_capacity(width);

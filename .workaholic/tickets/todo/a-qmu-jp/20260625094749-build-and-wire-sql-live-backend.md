@@ -11,6 +11,16 @@ depends_on: []
 
 # Build + wire a live sql backend (real DB connection)
 
+## STATUS (2026-06-25): SQLite backend DONE (v0.0.5)
+
+The SQLite slice is shipped: a real, file-backed `SqlBackend` (rusqlite, confined to the terminal
+binary in `crates/qfs/src/sql.rs`), wired into the commit registry + planning mount, configured via
+`QFS_SQL_<conn>=<path>`. Verified end-to-end against a real temp DB (independent `sqlite3` CLI):
+INSERT / UPDATE / REMOVE all apply; bound-param injection safety; ACID; unconfigured conn fails
+closed. This also required fixing the engine-wide dropped-VALUES-payload bug (see the commit). The
+Postgres/MySQL networked backends (needing a live DB to verify) remain as the residual of this
+ticket. Rusqlite-bundled was already in the offline cache.
+
 ## Overview
 
 Unlike github/slack/Google/objstore (whose production clients exist and only need wiring), the sql

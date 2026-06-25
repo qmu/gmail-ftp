@@ -98,6 +98,17 @@ fn live_registry() -> DriverRegistry {
         );
     }
 
+    // SQL: the real SQLite-backed driver, when at least one `QFS_SQL_<conn>` is configured. Real
+    // ACID `INSERT`/`UPDATE`/`UPSERT`/`REMOVE` legs apply through the live connection; an
+    // unconfigured `/sql` commit fails closed (no driver) rather than faking success.
+    if crate::sql::has_connections() {
+        let sql_driver = crate::sql::sql_driver();
+        reg = reg.with(
+            DriverId::new("sql"),
+            Arc::new(qfs_driver_sql::sql_apply_driver(&sql_driver)),
+        );
+    }
+
     // Slack: same shape (the shared reqwest transport, Slack's body-error rule on).
     if let Some((sl_store, sl_cred)) = networked_credential("slack") {
         let sl_client = Arc::new(qfs_driver_slack::RestSlackClient::new(

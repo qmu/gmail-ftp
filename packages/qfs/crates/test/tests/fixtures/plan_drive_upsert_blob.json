@@ -3,9 +3,27 @@
   "nodes": [
     {
       "args": {
-        "rows": [],
+        "rows": [
+          {
+            "values": [
+              {
+                "Text": "report-bytes"
+              }
+            ]
+          }
+        ],
         "schema": {
-          "columns": []
+          "columns": [
+            {
+              "name": "id",
+              "nullable": false,
+              "provenance": {
+                "driver": null,
+                "source_col": null
+              },
+              "ty": "Text"
+            }
+          ]
         }
       },
       "est_affected": {

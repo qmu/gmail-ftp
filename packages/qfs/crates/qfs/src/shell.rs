@@ -160,6 +160,12 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry) {
         .register(Arc::new(qfs_driver_slack::SlackDriver::new(Arc::new(
             qfs_driver_slack::MockSlackClient::default(),
         ))));
+    // SQL: register the live SQLite-backed mount when configured, so `/sql/<conn>/<table>`
+    // statements PLAN against the real introspected catalog (the same registry the commit apply
+    // driver uses). Skipped when no `QFS_SQL_*` connection is configured.
+    if crate::sql::has_connections() {
+        let _ = engine.mounts.register(Arc::new(crate::sql::sql_driver()));
+    }
     (engine, reads)
 }
 

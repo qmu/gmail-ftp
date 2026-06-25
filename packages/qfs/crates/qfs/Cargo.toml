@@ -1,6 +1,6 @@
 [package]
 name = "qfs"
-version = "0.0.4"
+version = "0.0.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -85,6 +85,17 @@ qfs-types = { path = "../types" }
 # here in the terminal leaf — the driver crates stay transport-agnostic + mockable, and qfs-cmd
 # stays off both. github/slack are already linked above (describe); this only adds the wire client.
 qfs-driver-http = { path = "../driver-http" }
+# t-exec sql live commit: the binary wires the real SQLite-backed sql driver. qfs-driver-sql is the
+# vendor-free driver (trait + compiler + dialect). The production `SqlBackend` impl (SQLite) lives
+# in the binary (src/sql.rs): qfs-driver-sql is a qfs-runtime consumer, so the guard requires it be
+# a LEAF — only the terminal binary may depend on it — which rules out a separate backend leaf
+# crate depending back onto it. So rusqlite (the real engine + its libsqlite3 C build) dead-ends
+# HERE in the terminal binary, exactly like tokio + the reqwest transport.
+qfs-driver-sql = { path = "../driver-sql" }
+# The real in-process SQLite engine, confined to this terminal binary. `bundled` compiles
+# libsqlite3 from source (no system-lib dependency) — the same dep+feature qfs-driver-sql uses for
+# its in-memory test backend, so the artifact already builds in this workspace.
+rusqlite = { version = "0.40", features = ["bundled"] }
 # t36 deployment host-adapter seam: the binary composes the daemon's TokioHost: RuntimeHost,
 # REUSING the existing qfs-http/qfs-cron/qfs-watchtower serve composition behind the trait, and
 # wires the fsync'd FileDurableStore + the on-disk AuditLedger. `host-daemon` is the EC2/Linux

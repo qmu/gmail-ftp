@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "qfs"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "async-trait",
  "qfs-cmd",
@@ -1085,6 +1085,7 @@ dependencies = [
  "qfs-driver-local",
  "qfs-driver-objstore",
  "qfs-driver-slack",
+ "qfs-driver-sql",
  "qfs-exec",
  "qfs-host",
  "qfs-http",
@@ -1094,6 +1095,7 @@ dependencies = [
  "qfs-skill",
  "qfs-types",
  "qfs-watchtower",
+ "rusqlite",
  "tempfile",
  "tokio",
  "tracing",

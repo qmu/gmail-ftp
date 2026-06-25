@@ -3,9 +3,51 @@
   "nodes": [
     {
       "args": {
-        "rows": [],
+        "rows": [
+          {
+            "values": [
+              {
+                "Text": "alice@example.com"
+              },
+              {
+                "Text": "Hi"
+              },
+              {
+                "Text": "Body text"
+              }
+            ]
+          }
+        ],
         "schema": {
-          "columns": []
+          "columns": [
+            {
+              "name": "id",
+              "nullable": false,
+              "provenance": {
+                "driver": null,
+                "source_col": null
+              },
+              "ty": "Text"
+            },
+            {
+              "name": "thread_id",
+              "nullable": false,
+              "provenance": {
+                "driver": null,
+                "source_col": null
+              },
+              "ty": "Text"
+            },
+            {
+              "name": "date",
+              "nullable": false,
+              "provenance": {
+                "driver": null,
+                "source_col": null
+              },
+              "ty": "Timestamp"
+            }
+          ]
         }
       },
       "est_affected": {

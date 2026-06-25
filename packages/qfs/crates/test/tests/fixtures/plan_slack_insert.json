@@ -3,9 +3,27 @@
   "nodes": [
     {
       "args": {
-        "rows": [],
+        "rows": [
+          {
+            "values": [
+              {
+                "Text": "Deploy finished"
+              }
+            ]
+          }
+        ],
         "schema": {
-          "columns": []
+          "columns": [
+            {
+              "name": "ts",
+              "nullable": false,
+              "provenance": {
+                "driver": null,
+                "source_col": null
+              },
+              "ty": "Text"
+            }
+          ]
         }
       },
       "est_affected": {

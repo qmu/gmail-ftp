@@ -3,9 +3,39 @@
   "nodes": [
     {
       "args": {
-        "rows": [],
+        "rows": [
+          {
+            "values": [
+              {
+                "Text": "add feature"
+              },
+              {
+                "Text": "main"
+              }
+            ]
+          }
+        ],
         "schema": {
-          "columns": []
+          "columns": [
+            {
+              "name": "sha",
+              "nullable": false,
+              "provenance": {
+                "driver": null,
+                "source_col": null
+              },
+              "ty": "Text"
+            },
+            {
+              "name": "tree",
+              "nullable": false,
+              "provenance": {
+                "driver": null,
+                "source_col": null
+              },
+              "ty": "Text"
+            }
+          ]
         }
       },
       "est_affected": {

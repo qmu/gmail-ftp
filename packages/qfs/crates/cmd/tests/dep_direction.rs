@@ -272,6 +272,12 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         // qfs-cmd/qfs-exec stay off the wire client. qfs-driver-http is already in the
         // runtime-consumer allowlist; this is its only allowed dependent besides the driver layer.
         "qfs-driver-http",
+        // t-exec sql live commit: the binary wires the real SQLite-backed sql driver. qfs-driver-sql
+        // is the vendor-free driver (trait + compiler); the production SqliteBackend (rusqlite)
+        // lives IN the binary (src/sql.rs) because qfs-driver-sql is a runtime consumer that must
+        // stay a leaf — only the binary may depend on it. A binary-only edge; qfs-cmd/qfs-exec stay
+        // off it, and rusqlite dead-ends in the terminal binary.
+        "qfs-driver-sql",
         // t39 CO-t39-1: the binary links the embedded agent skill so `qfs skill` ships SKILL.md in
         // the artifact (the NORMAL dep edge that keeps the `include_str!` consts from being
         // dead-stripped). qfs-skill's own `[dependencies]` is EMPTY — it carries no runtime/driver
