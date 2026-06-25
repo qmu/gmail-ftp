@@ -135,6 +135,34 @@ fn local_engine_and_reads(root: PathBuf) -> (Engine, ReadRegistry) {
     (engine, reads)
 }
 
+/// The `(Engine, ReadRegistry)` for the one-shot `qfs run` path (injected into qfs-cmd as the
+/// run-context provider). Registers the local-FS driver — its introspective + pushdown facet in
+/// the engine's mounts (so `FROM /local/<p>` resolves + plans) and its read facet in the registry
+/// (so the scan executes) — rooted at `/`, mirroring the commit driver's mapping. qfs-cmd stays
+/// off qfs-driver-local; the binary (the leaf) owns this adapter, like the shell + commit
+/// composition. Other drivers join here as their read facets land.
+#[must_use]
+pub fn run_engine_and_reads() -> (Engine, ReadRegistry) {
+    let (mut engine, reads) = local_engine_and_reads(PathBuf::from("/"));
+    // Register the networked drivers' **cred-free** facets as mounts so `/github` and `/slack`
+    // statements PLAN (the planner is pure — it reads only describe/capabilities/pushdown, never
+    // a client; DESCRIBE is cred-free). The real credentialed clients that actually APPLY a commit
+    // leg live in the apply registry (`commit.rs`), keyed by the same driver id the planner stamps.
+    // The cred-free mock clients here are never called (no read facet is registered for them, and
+    // planning never touches `Driver::applier`).
+    let _ = engine
+        .mounts
+        .register(Arc::new(qfs_driver_github::GitHubDriver::new(Arc::new(
+            qfs_driver_github::MockGitHubClient::default(),
+        ))));
+    let _ = engine
+        .mounts
+        .register(Arc::new(qfs_driver_slack::SlackDriver::new(Arc::new(
+            qfs_driver_slack::MockSlackClient::default(),
+        ))));
+    (engine, reads)
+}
+
 /// Render one [`Outcome`] to `out` (human text). The shell reuses qfs-exec's renderers for the
 /// row/plan DTOs so the formatting matches the one-shot path.
 fn render(outcome: &Outcome, out: &mut dyn Write) -> std::io::Result<()> {

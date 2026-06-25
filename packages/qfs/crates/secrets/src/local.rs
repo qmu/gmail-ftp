@@ -264,6 +264,34 @@ pub fn default_credentials_path() -> Option<PathBuf> {
         })
 }
 
+/// Load the per-store KDF salt at `path`, creating a fresh random 16-byte salt (written `0600`,
+/// parent dir created) on first use. The salt must persist so the same passphrase reproduces the
+/// AEAD key — `LocalStore::from_passphrase` takes it back. Kept here (with the perm helpers + the
+/// `rand` dep) so the credential plumbing stays in one crate.
+///
+/// # Errors
+/// [`SecretError::Backend`] on an I/O failure or a too-short existing salt file.
+pub fn load_or_create_salt(path: &Path) -> Result<Vec<u8>, SecretError> {
+    match std::fs::read(path) {
+        Ok(b) if b.len() >= 8 => Ok(b),
+        Ok(_) => Err(SecretError::Backend(
+            "credential salt file is too short (corrupt?)".into(),
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let mut salt = [0u8; 16];
+            rand::rng().fill_bytes(&mut salt);
+            if let Some(dir) = path.parent() {
+                prepare_dir(dir)?;
+            }
+            write_owner_only(path, &salt)?;
+            Ok(salt.to_vec())
+        }
+        Err(e) => Err(SecretError::Backend(format!(
+            "reading credential salt: {e}"
+        ))),
+    }
+}
+
 // ---- POSIX permission helpers (owner-only 0600) -------------------------------------
 
 #[cfg(unix)]

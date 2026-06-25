@@ -40,8 +40,8 @@ echo "<statement>" | qfs run -   # read from stdin
 
 ```sh
 # Preview, then commit:
-qfs run "INSERT INTO /mail/drafts VALUES ('a@b.com','Hi','Body')"
-qfs run "INSERT INTO /mail/drafts VALUES ('a@b.com','Hi','Body')" --commit
+qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')"
+qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')" --commit
 
 # Irreversible needs the extra ack:
 qfs run "FROM /mail/drafts |> CALL mail.send" --commit --commit-irreversible
@@ -96,7 +96,7 @@ The long form prints the version, the exact build commit, and the target it was 
 when reporting an issue:
 
 ```text
-qfs 0.0.2
+qfs 0.0.4
 commit:  <git-sha>
 target:  x86_64-unknown-linux-gnu
 ```

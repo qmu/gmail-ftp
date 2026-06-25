@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "qfs"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-trait",
  "qfs-cmd",
@@ -1081,6 +1081,7 @@ dependencies = [
  "qfs-driver-gdrive",
  "qfs-driver-github",
  "qfs-driver-gmail",
+ "qfs-driver-http",
  "qfs-driver-local",
  "qfs-driver-objstore",
  "qfs-driver-slack",
@@ -1088,8 +1089,10 @@ dependencies = [
  "qfs-host",
  "qfs-http",
  "qfs-pushdown",
+ "qfs-runtime",
  "qfs-secrets",
  "qfs-skill",
+ "qfs-types",
  "qfs-watchtower",
  "tempfile",
  "tokio",

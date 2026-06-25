@@ -37,8 +37,8 @@ authoritative; this skill is the quick operating guide.
 
 ```sh
 qfs describe /mail/drafts --json                 # 1: the contract
-qfs run "INSERT INTO /mail/drafts VALUES ('a@b.com','Hi','Body')"          # 2+3: PREVIEW
-qfs run "INSERT INTO /mail/drafts VALUES ('a@b.com','Hi','Body')" --commit # 4: apply
+qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')"          # 2+3: PREVIEW
+qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')" --commit # 4: apply
 ```
 
 ## Path model
@@ -125,7 +125,7 @@ A preview's JSON includes `preview.rows` (each with `verb`, `target`, `affected`
 
 ```sh
 # Reversible: --commit is enough
-qfs run "INSERT INTO /mail/drafts VALUES ('a@b.com','Hi','Body')" --commit
+qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')" --commit
 # Irreversible: needs the explicit ack
 qfs run "FROM /mail/drafts |> CALL mail.send" --commit --commit-irreversible
 ```

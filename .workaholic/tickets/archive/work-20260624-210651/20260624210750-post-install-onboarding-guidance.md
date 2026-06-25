@@ -4,9 +4,7 @@ author: a@qmu.jp
 type: enhancement
 layer: [UX, Infrastructure]
 effort:
-commit_hash:
-category:
-depends_on: []
+commit_hash: 592ff8ccategory: Addeddepends_on: []
 ---
 
 # Post-install onboarding: tell the user how to test, authenticate, update, and where the docs are

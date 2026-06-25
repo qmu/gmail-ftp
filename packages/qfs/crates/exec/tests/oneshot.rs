@@ -168,6 +168,7 @@ fn run_with_ack(
     let ctx = ExecCtx {
         engine: &engine,
         reads: &reads,
+        world_apply: None,
     };
     let source = StmtSource::Expr(src.to_string());
     let mut out: Vec<u8> = Vec::new();

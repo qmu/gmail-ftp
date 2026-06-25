@@ -157,10 +157,27 @@ pub fn plan_preview(plan: &Plan) -> PlanPreview {
     PlanPreview::preview(preview(plan))
 }
 
-/// Apply an effect [`Plan`] against the in-memory engine (the `--commit` path). Uses the pure,
-/// applier-based [`commit`] over a [`qfs_core::RecordingApplier`] test double — **no live
-/// creds, no network**. A real E4 commit drives the runtime interpreter; that wiring is the
-/// t30+ carry-over. Returns the committed [`PlanPreview`] on success.
+/// Apply an effect [`Plan`] to the World, returning the committed [`PlanPreview`]. If a real
+/// applier is injected ([`crate::WorldApply`], supplied by the binary because `qfs-exec` is
+/// confined off `qfs-runtime`), the plan is driven through it (the real interpreter-backed
+/// commit). With none, it falls back to the in-memory [`apply_commit`] — the shape unit tests use.
+///
+/// # Errors
+/// [`ExecError`] (kind `commit_failed`) if the injected applier (or the in-memory fallback) fails.
+pub fn apply_via(plan: &Plan, world: Option<&crate::WorldApply>) -> Result<PlanPreview, ExecError> {
+    match world {
+        Some(apply) => {
+            apply(plan)?;
+            Ok(PlanPreview::committed(preview(plan)))
+        }
+        None => apply_commit(plan),
+    }
+}
+
+/// Apply an effect [`Plan`] against the in-memory engine: the preview-grade fallback using the
+/// applier-based [`commit`] over a [`qfs_core::RecordingApplier`] test double — **no live creds,
+/// no network, no real I/O**. The real commit is the injected [`crate::WorldApply`] (see
+/// [`apply_via`]). Returns the committed [`PlanPreview`] on success.
 ///
 /// # Errors
 /// [`ExecError`] (kind `commit_failed`, exit 5) if any leg failed to apply.

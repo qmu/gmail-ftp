@@ -33,7 +33,8 @@ pub mod shell;
 pub use dto::{PlanPreview, RowSet};
 pub use error::{ErrorKind, ExecError, ExitCode};
 pub use exec::{
-    apply_commit, block_on_read, build_plan, execute_read, map_qfs_error, parse, plan_preview,
+    apply_commit, apply_via, block_on_read, build_plan, execute_read, map_qfs_error, parse,
+    plan_preview,
 };
 pub use output::{JsonRenderer, OutputFormat, Renderer, TableRenderer};
 pub use read::{ReadDriver, ReadRegistry};
@@ -118,7 +119,16 @@ pub struct ExecCtx<'a> {
     pub engine: &'a Engine,
     /// The read-driver registry the read executor resolves each scan through.
     pub reads: &'a ReadRegistry,
+    /// The injected real-commit hook (the binary's interpreter-backed applier). `None` falls back
+    /// to the in-memory [`apply_commit`] (preview-grade, no real I/O) — what unit tests use.
+    pub world_apply: Option<&'a WorldApply<'a>>,
 }
+
+/// A binary-injected "apply this plan to the World" hook (RFD §6 `COMMIT : Plan -> World`).
+/// `qfs-exec` is deliberately confined off `qfs-runtime` (the interpreter), so the real commit is
+/// supplied by the terminal binary, which owns the `qfs-runtime` interpreter + the live driver
+/// registry. Returns `Ok(())` once every leg applied, or an [`ExecError`] on a commit failure.
+pub type WorldApply<'a> = dyn Fn(&qfs_core::Plan) -> Result<(), ExecError> + 'a;
 
 /// Execute one statement end-to-end and render the result, returning the process [`ExitCode`].
 /// This is the single one-shot entry the CLI calls. Never panics; never touches a cwd.
@@ -207,7 +217,7 @@ fn run_oneshot_inner(
                         needs.reason(),
                     ));
                 }
-                let summary = apply_commit(&plan)?;
+                let summary = apply_via(&plan, ctx.world_apply)?;
                 renderer.plan(&summary, streams.out).map_err(io_err)?;
                 Ok(ExitCode::Ok)
             } else if is_destructive_set(&plan) {

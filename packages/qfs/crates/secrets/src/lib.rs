@@ -54,7 +54,7 @@ pub use secret::{Secret, REDACTED};
 pub use store::{grant_scopes, ScopeError, ScopeGrant, SecretError, Secrets};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use local::{default_credentials_path, LocalStore};
+pub use local::{default_credentials_path, load_or_create_salt, LocalStore};
 #[cfg(target_arch = "wasm32")]
 pub use worker::WorkerStore;
 

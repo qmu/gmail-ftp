@@ -27,7 +27,7 @@ next_steps() {
 
   1) Try it — no account needed; PREVIEW changes nothing:
        qfs describe /mail/drafts
-       qfs run "INSERT INTO /mail/drafts VALUES ('a@b.com','Hi','Body')"
+       qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')"
      (qfs run PREVIEWs by default; add --commit to actually apply.)
 
   2) Connect a service — only needed to apply real changes:

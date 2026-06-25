@@ -13,11 +13,12 @@
 //! and its argv contract), and locates the built `qfs` binary next to the test runner.
 //!
 //! ## Why scenario 1 uses the qfs-exec black-box API, not the binary
-//! The binary's `ReadRegistry` is intentionally EMPTY at this E0 stage (driver registration is the
-//! E4 seam), so `FROM /<src>` through the binary resolves to a structured capability error rather
-//! than rows. To exercise the real parse→resolve→plan→scan→residual→rows path with actual data,
-//! that one scenario drives the executor's public black-box API (`run_oneshot`/`block_on_read`)
-//! against a Planner-owned in-memory fake driver — and this header SAYS SO.
+//! The binary now wires the **local** read facet (see `from_local_reads_a_real_directory`, which
+//! drives `FROM /local/<dir>` through the real binary), but the other drivers' read registration is
+//! still pending, so `FROM /mail/<src>` through the binary resolves to a capability error. To
+//! exercise the real parse→resolve→plan→scan→residual→rows path with controlled over-returning
+//! data, that one scenario drives the executor's public black-box API (`run_oneshot`/
+//! `block_on_read`) against a Planner-owned in-memory fake mail driver — and this header SAYS SO.
 //!
 //! Scenario map (ticket acceptance criteria):
 //!  1. Headline read path + residual truthfulness (t20 closure) — via qfs-exec black-box API.
@@ -258,6 +259,7 @@ mod read_path {
         let ctx = ExecCtx {
             engine: &eng,
             reads: &rd,
+            world_apply: None,
         };
         let src = StmtSource::Expr("FROM /mail/inbox |> WHERE id > 2".to_string());
         let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -427,30 +429,76 @@ fn irreversible_commit_without_ack_fails_closed_exit_four() {
     assert_eq!(err["error"]["code"], "irreversible_ack_required");
 }
 
+/// Create a unique temp file and return both its real path and its `/local/...` VFS path (the
+/// local driver is rooted at `/`, so `/local/<abs>` maps to the host `/<abs>`).
+fn local_temp_file(tag: &str) -> (std::path::PathBuf, String) {
+    let dir = std::env::temp_dir().join(format!("qfs-e2e-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mk temp dir");
+    let real = dir.join("f.txt");
+    std::fs::write(&real, b"data").expect("seed temp file");
+    let vfs = format!("/local{}", real.to_string_lossy());
+    (real, vfs)
+}
+
 #[test]
-fn irreversible_commit_with_ack_applies_against_in_memory_engine() {
-    // t37: adding `--commit-irreversible` acknowledges the irreversible apply, so the same REMOVE
-    // now commits at exit 0 — the operator explicitly took responsibility for the destructive leg.
+fn irreversible_commit_with_ack_applies_to_the_local_filesystem() {
+    // With `--commit --commit-irreversible`, an irreversible REMOVE actually applies through the
+    // real interpreter + LocalApplier — the file is deleted from the host filesystem.
+    let (real, vfs) = local_temp_file("rm-ack");
     let o = qfs(&[
         "run",
         "-e",
-        "REMOVE /mail/inbox",
+        &format!("REMOVE {vfs}"),
         "--json",
         "--commit",
         "--commit-irreversible",
     ]);
     assert_eq!(
         o.code, 0,
-        "--commit-irreversible applies the irreversible plan"
+        "--commit-irreversible applies the irreversible plan: {:?}",
+        o.stderr
     );
-    let v = json(&o.stdout);
-    assert_eq!(v["committed"], true);
+    assert_eq!(json(&o.stdout)["committed"], true);
+    assert!(!real.exists(), "the REMOVE actually deleted the file");
+    let _ = std::fs::remove_dir_all(real.parent().unwrap());
 }
 
 #[test]
-fn reversible_commit_needs_no_irreversible_ack() {
-    // t37 (guard must NOT over-fire on reversible plans): a reversible INSERT commits with just
-    // `--commit` — no irreversible ack required, because the guard governs only REMOVE/CALL.
+fn from_local_reads_a_real_directory() {
+    // The binary wires the local-FS read facet into `qfs run`, so `FROM /local/<dir>` scans the
+    // real host directory (rooted at `/`, so /local/<abs> -> /<abs>).
+    let dir = std::env::temp_dir().join(format!("qfs-e2e-{}-read", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("one.txt"), b"a").unwrap();
+    std::fs::write(dir.join("two.txt"), b"bb").unwrap();
+    let vfs = format!("/local{}", dir.to_string_lossy());
+    let o = qfs(&[
+        "run",
+        "-e",
+        &format!("FROM {vfs} |> SELECT name, size"),
+        "--json",
+    ]);
+    assert_eq!(o.code, 0, "FROM /local read exits 0: {:?}", o.stderr);
+    let v = json(&o.stdout);
+    let names: Vec<&str> = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"one.txt") && names.contains(&"two.txt"),
+        "lists the real files: {names:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reversible_commit_passes_the_irreversible_gate() {
+    // The IrreversibleGuard must NOT over-fire on a reversible plan: a reversible INSERT with just
+    // `--commit` is not blocked by the gate (no ack required). It then reaches the apply stage;
+    // against a driver not wired into the binary's live registry it fails there (commit_failed) —
+    // crucially NOT `commit_required`/exit 4. So the assertion is "it got past the gate to apply".
     let o = qfs(&[
         "run",
         "-e",
@@ -458,9 +506,16 @@ fn reversible_commit_needs_no_irreversible_ack() {
         "--json",
         "--commit",
     ]);
-    assert_eq!(o.code, 0, "a reversible --commit applies at exit 0, no ack");
-    let v = json(&o.stdout);
-    assert_eq!(v["committed"], true);
+    assert_ne!(
+        o.code, 4,
+        "a reversible plan is not blocked by the irreversible gate"
+    );
+    let err = json(&o.stderr);
+    assert_eq!(
+        err["error"]["kind"], "commit_failed",
+        "reached the apply stage (no mail driver in the live registry yet): {:?}",
+        o.stderr
+    );
 }
 
 #[test]
@@ -480,16 +535,27 @@ fn trailing_commit_keyword_irreversible_also_fails_closed() {
         "irreversible_ack_required"
     );
 
-    // With the ack, the trailing-COMMIT path commits at exit 0 (parity with --commit).
+    // With the ack, the trailing-COMMIT path drives the SAME real commit seam as `--commit` — a
+    // trailing-COMMIT REMOVE of a real local file applies (parity with --commit): the file is gone.
+    let (real, vfs) = local_temp_file("trailing-rm");
     let ok = qfs(&[
         "run",
         "-e",
-        "COMMIT REMOVE /mail/inbox",
+        &format!("COMMIT REMOVE {vfs}"),
         "--json",
         "--commit-irreversible",
     ]);
-    assert_eq!(ok.code, 0);
+    assert_eq!(
+        ok.code, 0,
+        "trailing COMMIT + ack applies via the real seam: {:?}",
+        ok.stderr
+    );
     assert_eq!(json(&ok.stdout)["committed"], true);
+    assert!(
+        !real.exists(),
+        "the trailing-COMMIT REMOVE actually deleted the file"
+    );
+    let _ = std::fs::remove_dir_all(real.parent().unwrap());
 }
 
 // ===================================================================================

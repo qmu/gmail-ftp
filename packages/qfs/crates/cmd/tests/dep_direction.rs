@@ -199,8 +199,6 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         "qfs-driver",
         "qfs-codec",
         "qfs-parser",
-        "qfs-types",
-        "qfs-runtime",
     ];
     // The binary must NOT reach directly into the lower spine / the runtime: it composes only
     // through qfs-cmd, qfs-exec (the integration layer's read seam), qfs-core (Engine), and the
@@ -246,6 +244,14 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         // AuditLedger. qfs-host's feature-gated coupling dead-ends in the terminal binary; qfs-cmd
         // stays off it. Same composition-root rationale as the t32/t33/t34 binding leaves.
         "qfs-host",
+        // The binary is ALSO the real `qfs run --commit` composition root: it drives the
+        // qfs-runtime Interpreter over a live driver registry to apply an effect Plan (the
+        // WorldApply hook injected into qfs-cmd). qfs-cmd/qfs-exec stay confined off qfs-runtime;
+        // the binary is the terminal sink (a TERMINAL_LEAF) where tokio dead-ends, and it is
+        // already the named runtime consumer in `runtime_is_confined_*`'s allowlist. qfs-types
+        // supplies the owned DriverId key for the registry.
+        "qfs-runtime",
+        "qfs-types",
         // t39: the binary is the `qfs describe` composition root — it builds the DESCRIBE-only
         // driver registry from each driver's PURE introspective facet (cred-free mock client /
         // empty registry) and injects it into qfs-cmd via the DescribeProvider. DESCRIBE reaches
@@ -259,6 +265,13 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         "qfs-driver-slack",
         "qfs-driver-ga",
         "qfs-driver-objstore",
+        // t-exec networked commit: the binary owns the ONE real reqwest HTTP transport
+        // (src/transport.rs), bridging qfs-driver-http's confined `ReqwestClient` onto the github +
+        // slack `HttpTransport` seams (a pure delegate — they share qfs-http-core DTOs). reqwest
+        // dead-ends here in the terminal leaf, so the driver crates stay transport-agnostic and
+        // qfs-cmd/qfs-exec stay off the wire client. qfs-driver-http is already in the
+        // runtime-consumer allowlist; this is its only allowed dependent besides the driver layer.
+        "qfs-driver-http",
         // t39 CO-t39-1: the binary links the embedded agent skill so `qfs skill` ships SKILL.md in
         // the artifact (the NORMAL dep edge that keeps the `include_str!` consts from being
         // dead-stripped). qfs-skill's own `[dependencies]` is EMPTY — it carries no runtime/driver

@@ -11,7 +11,7 @@
 //! binary is that leaf, so it builds the wired shell and injects it into `qfs-cmd` via the
 //! [`qfs_cmd::ShellLauncher`]. The shell LOGIC itself lives in `qfs-exec`; this only wires it.
 
-use qfs::{describe, serve, shell, version};
+use qfs::{account, commit, describe, serve, shell, version};
 
 fn main() {
     // t40: the binary owns the build metadata (semver + git sha + target triple baked in by
@@ -39,6 +39,17 @@ fn main() {
         // `qfs_skill::render(..)` — this NORMAL `qfs → qfs-skill` edge is what makes SKILL.md ship in
         // the artifact and be discoverable from the running binary.
         &qfs_skill::render,
+        // `qfs account add/list/use/remove`: the real credential-store I/O, injected here (the
+        // binary owns the encrypted `qfs-secrets` LocalStore; qfs-cmd stays off the concrete
+        // backend). The secret is read from stdin, never argv; the store is `0600` + AEAD.
+        &account::run_account,
+        // The REAL `qfs run --commit` apply path: drives the qfs-runtime interpreter over the live
+        // driver registry (local-fs today). qfs-cmd/qfs-exec stay off qfs-runtime; this is the leaf.
+        &commit::apply_plan,
+        // The run context for `qfs run`: the Engine (local-FS driver in its mounts so a `FROM …`
+        // resolves + plans) + the ReadRegistry (the scan facet), so `FROM /local/<p>` scans the
+        // host `/<p>`. The binary owns the runtime-coupled adapter.
+        &shell::run_engine_and_reads,
     );
     std::process::exit(code);
 }

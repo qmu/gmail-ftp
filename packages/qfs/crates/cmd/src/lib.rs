@@ -61,6 +61,35 @@ pub type DescribeProvider<'a> = dyn Fn() -> qfs_core::MountRegistry + 'a;
 /// edge adds zero transitive runtime weight. The argument is `include_examples`.
 pub type SkillProvider<'a> = dyn Fn(bool) -> String + 'a;
 
+/// A parsed `qfs account <verb>` request, handed to the binary-injected [`AccountLauncher`]. The
+/// credential value itself is **never** carried here (it would leak into argv / history / `ps`);
+/// the launcher reads it from stdin/prompt. Driver + account selectors are safe metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccountAction {
+    /// `account add <driver> <account>` — store (or replace) a credential.
+    Add { driver: String, account: String },
+    /// `account list [driver]` — list configured accounts (metadata only).
+    List { driver: Option<String> },
+    /// `account use <driver> <account>` — set the persistent active account.
+    Use { driver: String, account: String },
+    /// `account remove <driver> <account>` — delete (idempotent).
+    Remove { driver: String, account: String },
+}
+
+/// The injected **account launcher**: the binary supplies the credential-store I/O (it depends on
+/// `qfs-secrets`'s encrypted `LocalStore`, which `qfs-cmd` may not — the dep_direction guard keeps
+/// `qfs-cmd` off the concrete backends). `qfs-cmd` only parses the verb and calls this, exactly
+/// like the shell / serve / describe launchers. Returns the process exit code.
+pub type AccountLauncher<'a> = dyn Fn(&AccountAction) -> i32 + 'a;
+
+/// The injected **run-context provider**: the binary supplies the `(Engine, ReadRegistry)` for
+/// `qfs run` — the [`Engine`] whose mount registry has the real drivers (so a `FROM …` source
+/// resolves + plans + pushes down) and the [`qfs_exec::ReadRegistry`] of `ReadDriver` scan facets
+/// that execute the read. Both live in the binary (which owns the runtime-coupled local adapter) —
+/// NOT in qfs-cmd, which stays off qfs-driver-local. Mirrors the describe / shell / commit
+/// injections.
+pub type RunContextProvider<'a> = dyn Fn() -> (Engine, qfs_exec::ReadRegistry) + 'a;
+
 /// qfs — one binary that is both a CLI and a server, exposing every external
 /// service through one uniform, filesystem-shaped, pipe-SQL DSL (RFD-0001 §1).
 #[derive(Parser, Debug)]
@@ -191,12 +220,20 @@ enum AccountVerb {
 /// binary supplies the runtime-coupled local read facet + REPL driver). Returns the intended
 /// process exit code; the binary forwards it to `std::process::exit`.
 #[must_use]
+// The binary's single composition-root entrypoint: each argument is a distinct injected seam
+// (shell / serve / describe / skill / account / commit-applier / run-context) the leaf binary
+// supplies so qfs-cmd stays off the concrete driver/runtime/secrets crates. The count is the
+// surface of that injection, not incidental coupling.
+#[allow(clippy::too_many_arguments)]
 pub fn run<I, T>(
     args: I,
     shell: &ShellLauncher,
     serve: &ServeLauncher,
     describe: &DescribeProvider,
     skill: &SkillProvider,
+    account: &AccountLauncher,
+    apply: &qfs_exec::WorldApply,
+    run_ctx: &RunContextProvider,
 ) -> i32
 where
     I: IntoIterator<Item = T>,
@@ -226,9 +263,8 @@ where
         OutputMode::Human
     };
 
-    // The Engine and Session are constructed here and threaded into dispatch; at E0
-    // they carry only empty registries (the seam the later epics fill).
-    let engine = Engine::new();
+    // The Session carries the resolved output mode. (The run Engine is no longer built here — the
+    // run path builds it from the injected RunContextProvider, which carries the real drivers.)
     let mut session = Session::new();
     session.output = output;
 
@@ -245,7 +281,6 @@ where
     }) = &cli.cmd
     {
         return dispatch_run(
-            &engine,
             RunOpts {
                 stmt: stmt.clone(),
                 expr: expr.clone(),
@@ -255,6 +290,8 @@ where
                 commit_irreversible: *commit_irreversible,
                 quiet: *quiet,
             },
+            apply,
+            run_ctx,
         );
     }
 
@@ -294,7 +331,12 @@ where
             tracing::debug!(target: "qfs::cmd", "dispatch serve via launcher");
             return serve(&config);
         }
-        Some(Command::Account { verb }) => dispatch_account(&engine, &session, &verb),
+        // `account` is dispatched through the injected launcher (the binary owns the encrypted
+        // credential store; qfs-cmd stays off the concrete backend). Returns the exit code directly.
+        Some(Command::Account { verb }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch account via launcher");
+            return account(&account_action(&verb));
+        }
     };
 
     match outcome {
@@ -352,7 +394,7 @@ struct RunOpts {
 /// stdin), choose the output format (explicit flag wins; else `table` on a TTY, `json` when
 /// piped), and hand off to the execution layer, which renders the result and returns the
 /// stable exit code. Logic-free: all execution lives in `qfs-exec`.
-fn dispatch_run(engine: &Engine, opts: RunOpts) -> i32 {
+fn dispatch_run(opts: RunOpts, apply: &qfs_exec::WorldApply, run_ctx: &RunContextProvider) -> i32 {
     use std::io::IsTerminal;
 
     // Resolve the statement source. A positional `-` means "read from stdin".
@@ -370,13 +412,15 @@ fn dispatch_run(engine: &Engine, opts: RunOpts) -> i32 {
     let stdout_is_tty = std::io::stdout().is_terminal();
     let fmt = resolve_format(&opts, stdout_is_tty);
 
-    // The read-driver registry. At the cmd boundary it is empty: real driver registration
-    // (read facet) is the E4/bootstrap seam this consumes read-only. With no read driver a
-    // `FROM /x` resolves to a structured capability error (exit 3) rather than a panic.
-    let reads = qfs_exec::ReadRegistry::new();
+    // The run context: the binary supplies the Engine (mounts with the real drivers, so a `FROM`
+    // source resolves + plans + pushes down) and the ReadRegistry (the scan facets). With no
+    // driver for a mount, a `FROM /x` resolves to a structured capability error (exit 3).
+    let (engine, reads) = run_ctx();
     let ctx = qfs_exec::ExecCtx {
-        engine,
+        engine: &engine,
         reads: &reads,
+        // The binary injects the real interpreter-backed commit; qfs-cmd stays off qfs-runtime.
+        world_apply: Some(apply),
     };
 
     let _ = opts.quiet; // `--quiet` suppresses progress; the renderers emit no progress yet.
@@ -478,25 +522,27 @@ fn read_stdin() -> String {
     buf
 }
 
-/// Dispatch `qfs account <verb>` (t27). The credential store + resolver substrate this
-/// drives lives in `qfs-secrets` (consumed via [`qfs_core::Secrets`]); the verb surface
-/// is declared here and the credential-bearing I/O (prompt → keyring/passphrase →
-/// encrypted backend) is the parked seam the keyring-plumbing follow-up fills. Matches the
-/// E0 stub pattern of the other arms: a structured, secret-free `NotImplemented` per verb.
-/// No credential is ever read from argv (it would leak into shell history / `ps`).
-fn dispatch_account(
-    _engine: &Engine,
-    _session: &Session,
-    verb: &AccountVerb,
-) -> Result<(), CfsError> {
-    let feature = match verb {
-        AccountVerb::Add { .. } => "account add",
-        AccountVerb::List { .. } => "account list",
-        AccountVerb::Use { .. } => "account use",
-        AccountVerb::Remove { .. } => "account remove",
-    };
-    tracing::debug!(target: "qfs::cmd", feature, "dispatch account (stub)");
-    Err(CfsError::NotImplemented { feature })
+/// Map the clap-parsed [`AccountVerb`] to the public [`AccountAction`] handed to the injected
+/// [`AccountLauncher`]. Pure (selectors only); the credential value is never carried — the
+/// launcher reads it from stdin/prompt, never from argv (which would leak into history / `ps`).
+fn account_action(verb: &AccountVerb) -> AccountAction {
+    match verb {
+        AccountVerb::Add { driver, account } => AccountAction::Add {
+            driver: driver.clone(),
+            account: account.clone(),
+        },
+        AccountVerb::List { driver } => AccountAction::List {
+            driver: driver.clone(),
+        },
+        AccountVerb::Use { driver, account } => AccountAction::Use {
+            driver: driver.clone(),
+            account: account.clone(),
+        },
+        AccountVerb::Remove { driver, account } => AccountAction::Remove {
+            driver: driver.clone(),
+            account: account.clone(),
+        },
+    }
 }
 
 /// Render a [`CfsError`] to stderr: a human line, or a `{"error": {...}}` JSON
@@ -621,23 +667,48 @@ mod tests {
         }
     }
 
-    /// Run with the no-op shell + serve launchers + empty describe + stub skill providers (every
-    /// non-shell/serve/describe/skill test path ignores them).
+    /// A stub account launcher returning a sentinel exit code, so a test can assert the `account`
+    /// arm dispatched into the injected launcher (the real store I/O lives in the binary crate).
+    fn stub_account(_action: &AccountAction) -> i32 {
+        7
+    }
+
+    /// A no-op world-apply: a `--commit` in a unit test "succeeds" without touching the World
+    /// (the real interpreter-backed applier lives in the binary crate).
+    fn noop_apply(_plan: &qfs_core::Plan) -> Result<(), qfs_exec::ExecError> {
+        Ok(())
+    }
+
+    /// A stub run-context: an empty engine + empty read registry (read tests use the qfs-exec
+    /// black-box API; the binary supplies the real local-driver context).
+    fn stub_run_ctx() -> (Engine, qfs_exec::ReadRegistry) {
+        (Engine::new(), qfs_exec::ReadRegistry::new())
+    }
+
+    /// Run with the no-op shell + serve launchers + empty describe + stub skill + stub account
+    /// providers (every non-shell/serve/describe/skill/account test path ignores them).
     fn run_t<I, T>(args: I) -> i32
     where
         I: IntoIterator<Item = T>,
         T: Into<OsString> + Clone,
     {
-        run(args, &noop_shell, &|_cfg| 0, &empty_describe, &stub_skill)
+        run(
+            args,
+            &noop_shell,
+            &|_cfg| 0,
+            &empty_describe,
+            &stub_skill,
+            &stub_account,
+            &noop_apply,
+            &stub_run_ctx,
+        )
     }
 
     #[test]
     fn run_dispatch_resolves_single_statement_source() {
         // t29: `qfs run` now dispatches into the execution layer. Resolving exactly one
         // statement source is a usage gate; zero sources is exit 2 (usage).
-        let engine = Engine::new();
         let code = dispatch_run(
-            &engine,
             RunOpts {
                 stmt: None,
                 expr: None,
@@ -647,6 +718,8 @@ mod tests {
                 commit_irreversible: false,
                 quiet: false,
             },
+            &noop_apply,
+            &stub_run_ctx,
         );
         assert_eq!(code, 2, "no statement source is a usage error (exit 2)");
     }
@@ -666,6 +739,9 @@ mod tests {
             &|_cfg| 0,
             &empty_describe,
             &stub_skill,
+            &stub_account,
+            &noop_apply,
+            &stub_run_ctx,
         );
         assert!(
             launched.get(),
@@ -711,6 +787,9 @@ mod tests {
             },
             &empty_describe,
             &stub_skill,
+            &stub_account,
+            &noop_apply,
+            &stub_run_ctx,
         );
         assert!(
             launched.get(),
@@ -720,47 +799,50 @@ mod tests {
     }
 
     #[test]
-    fn account_verbs_dispatch_to_structured_not_implemented() {
-        let engine = Engine::new();
-        let session = Session::new();
-        let cases = [
-            (
-                AccountVerb::Add {
-                    driver: "mail".into(),
-                    account: "work".into(),
-                },
-                "account add",
-            ),
-            (AccountVerb::List { driver: None }, "account list"),
-            (
-                AccountVerb::Use {
-                    driver: "mail".into(),
-                    account: "work".into(),
-                },
-                "account use",
-            ),
-            (
-                AccountVerb::Remove {
-                    driver: "mail".into(),
-                    account: "work".into(),
-                },
-                "account remove",
-            ),
-        ];
-        for (verb, feature) in cases {
-            let err = dispatch_account(&engine, &session, &verb).unwrap_err();
-            match err {
-                CfsError::NotImplemented { feature: f } => assert_eq!(f, feature),
-                other => panic!("expected NotImplemented({feature}), got {other:?}"),
+    fn account_verbs_map_to_the_public_action() {
+        // The clap verb maps 1:1 to the injected-launcher action (selectors only, no secret).
+        assert_eq!(
+            account_action(&AccountVerb::Add {
+                driver: "mail".into(),
+                account: "work".into()
+            }),
+            AccountAction::Add {
+                driver: "mail".into(),
+                account: "work".into()
             }
-        }
+        );
+        assert_eq!(
+            account_action(&AccountVerb::List { driver: None }),
+            AccountAction::List { driver: None }
+        );
+        assert_eq!(
+            account_action(&AccountVerb::Use {
+                driver: "s3".into(),
+                account: "prod".into()
+            }),
+            AccountAction::Use {
+                driver: "s3".into(),
+                account: "prod".into()
+            }
+        );
+        assert_eq!(
+            account_action(&AccountVerb::Remove {
+                driver: "mail".into(),
+                account: "work".into()
+            }),
+            AccountAction::Remove {
+                driver: "mail".into(),
+                account: "work".into()
+            }
+        );
     }
 
     #[test]
-    fn account_subcommand_parses_and_exits_one() {
-        // `qfs account list` parses cleanly and reaches the structured stub (exit 1).
-        assert_eq!(run_t(["qfs", "account", "list"]), 1);
-        assert_eq!(run_t(["qfs", "account", "add", "mail", "work"]), 1);
+    fn account_subcommand_parses_and_dispatches_to_the_launcher() {
+        // `qfs account …` parses cleanly and routes into the injected account launcher (the stub
+        // returns the sentinel 7). The real encrypted-store I/O lives in the binary crate.
+        assert_eq!(run_t(["qfs", "account", "list"]), 7);
+        assert_eq!(run_t(["qfs", "account", "add", "mail", "work"]), 7);
     }
 
     #[test]
@@ -785,7 +867,10 @@ mod tests {
                 &noop_shell,
                 &|_| 0,
                 &empty_describe,
-                &provider
+                &provider,
+                &stub_account,
+                &noop_apply,
+                &stub_run_ctx
             ),
             0
         );
@@ -796,7 +881,10 @@ mod tests {
                 &noop_shell,
                 &|_| 0,
                 &empty_describe,
-                &provider
+                &provider,
+                &stub_account,
+                &noop_apply,
+                &stub_run_ctx
             ),
             0
         );
