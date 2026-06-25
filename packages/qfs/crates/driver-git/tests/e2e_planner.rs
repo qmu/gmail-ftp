@@ -137,6 +137,7 @@ fn build_fixture() -> Fx {
         db: LooseObjectDb::clone_of(&db),
         refs,
         reflog: HashMap::new(),
+        ..RepoStore::default()
     };
     let applier = GitApplier::new().with_store("demo", store);
 

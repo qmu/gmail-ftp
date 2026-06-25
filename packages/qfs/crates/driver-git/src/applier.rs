@@ -16,6 +16,8 @@
 //! `gix` type crosses this boundary; no object bytes ever enter an error.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use qfs_plan::{AppliedEffect, ApplyError, EffectKind, EffectNode, PlanApplier};
@@ -38,9 +40,24 @@ pub struct RepoStore {
     pub refs: HashMap<String, Oid>,
     /// Ref name → append-only reflog (newest last).
     pub reflog: HashMap<String, Vec<ReflogEntry>>,
+    /// When `Some`, the apply leg persists to a **real** git repository at this path via the `git`
+    /// CLI (ADR-0003's deferred real backend, landed here) instead of the in-memory maps above.
+    /// `None` keeps the in-memory store (the hermetic test/fixture backend). The plumbing in/out
+    /// trades only owned qfs types — no `git` process detail crosses the [`GitEffect`] boundary.
+    pub cli_path: Option<PathBuf>,
 }
 
 impl RepoStore {
+    /// A real-repo store: the apply leg runs `git` against the repository at `path` (loose objects
+    /// via `hash-object -w`, ref moves via the atomic `update-ref` compare-and-swap).
+    #[must_use]
+    pub fn at_path(path: impl Into<PathBuf>) -> Self {
+        Self {
+            cli_path: Some(path.into()),
+            ..Self::default()
+        }
+    }
+
     /// The current oid of a ref (the CAS comparand).
     #[must_use]
     pub fn ref_oid(&self, name: &str) -> Option<Oid> {
@@ -142,6 +159,11 @@ impl GitApplier {
     fn apply_effect(&self, repo: &str, effect: &GitEffect) -> Result<u64, GitError> {
         let mut stores = lock_stores(&self.stores);
         let store = stores.entry(repo.to_string()).or_default();
+        // Real-repo backend: persist through the `git` CLI (the in-memory maps are bypassed). The
+        // lock is held across the (fast, local) git invocation — fine for the one-shot commit leg.
+        if let Some(path) = store.cli_path.clone() {
+            return apply_effect_cli(&path, effect);
+        }
         match effect {
             GitEffect::WriteLooseObject { oid, kind, payload } => {
                 // Content-addressed idempotency: writing an existing oid is a no-op.
@@ -226,6 +248,132 @@ impl GitApplier {
     fn apply_node(&self, node: &EffectNode) -> Result<u64, GitError> {
         let (repo, effect) = decode_node(node)?;
         self.apply_effect(&repo, &effect)
+    }
+}
+
+/// Fully-qualify a ref name for the `git` CLI: a bare branch (`main`) becomes `refs/heads/main`;
+/// an already-qualified ref (`refs/...`) or the symbolic `HEAD` is used verbatim. The qfs planner
+/// addresses branches by bare name; `git update-ref` needs the qualified form to land in
+/// `refs/heads/` rather than a top-level ref.
+fn qualify_ref(name: &str) -> String {
+    if name == "HEAD" || name.starts_with("refs/") {
+        name.to_string()
+    } else {
+        format!("refs/heads/{name}")
+    }
+}
+
+/// Run `git -C <path> <args...>` (no stdin), returning trimmed stdout. A non-zero exit is a
+/// secret-free [`GitError::Corrupt`] carrying git's stderr class (never object bytes).
+fn run_git(path: &Path, args: &[&str]) -> Result<String, GitError> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .map_err(|e| GitError::Corrupt {
+            reason: format!("git invocation failed: {e}"),
+        })?;
+    if !out.status.success() {
+        return Err(GitError::Corrupt {
+            reason: format!(
+                "git {} failed: {}",
+                args.first().copied().unwrap_or(""),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Apply one [`GitEffect`] to a **real** repository via the `git` CLI. The mirror of the in-memory
+/// `apply_effect`: content-addressed object write (idempotent), atomic ref CAS, and a reflog entry
+/// that `git update-ref` already journals (so the explicit effect is a no-op here).
+fn apply_effect_cli(path: &Path, effect: &GitEffect) -> Result<u64, GitError> {
+    match effect {
+        GitEffect::WriteLooseObject { oid, kind, payload } => {
+            // `git hash-object -w` frames (`<type> <len>\0`), zlib-compresses, and writes the loose
+            // object, echoing its oid — which MUST equal the planner's content address.
+            use std::io::Write;
+            let mut child = Command::new("git")
+                .arg("-C")
+                .arg(path)
+                .args(["hash-object", "-w", "-t", kind.keyword(), "--stdin"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| GitError::Corrupt {
+                    reason: format!("git hash-object spawn failed: {e}"),
+                })?;
+            child
+                .stdin
+                .take()
+                .ok_or_else(|| GitError::Corrupt {
+                    reason: "git hash-object stdin unavailable".to_string(),
+                })?
+                .write_all(payload)
+                .map_err(|e| GitError::Corrupt {
+                    reason: format!("writing object payload to git: {e}"),
+                })?;
+            let out = child.wait_with_output().map_err(|e| GitError::Corrupt {
+                reason: format!("git hash-object wait failed: {e}"),
+            })?;
+            if !out.status.success() {
+                return Err(GitError::Corrupt {
+                    reason: format!(
+                        "git hash-object failed: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ),
+                });
+            }
+            let written = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if written != oid.as_str() {
+                return Err(GitError::Corrupt {
+                    reason: format!(
+                        "git wrote {written} but the planner addressed {}",
+                        oid.as_str()
+                    ),
+                });
+            }
+            Ok(1)
+        }
+        GitEffect::UpdateRef {
+            name,
+            old,
+            new,
+            force,
+        } => {
+            let qn = qualify_ref(name);
+            if *force {
+                run_git(path, &["update-ref", &qn, new.as_str()])?;
+            } else {
+                // `git update-ref <ref> <new> <old>` performs the CAS atomically; an empty oldvalue
+                // asserts the ref must NOT already exist (a creation). A mismatch exits non-zero.
+                let old_arg = old.as_ref().map(Oid::as_str).unwrap_or("");
+                run_git(path, &["update-ref", &qn, new.as_str(), old_arg]).map_err(|_| {
+                    // Re-read the live tip so the conflict is diagnosable (CAS lost the race).
+                    let actual = run_git(path, &["rev-parse", "--verify", "--quiet", &qn])
+                        .unwrap_or_else(|_| "(none — ref absent)".to_string());
+                    GitError::RefCasConflict {
+                        name: name.clone(),
+                        expected: old
+                            .as_ref()
+                            .map(|o| o.as_str().to_string())
+                            .unwrap_or_else(|| "(none — creation)".to_string()),
+                        actual: if actual.is_empty() {
+                            "(none — ref absent)".to_string()
+                        } else {
+                            actual
+                        },
+                    }
+                })?;
+            }
+            Ok(1)
+        }
+        // `git update-ref` already journaled the reflog (core.logAllRefUpdates is on for a normal
+        // repo), so the explicit recovery-oracle entry is redundant against a real repo.
+        GitEffect::WriteReflogEntry { .. } => Ok(1),
     }
 }
 

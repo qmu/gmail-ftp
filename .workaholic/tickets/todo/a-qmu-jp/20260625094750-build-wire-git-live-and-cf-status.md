@@ -11,6 +11,31 @@ depends_on: []
 
 # git live execution (real RepoStore) + cloudflare (cf) status
 
+## STATUS (2026-06-25): real CLI apply backend BUILT + verified; blocked on an ENGINE bridge
+
+The apply half is done: `RepoStore::at_path(<path>)` + `apply_effect_cli` (driver-git) persist a
+real commit to an on-disk repo via the `git` CLI — `hash-object -w` for loose objects, the atomic
+`update-ref` CAS for the branch, reflog auto-journaled. **Verified** by
+`cli_backend_writes_a_real_commit_to_an_on_disk_repo` (driver-git): `plan_insert_commit` + the
+CLI-backed applier write a genuine commit, confirmed by the `git` CLI (branch moved to the planned
+oid, message + staged file content present). No `gix` dep (ADR-0003-honoured).
+
+**The wall (why `qfs run "INSERT INTO /git/<repo>/commits …"` does NOT yet work):** git is the one
+driver whose applier consumes **planner-ENCODED** effects — `effect_from_row` reads an `effect_kind`
+discriminator + per-kind columns produced by `plan_insert_commit` (blob→tree→commit→ref→reflog).
+But the generic engine (`qfs_core::eval_write`) lowers `INSERT … VALUES` into a **raw** row
+(`message`, `branch`), which `decode_node` rejects ("missing `effect_kind` column"). sql/slack/
+github work because their appliers read the raw row directly; git needs its driver-specific write
+planner to run, and **the engine has no hook to delegate write-planning to a driver**. So the binary
+`/git` commit wiring was intentionally NOT shipped (it would fail confusingly mid-commit) — only the
+verified driver backend landed.
+
+**Remaining work (the real next step):** add a driver write-planning seam — when `eval_write` targets
+a driver that declares custom write lowering (git), call the driver to produce the effect plan
+(`plan_insert_commit`/`plan_update_ref`/`plan_merge`) instead of the generic node. Then wire the
+binary `/git` driver (the reverted `git.rs` + `QFS_GIT_<repo>` config is drafted in this PR's history)
+and the commit works end-to-end. This is an engine/driver-contract change, not more backend code.
+
 ## Overview
 
 Two drivers whose live execution was deliberately deferred, grouped because each needs a backend

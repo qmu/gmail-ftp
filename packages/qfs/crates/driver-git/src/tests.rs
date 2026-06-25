@@ -114,6 +114,7 @@ fn build_fixture() -> Fixture {
         db: LooseObjectDb::clone_of(&db),
         refs,
         reflog: std::collections::HashMap::new(),
+        ..RepoStore::default()
     };
     let applier = GitApplier::new().with_store("fixture", store);
 
@@ -373,6 +374,78 @@ async fn insert_commit_preview_applies_nothing_then_commit_moves_branch_and_refl
     let reflog = applier.reflog("fixture", "refs/heads/main");
     assert_eq!(reflog.first().unwrap().new, planned.new_commit);
     assert_eq!(reflog.first().unwrap().old, fx.c2);
+}
+
+/// The **real** CLI-backed apply backend (ADR-0003): `plan_insert_commit` + a `RepoStore::at_path`
+/// applier write a genuine commit to an on-disk repository — objects via `git hash-object -w`, the
+/// branch via the atomic `git update-ref` CAS — verified by the `git` CLI itself. Proves the only
+/// piece missing from a user-facing `qfs run "INSERT INTO /git/<repo>/commits …"` is the engine
+/// invoking this driver's write planner (the generic engine path produces a row the applier's
+/// `effect_from_row` cannot decode — see the t-exec git ticket).
+#[test]
+fn cli_backend_writes_a_real_commit_to_an_on_disk_repo() {
+    use qfs_runtime::SharedApplier;
+    use std::process::Command;
+
+    // Skip cleanly where `git` is unavailable (the backend IS the CLI; nothing to test without it).
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("qfs-git-cli-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "initial"]);
+    let parent = Oid::parse(&git(&["rev-parse", "refs/heads/main"])).unwrap();
+
+    // Plan a commit (one staged file) against the real parent, then apply it through the real
+    // CLI-backed store.
+    let mut repo = Repo::new(Arc::new(LooseObjectDb::new()));
+    repo.set_ref("refs/heads/main", parent.clone());
+    let input = CommitInput::new(
+        "refs/heads/main",
+        "Carol <carol@example.com>",
+        "Carol <carol@example.com>",
+        "real commit via the CLI backend",
+    )
+    .at_time(1_700_000_500)
+    .with_file("FEATURE.txt", b"hello from qfs\n".to_vec());
+    let planned = plan_insert_commit("r", &repo, &input).unwrap();
+
+    let applier = GitApplier::new().with_store("r", RepoStore::at_path(&dir));
+    for node in planned.plan.nodes() {
+        applier.apply_shared(node).expect("real apply succeeds");
+    }
+
+    // The git CLI sees the new commit on main, with the staged file content — proof the objects +
+    // ref were genuinely persisted (not in-memory).
+    assert_eq!(
+        git(&["rev-parse", "refs/heads/main"]),
+        planned.new_commit.as_str(),
+        "branch moved to the planned commit oid"
+    );
+    assert_eq!(
+        git(&["log", "-1", "--pretty=%s"]),
+        "real commit via the CLI backend"
+    );
+    assert_eq!(git(&["show", "HEAD:FEATURE.txt"]), "hello from qfs");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
