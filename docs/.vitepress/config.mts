@@ -17,6 +17,7 @@ export default defineConfig({
     nav: [
       { text: 'Get started', link: '/guide/getting-started' },
       { text: 'Cookbook', link: '/cookbook/' },
+      { text: 'Roadmap', link: '/roadmap' },
       {
         text: 'Reference',
         items: [
@@ -84,6 +85,11 @@ export default defineConfig({
         text: 'Security',
         collapsed: true,
         items: [{ text: 'Threat model', link: '/security/threat-model' }],
+      },
+      {
+        text: 'Roadmap',
+        collapsed: true,
+        items: [{ text: 'Where qfs is going', link: '/roadmap' }],
       },
     ],
     socialLinks: [{ icon: 'github', link: 'https://github.com/qmu/qfs' }],
