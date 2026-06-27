@@ -36,6 +36,8 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+pub mod audit;
+
 mod migrate;
 pub use migrate::{applied_migrations, migrate, AppliedMigration, Migration, MigrationError};
 
@@ -171,11 +173,22 @@ impl ProjectDb {
 }
 
 /// The System DB's ordered migration set (forward-only; append, never edit a shipped entry).
-pub const SYSTEM_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "system_skeleton",
-    sql: include_str!("schema/system.sql"),
-}];
+pub const SYSTEM_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "system_skeleton",
+        sql: include_str!("schema/system.sql"),
+    },
+    // t76: the hash-chained audit stream's durable state — the chain HEAD (to continue the chain
+    // across restarts) + the BOUNDED live-tail buffer backing the /sys/audit live view. Appended
+    // as a NEW version — migration #1's body stays frozen (the checksum guard forbids editing a
+    // shipped migration in place). qfs EMITS the stream and retains only the head (decision V).
+    Migration {
+        version: 2,
+        name: "system_audit_chain",
+        sql: include_str!("schema/system_audit.sql"),
+    },
+];
 
 /// The Project DB's ordered migration set (forward-only; append, never edit a shipped entry).
 pub const PROJECT_MIGRATIONS: &[Migration] = &[
@@ -236,15 +249,19 @@ mod tests {
     #[test]
     fn migrate_is_forward_only_and_idempotent() {
         let mut db = Db::open(&MemorySource).unwrap();
-        // First call applies v1.
+        // First call applies the whole System set (v1 skeleton + v2 audit chain, t76).
         let applied = migrate(&mut db, SYSTEM_MIGRATIONS).unwrap();
-        assert_eq!(applied, vec![1], "first migrate applies version 1");
+        assert_eq!(
+            applied,
+            vec![1, 2],
+            "first migrate applies every pending version"
+        );
         // Second call on the SAME db is a verified no-op (re-verifies the checksum, re-applies none).
         let again = migrate(&mut db, SYSTEM_MIGRATIONS).unwrap();
         assert!(again.is_empty(), "relaunch re-applies nothing: {again:?}");
-        // The ledger records exactly one applied migration.
+        // The ledger records every applied migration, in order.
         let ledger = applied_migrations(&db).unwrap();
-        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger.len(), SYSTEM_MIGRATIONS.len());
         assert_eq!(ledger[0].version, 1);
         assert!(!ledger[0].applied_at.is_empty(), "applied_at is stamped");
         assert_eq!(ledger[0].checksum.len(), 64, "sha256_hex is 64 hex chars");
@@ -321,6 +338,10 @@ mod tests {
         let sys = SystemDb::open(&MemorySource).unwrap();
         assert!(table_exists(sys.db(), "projects"));
         assert!(table_exists(sys.db(), "system_config"));
+        // t76 migration #2: the audit chain head + bounded live-tail buffer.
+        assert!(table_exists(sys.db(), "audit_chain_head"));
+        assert!(table_exists(sys.db(), "audit_tail"));
+        assert_eq!(applied_migrations(sys.db()).unwrap().len(), 2);
     }
 
     #[test]
@@ -389,6 +410,6 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1, "data persisted across reopen");
-        assert_eq!(applied_migrations(sys2.db()).unwrap().len(), 1);
+        assert_eq!(applied_migrations(sys2.db()).unwrap().len(), 2);
     }
 }

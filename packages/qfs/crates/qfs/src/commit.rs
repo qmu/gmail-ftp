@@ -40,6 +40,12 @@ pub fn apply_plan(plan: &qfs_core::Plan) -> Result<(), ExecError> {
     let outcome = rt
         .block_on(interp.commit(plan.clone(), &CapabilitySet::allow_all()))
         .map_err(|e| ExecError::new(ErrorKind::CommitFailed, "commit_failed", format!("{e:?}")))?;
+    // t76: emit one hash-chained audit event per committed effect (and per ATTEMPTED irreversible
+    // effect) — BEFORE the completeness check, so a partial commit still audits the legs that
+    // actually applied and any irreversible leg that was tried. Best-effort + metadata-only: a
+    // missing/locked System DB never fails or masks the commit, and an event carries verb + path +
+    // connection only, never row data or a secret (the boundary `describe` enforces).
+    emit_audit(plan, &outcome);
     if !outcome.is_complete() {
         // Surface the per-leg failure reasons (structured, secret-free) so a commit failure is
         // diagnosable rather than an opaque count.
@@ -62,6 +68,76 @@ pub fn apply_plan(plan: &qfs_core::Plan) -> Result<(), ExecError> {
         ));
     }
     Ok(())
+}
+
+/// The acting principal recorded on every audit event a one-shot `qfs run --commit` emits. A
+/// label, never a credential (t76 / §4.6). The CLI invocation is the actor today; a request-derived
+/// identity replaces this once multi-user auth lands.
+const ACTOR_CLI: &str = "cli";
+
+/// t76: emit one hash-chained audit event per committed effect (and per attempted irreversible
+/// effect) from the commit `outcome`. Each event is METADATA ONLY — `actor`, the routed
+/// `connection` (t44), the write `verb`, the VFS `path`, whether it `committed`, and the timestamp —
+/// never a secret, never row data (the boundary `describe` enforces, §3.2/§4.6).
+///
+/// Best-effort by design: opening the per-host System DB or appending an event must NEVER fail the
+/// commit or mask its result (decision: the audit never breaks the operation, §6). A host with no
+/// config home runs unaudited; a transient append error is logged (secret-free) and skipped.
+fn emit_audit(plan: &qfs_core::Plan, outcome: &qfs_runtime::Outcome) {
+    // Only the binary opens a real DB path (decision F). No config home / a transient open error =>
+    // the commit proceeds unaudited rather than failing.
+    let sys = match crate::store::open_system_db() {
+        Ok(Some(sys)) => sys,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::debug!(target: "qfs::audit", "audit emission skipped (system DB unavailable): {e}");
+            return;
+        }
+    };
+
+    let ts = now_rfc3339();
+    for entry in &outcome.ledger {
+        // A committed effect is one that APPLIED. An attempted irreversible effect is an
+        // irreversible leg that was tried but did not apply (Failed) — recorded as committed=false
+        // so the stream is the one funnel. Skipped legs were never attempted, so they emit nothing.
+        let committed = matches!(entry.status, LegStatus::Applied { .. });
+        let attempted_irreversible =
+            entry.irreversible && matches!(entry.status, LegStatus::Failed { .. });
+        if !committed && !attempted_irreversible {
+            continue;
+        }
+
+        // The path lives on the plan node (the ledger entry carries driver + kind, not the path).
+        let path = plan
+            .node(entry.id)
+            .map_or_else(String::new, |n| n.target.path.as_str().to_string());
+        // The connection the effect routed through: the active `<driver>/<name>` selection (t44),
+        // defaulting to `default`. The NAME only — never the secret material behind it.
+        let connection = crate::connection::active_connection(entry.driver.as_str())
+            .unwrap_or_else(|| "default".to_string());
+
+        let event = qfs_store::audit::AuditEvent {
+            actor: ACTOR_CLI.to_string(),
+            connection,
+            verb: entry.kind.label().to_string(),
+            path,
+            committed,
+            ts: ts.clone(),
+        };
+        if let Err(e) = crate::audit::append_event(&sys, event) {
+            tracing::debug!(target: "qfs::audit", "audit append failed (continuing): {e}");
+        }
+    }
+}
+
+/// The current UTC time as an RFC3339 string for an audit event's `ts`. A clock read can fail to
+/// format only on an impossible date; we fall back to the Unix epoch rather than panic (the audit
+/// never breaks the operation).
+fn now_rfc3339() -> String {
+    use time::format_description::well_known::Rfc3339;
+    time::OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
 /// The live apply-driver registry: the real clients each effect leg applies through, keyed by the

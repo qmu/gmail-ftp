@@ -18,6 +18,7 @@
 //! outside this crate links the binary as a library except `xtask`, which touches only the
 //! pure [`catalog`]/[`docs`]/[`version`] surface (no runtime, no creds, no I/O).
 
+pub mod audit;
 pub mod catalog;
 pub mod commit;
 pub mod connection;

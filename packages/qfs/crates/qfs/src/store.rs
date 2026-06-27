@@ -155,13 +155,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
         std::env::set_var("XDG_CONFIG_HOME", dir.path());
-        // First open creates + migrates.
+        // First open creates + migrates (v1 skeleton + v2 audit chain, t76).
         let sys = open_system_db().unwrap().expect("config home resolves");
-        assert_eq!(qfs_store::applied_migrations(sys.db()).unwrap().len(), 1);
+        assert_eq!(qfs_store::applied_migrations(sys.db()).unwrap().len(), 2);
         drop(sys);
-        // Second open is a verified no-op (still one applied migration).
+        // Second open is a verified no-op (still the same applied migrations).
         let sys2 = open_system_db().unwrap().expect("config home resolves");
-        assert_eq!(qfs_store::applied_migrations(sys2.db()).unwrap().len(), 1);
+        assert_eq!(qfs_store::applied_migrations(sys2.db()).unwrap().len(), 2);
         match prev_xdg {
             Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
             None => std::env::remove_var("XDG_CONFIG_HOME"),
