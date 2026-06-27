@@ -149,6 +149,20 @@ impl SysBackend for SystemDbBackend {
                     ]))
                 },
             )?,
+            // t77: the telemetry counter live view — read the in-process metrics registry (NOT the
+            // System DB; qfs emits + does not store the stream, decision V). Metadata only:
+            // instrument name + kind + integer counter value.
+            SysNode::Metrics => crate::telemetry::metrics_snapshot()
+                .into_iter()
+                .map(|m| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    Row::new(vec![
+                        Value::Text(m.name),
+                        Value::Text(m.kind.as_str().to_string()),
+                        Value::Int(m.value as i64),
+                    ])
+                })
+                .collect(),
         };
         Ok(RowBatch::new(schema, rows))
     }

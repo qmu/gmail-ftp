@@ -37,6 +37,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 pub mod audit;
+pub mod telemetry;
 
 mod identity_store;
 pub use identity_store::SqliteIdentityStore;

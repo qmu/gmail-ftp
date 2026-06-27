@@ -33,6 +33,11 @@ pub enum SysNode {
     /// `/sys/policies` — the policy grants (the path façade over the policy model). The one
     /// gated WRITE in this slice: `INSERT INTO /sys/policies`.
     Policies,
+    /// `/sys/metrics` — the telemetry counter live view (t77): the current process's metric
+    /// counters (`name`/`kind`/`value`), READ-only. qfs EMITS metrics to the configured sink and
+    /// does not store the stream (decision V); this is the bounded in-process snapshot, not a
+    /// durable time series (retention is the consumer's, via the sink).
+    Metrics,
 }
 
 impl SysNode {
@@ -45,6 +50,7 @@ impl SysNode {
             "audit" => Some(Self::Audit),
             "connections" => Some(Self::Connections),
             "policies" => Some(Self::Policies),
+            "metrics" => Some(Self::Metrics),
             _ => None,
         }
     }
@@ -58,6 +64,7 @@ impl SysNode {
             Self::Audit => "audit",
             Self::Connections => "connections",
             Self::Policies => "policies",
+            Self::Metrics => "metrics",
         }
     }
 
@@ -138,6 +145,14 @@ pub fn sys_node_schema(node: SysNode) -> Schema {
             col("allow", ColumnType::Text, true),
             col("target", ColumnType::Text, true),
             col("created_at", ColumnType::Text, true),
+        ]),
+        // t77 telemetry counters: the current process's metric snapshot — METADATA ONLY
+        // (instrument name + kind + numeric value). No secret, no row payload; safe to render as a
+        // relation, the same boundary `describe` enforces.
+        SysNode::Metrics => Schema::new(vec![
+            col("name", ColumnType::Text, false),
+            col("kind", ColumnType::Text, false),
+            col("value", ColumnType::Int, false),
         ]),
     }
 }

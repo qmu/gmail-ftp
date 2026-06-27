@@ -1,7 +1,8 @@
 //! `qfs-driver-sys` — the **administration driver** (RFD-0001 §5; roadmap §3.4 / M3, t53).
 //!
 //! "Administration is also everything-is-a-path." [`SysDriver`] exposes the deployment's own
-//! state — `/sys/users`, `/sys/projects`, `/sys/audit`, `/sys/connections`, `/sys/policies` — as
+//! state — `/sys/users`, `/sys/projects`, `/sys/audit`, `/sys/connections`, `/sys/policies`,
+//! `/sys/metrics` — as
 //! ordinary qfs relations backed by the System DB (t42), so a super-admin does every
 //! administrative action as a qfs statement (`FROM /sys/audit |> WHERE …`, gated
 //! `INSERT INTO /sys/policies VALUES (…)`) from the CLI, MCP, or dashboard — **one engine, three
@@ -80,9 +81,11 @@ pub fn sys_node_capabilities(node: SysNode) -> Capabilities {
         SysNode::Policies => Capabilities::from_verbs(&[Verb::Select, Verb::Insert]),
         // Read-only admin views (audit is append-only: emitted, never user-written; no
         // UPDATE/REMOVE — the rejection the t53 acceptance test pins).
-        SysNode::Users | SysNode::Projects | SysNode::Audit | SysNode::Connections => {
-            Capabilities::from_verbs(&[Verb::Select])
-        }
+        SysNode::Users
+        | SysNode::Projects
+        | SysNode::Audit
+        | SysNode::Connections
+        | SysNode::Metrics => Capabilities::from_verbs(&[Verb::Select]),
     }
 }
 

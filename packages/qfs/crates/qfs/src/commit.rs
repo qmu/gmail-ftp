@@ -37,15 +37,22 @@ pub fn apply_plan(plan: &qfs_core::Plan) -> Result<(), ExecError> {
         })?;
     // Capability gating already ran at parse time; allow-all is the apply-time re-check for the
     // CLI one-shot (a server run gates with its POLICY instead).
+    // Time the commit stage so the t77 telemetry trace span can attribute a slow `commit`.
+    let started = std::time::Instant::now();
     let outcome = rt
         .block_on(interp.commit(plan.clone(), &CapabilitySet::allow_all()))
         .map_err(|e| ExecError::new(ErrorKind::CommitFailed, "commit_failed", format!("{e:?}")))?;
+    let commit_ms = started.elapsed().as_secs_f64() * 1000.0;
     // t76: emit one hash-chained audit event per committed effect (and per ATTEMPTED irreversible
     // effect) — BEFORE the completeness check, so a partial commit still audits the legs that
     // actually applied and any irreversible leg that was tried. Best-effort + metadata-only: a
     // missing/locked System DB never fails or masks the commit, and an event carries verb + path +
     // connection only, never row data or a secret (the boundary `describe` enforces).
     emit_audit(plan, &outcome);
+    // t77: route the SAME audit signal (+ commit metrics + a commit trace span) to the configured
+    // externalized sink (file/stdout/OTel). Best-effort + metadata-only, exactly like emit_audit: a
+    // sink failure never fails or masks the commit, and no secret/row data ever reaches a sink.
+    emit_telemetry(plan, &outcome, commit_ms);
     if !outcome.is_complete() {
         // Surface the per-leg failure reasons (structured, secret-free) so a commit failure is
         // diagnosable rather than an opaque count.
@@ -84,6 +91,10 @@ const ACTOR_CLI: &str = "cli";
 /// commit or mask its result (decision: the audit never breaks the operation, §6). A host with no
 /// config home runs unaudited; a transient append error is logged (secret-free) and skipped.
 fn emit_audit(plan: &qfs_core::Plan, outcome: &qfs_runtime::Outcome) {
+    let events = audit_events(plan, outcome);
+    if events.is_empty() {
+        return;
+    }
     // Only the binary opens a real DB path (decision F). No config home / a transient open error =>
     // the commit proceeds unaudited rather than failing.
     let sys = match crate::store::open_system_db() {
@@ -94,8 +105,25 @@ fn emit_audit(plan: &qfs_core::Plan, outcome: &qfs_runtime::Outcome) {
             return;
         }
     };
+    for event in events {
+        if let Err(e) = crate::audit::append_event(&sys, event) {
+            tracing::debug!(target: "qfs::audit", "audit append failed (continuing): {e}");
+        }
+    }
+}
 
+/// Build the METADATA-ONLY [`AuditEvent`] for every committed effect (and every attempted
+/// irreversible effect) in `outcome` — the shared source of truth for BOTH the t76 hash chain
+/// (`emit_audit`) and the t77 externalized audit signal (`emit_telemetry`), so the two funnels can
+/// never disagree about which effects audit. `/sys/*` legs are skipped (they self-audit
+/// transactionally at the source of truth — see `sys.rs`), so the best-effort emitters never
+/// double-record the chain for the same effect.
+fn audit_events(
+    plan: &qfs_core::Plan,
+    outcome: &qfs_runtime::Outcome,
+) -> Vec<qfs_store::audit::AuditEvent> {
     let ts = now_rfc3339();
+    let mut events = Vec::new();
     for entry in &outcome.ledger {
         // A committed effect is one that APPLIED. An attempted irreversible effect is an
         // irreversible leg that was tried but did not apply (Failed) — recorded as committed=false
@@ -106,9 +134,7 @@ fn emit_audit(plan: &qfs_core::Plan, outcome: &qfs_runtime::Outcome) {
         if !committed && !attempted_irreversible {
             continue;
         }
-        // t53: a `/sys/*` mutation already appended its OWN audit row TRANSACTIONALLY with the
-        // write (administration observes itself, at the source of truth). Skip it here so the
-        // best-effort emitter does not double-write the chain for the same effect.
+        // t53: `/sys/*` mutations already self-audit transactionally (see `emit_audit`'s contract).
         if entry.driver.as_str() == "sys" {
             continue;
         }
@@ -122,18 +148,64 @@ fn emit_audit(plan: &qfs_core::Plan, outcome: &qfs_runtime::Outcome) {
         let connection = crate::connection::active_connection(entry.driver.as_str())
             .unwrap_or_else(|| "default".to_string());
 
-        let event = qfs_store::audit::AuditEvent {
+        events.push(qfs_store::audit::AuditEvent {
             actor: ACTOR_CLI.to_string(),
             connection,
             verb: entry.kind.label().to_string(),
             path,
             committed,
             ts: ts.clone(),
-        };
-        if let Err(e) = crate::audit::append_event(&sys, event) {
-            tracing::debug!(target: "qfs::audit", "audit append failed (continuing): {e}");
-        }
+        });
     }
+    events
+}
+
+/// t77: emit the externalized telemetry signals for one commit to the configured sink
+/// (file/stdout/OTel). Three signals ride out:
+/// - **audit** — the SAME metadata-only events the t76 chain records (`audit_events`), so a
+///   consumer's retention store mirrors the in-process chain;
+/// - **metrics** — `qfs_commit_total` (+1) and `qfs_commit_effects_total` (+ applied legs), also
+///   bumped in the process-local registry the `/sys/metrics` view reads;
+/// - **trace** — one `qfs.commit` span over the timed commit stage, attributed by effect count.
+///
+/// Best-effort by design (decision V / §6): a sink failure is logged (secret-free) and skipped — it
+/// NEVER fails or masks the commit. No secret or row data can reach a sink (the records are
+/// metadata-only by construction).
+fn emit_telemetry(plan: &qfs_core::Plan, outcome: &qfs_runtime::Outcome, commit_ms: f64) {
+    use qfs_store::telemetry::{MetricSample, TelemetryRecord, TraceSpan};
+
+    let sink = crate::telemetry::sink_from_env();
+    let emit = |record: TelemetryRecord| {
+        if let Err(e) = sink.emit(&record) {
+            tracing::debug!(target: "qfs::telemetry", "telemetry emit failed (continuing): {e}");
+        }
+    };
+
+    // Audit signal: the same events the t76 chain records.
+    let events = audit_events(plan, outcome);
+    let applied = events.iter().filter(|e| e.committed).count();
+    for event in events {
+        emit(TelemetryRecord::Audit(event));
+    }
+
+    // Metric signal: commit + effect counters (also recorded in the /sys/metrics registry).
+    crate::telemetry::incr_counter("qfs_commit_total", 1);
+    #[allow(clippy::cast_possible_wrap)]
+    crate::telemetry::incr_counter("qfs_commit_effects_total", applied as i64);
+    emit(TelemetryRecord::Metric(MetricSample::counter(
+        "qfs_commit_total",
+        1.0,
+    )));
+    #[allow(clippy::cast_precision_loss)]
+    emit(TelemetryRecord::Metric(MetricSample::counter(
+        "qfs_commit_effects_total",
+        applied as f64,
+    )));
+
+    // Trace signal: one span over the timed commit stage.
+    emit(TelemetryRecord::Trace(
+        TraceSpan::new("qfs.commit", "commit", commit_ms).with_attr("effects", applied.to_string()),
+    ));
 }
 
 /// The current UTC time as an RFC3339 string for an audit event's `ts`. A clock read can fail to

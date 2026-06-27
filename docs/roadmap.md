@@ -808,6 +808,19 @@ platforms beneath qfs already solve. So qfs **emits a standard telemetry surface
 watching consume it — and that single choice is what lets the managed tier and a self-hoster run the
 *same* signals through different tools.
 
+> **Implementation status (t77 — the externalized sinks).** The sink layer is live: a `TelemetrySink`
+> abstraction over the three signals, selected by `QFS_TELEMETRY_SINK` (`file` default / `stdout` /
+> `OTel`). The **`file`** ✅ and **`stdout`** ✅
+> sinks are fully wired — each commit emits the audit signal (the same metadata-only events as the
+> t76 chain), the `qfs_commit_total` / `qfs_commit_effects_total` metric counters, and a `qfs.commit`
+> trace span as one JSONL line per record (best-effort; a sink failure never breaks the commit). The
+> **`OTel`** sink is a **present-but-parked seam** 🚧 — selectable and metadata-rendering, but the OTLP
+> exporter is **not wired** (no vetted exporter crate in the offline build cache; t77 does not
+> hand-roll the OTLP wire protocol), so it logs the record it would export rather than shipping it.
+> **`/sys/metrics`** ✅ is live as the in-process counter live view (the snapshot, not a durable time
+> series — qfs emits, it does not store). The audit-chain **sealing to a WORM / transparency log**
+> below remains 🧭 proposed (t78).
+
 **Three signals, one surface.**
 
 | Signal | Query it as qfs | Emitted to a sink | Carries |
