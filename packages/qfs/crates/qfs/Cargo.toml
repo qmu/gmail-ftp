@@ -168,6 +168,10 @@ async-trait = { workspace = true }
 # Secret-free structured logging for the watchtower dispatch loop (the same target the serve
 # bindings log under). No secrets ever logged (RFD §10).
 tracing = { workspace = true }
+# t78: the audit-seal trigger + the consumer-side verify (src/worm.rs) wrap the secret-free seal /
+# witness / chain-mismatch failures in structured, AI-consumable error taxonomies (the same posture
+# as the domain leaves' `thiserror` enums). No secret or key material ever reaches an error.
+thiserror = { workspace = true }
 
 [dev-dependencies]
 # Temp-dir fixtures for the shell's end-to-end local read tests (never touches user files).

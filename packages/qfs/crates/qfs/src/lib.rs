@@ -43,3 +43,4 @@ pub mod telemetry;
 pub mod transport;
 pub mod version;
 pub mod watchtower;
+pub mod worm;

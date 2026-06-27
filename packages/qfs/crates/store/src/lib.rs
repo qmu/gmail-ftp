@@ -38,6 +38,7 @@ use rusqlite::Connection;
 
 pub mod audit;
 pub mod telemetry;
+pub mod worm;
 
 mod identity_store;
 pub use identity_store::SqliteIdentityStore;

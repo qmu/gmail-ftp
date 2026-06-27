@@ -818,8 +818,21 @@ watching consume it — and that single choice is what lets the managed tier and
 > exporter is **not wired** (no vetted exporter crate in the offline build cache; t77 does not
 > hand-roll the OTLP wire protocol), so it logs the record it would export rather than shipping it.
 > **`/sys/metrics`** ✅ is live as the in-process counter live view (the snapshot, not a durable time
-> series — qfs emits, it does not store). The audit-chain **sealing to a WORM / transparency log**
-> below remains 🧭 proposed (t78).
+> series — qfs emits, it does not store).
+>
+> **Implementation status (t78 — audit-chain sealing).** The **seal** layer is live: a signed
+> **checkpoint** over the t76 chain HEAD — `(seq, content_hash, prev_hash, issued_at)` signed with the
+> SAME AS ES256 key that signs access tokens (`qfs_oauth::sign_seal`/`verify_seal`) ✅ — plus a
+> consumer-side **verify** that recomputes a stored chain against a seal and reports the first
+> divergence or a head truncation/fork ✅. The seal is handed to a **WORM witness** through a
+> `WormSink` seam: the local append-only **`file`** witness ✅ is fully wired (one JSONL seal per
+> line, append-only), and the **external** witness (S3 Object Lock / transparency log) is a
+> **present-but-parked seam** 🚧 — selectable + metadata-rendering, but the real client is **not
+> wired** (no vetted Object-Lock / transparency-log crate in the offline build cache; t78 does not
+> hand-roll RFC 6962 / a vendor protocol). The seal **cadence is externalized** (decision M) — an
+> invokable unit fired by OS cron / Cron Triggers, not a qfs-internal scheduler. The
+> **`/sys/audit/seals`** read surface below remains 🧭 proposed (qfs emits the seals to the witness;
+> exposing them back as a queryable admin view is the follow-up slice).
 
 **Three signals, one surface.**
 

@@ -47,6 +47,7 @@ mod jwks;
 mod key;
 mod metadata;
 mod pkce;
+mod seal;
 mod sign;
 mod verify;
 
@@ -64,6 +65,7 @@ pub use jwks::{Jwk, Jwks};
 pub use key::{OauthError, SigningKey};
 pub use metadata::{AuthorizationServerMetadata, ProtectedResourceMetadata};
 pub use pkce::{pkce_challenge_s256, verify_pkce_s256, PKCE_METHOD_S256};
+pub use seal::{sign_seal, verify_seal, AuditSeal, SealError, SEAL_KIND};
 pub use sign::{sign_jws, verify_jws, Claims};
 pub use verify::{verify_access_token, AccessTokenError, VerifiedAccessToken};
 
