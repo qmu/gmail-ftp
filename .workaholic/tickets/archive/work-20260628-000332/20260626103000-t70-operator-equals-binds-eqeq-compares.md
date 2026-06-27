@@ -3,9 +3,9 @@ created_at: 2026-06-26T10:30:00+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [Domain]
-effort:
-commit_hash:
-category:
+effort: M
+commit_hash: ccc358a
+category: Changed
 depends_on: []
 ---
 
