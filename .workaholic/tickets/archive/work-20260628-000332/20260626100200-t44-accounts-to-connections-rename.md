@@ -3,9 +3,9 @@ created_at: 2026-06-26T10:02:00+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [Domain, UX]
-effort:
-commit_hash:
-category:
+effort: M
+commit_hash: f95d20c
+category: Changed
 depends_on: [20260626100100-t43-envelope-encryption-sqlite-secret-store.md]
 ---
 
