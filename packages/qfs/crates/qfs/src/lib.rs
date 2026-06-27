@@ -31,6 +31,7 @@ pub mod identity;
 pub mod secret_store;
 pub mod serve;
 pub mod serve_builtins;
+pub mod session;
 pub mod shell;
 pub mod sql;
 pub mod store;

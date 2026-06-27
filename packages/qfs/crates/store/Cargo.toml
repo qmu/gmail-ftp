@@ -19,6 +19,10 @@ qfs-crypto-core = { path = "../crypto-core" }
 # is consumed only by the terminal binary, qfs-identity is a pure leaf). qfs-identity carries no
 # rusqlite/tokio, so this adds no coupling beyond its argon2/secrets/crypto-core leaves.
 qfs-identity = { path = "../identity" }
+# t46: the session domain core. qfs-store provides the rusqlite `SessionStore` impl
+# (`SqliteSessionStore`) over the System DB — a `qfs-store -> qfs-session` edge (acyclic: qfs-store is
+# consumed only by the terminal binary, qfs-session is a pure-ish leaf carrying no rusqlite/tokio).
+qfs-session = { path = "../session" }
 # The in-process SQLite engine. `bundled` compiles libsqlite3 from source (no system-lib
 # dependency) — the SAME dep+feature qfs-driver-sql's test backend and the `qfs` binary already use,
 # so there is ONE libsqlite3 build in the artifact. SYNC: tokio must not enter this crate.

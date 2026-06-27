@@ -1,0 +1,26 @@
+[package]
+name = "qfs-session"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs session domain leaf (roadmap M1 / t46): server-side sessions for the local web/dashboard face — the `Session`/`SessionId` model + expiry, the opaque high-entropy `SessionToken` (wrapped in the redacting `Secret`, hashed at rest), the consumer-side `SessionStore` trait (create/lookup/rotate/revoke; SQLite I/O is injected by the binary), and pure `Set-Cookie`/`Cookie` formatting+parsing. A session binds an HTTP request to a t45 `users` row — AUTHENTICATION STATE ONLY (decision §4.1: a session proves WHO, not WHAT-may-you-do; authorization is M2). Pure-ish: no tokio, no rusqlite, no rand (OS entropy is injected from the binary leaf — the core stays deterministic/testable), no lang/plan/driver/codec/parser. A leaf."
+
+[dependencies]
+# A session belongs to a t45 `UserId` (the authenticated human). qfs-identity is a pure-ish leaf
+# (no rusqlite/tokio), so this edge keeps qfs-session a leaf too; it also re-exports `Secret`.
+qfs-identity = { path = "../identity" }
+# The redacting, zeroized-on-drop wrapper for the plaintext token IN TRANSIT: the cookie value is
+# carried as `Secret` so it is redacted in every `{:?}`/log and never accidentally printed. The DB
+# stores only the token's `sha256_hex` (qfs-crypto-core), never the plaintext.
+qfs-secrets = { path = "../secrets" }
+# The dependency-free SHA-256 (`sha256_hex`, t34) that hashes the token AT REST + the constant-time
+# byte compare used to verify a presented token's hash. qfs-crypto-core is a TRUE pure leaf.
+qfs-crypto-core = { path = "../crypto-core" }
+# Structured, secret-free error taxonomy (AI-consumable; never carries a token or a hash).
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

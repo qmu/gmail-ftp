@@ -112,6 +112,16 @@ qfs-store = { path = "../store" }
 # the launcher into qfs-cmd. qfs-cmd stays off both backends (the dep_direction guard). qfs-identity
 # is a pure leaf (no rusqlite/tokio); this edge adds only its argon2/secrets/crypto-core leaves.
 qfs-identity = { path = "../identity" }
+# t46 session composition root: the binary wires the System-DB-backed session store
+# (`SqliteSessionStore` from qfs-store) and the session DOMAIN core (qfs-session) — it generates the
+# opaque token from OS entropy (the `rand` CSPRNG below, owned by this leaf), stores only its hash,
+# and formats the secure cookie. qfs-session is a pure-ish leaf (no rusqlite/tokio/rand); the binary
+# injects the entropy so the core stays deterministic/testable. No endpoint is gated on a session
+# yet (gating is t50/t51) — the serve composition opens the store WITHOUT routing a path through it.
+qfs-session = { path = "../session" }
+# The CSPRNG (OS entropy) the binary uses to mint opaque session tokens. Confined to this terminal
+# leaf — qfs-session takes the random bytes as input and never owns a `rand`/`getrandom` edge itself.
+rand = "0.9"
 # t43: the SQLite `Secrets` backend (src/secret_store.rs) parses the `created_at` column back to an
 # OffsetDateTime for `AccountRecord` (the same RFC3339 metadata qfs-secrets uses). Parsing/formatting
 # only — no secret material ever touches `time`.

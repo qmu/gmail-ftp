@@ -294,7 +294,12 @@ mod tests {
     fn sensitive_headers_are_matched_case_insensitively() {
         assert!(is_sensitive_header("Authorization"));
         assert!(is_sensitive_header("AUTHORIZATION"));
+        // t46: both the request `Cookie` and the response `Set-Cookie` carry the session token, so
+        // both MUST be redacted (the single authority that keeps a token out of every log line).
+        assert!(is_sensitive_header("Cookie"));
+        assert!(is_sensitive_header("cookie"));
         assert!(is_sensitive_header("set-cookie"));
+        assert!(is_sensitive_header("Set-Cookie"));
         assert!(is_sensitive_header("X-Api-Key"));
         assert!(!is_sensitive_header("content-type"));
         assert!(!is_sensitive_header("link"));

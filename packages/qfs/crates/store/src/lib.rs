@@ -41,6 +41,9 @@ pub mod audit;
 mod identity_store;
 pub use identity_store::SqliteIdentityStore;
 
+mod session_store;
+pub use session_store::SqliteSessionStore;
+
 mod migrate;
 pub use migrate::{applied_migrations, migrate, AppliedMigration, Migration, MigrationError};
 
@@ -210,6 +213,17 @@ pub const SYSTEM_MIGRATIONS: &[Migration] = &[
         name: "system_identity",
         sql: include_str!("schema/system_identity.sql"),
     },
+    // t46 (roadmap M1): server-side sessions — the `sessions` table keyed by a HASH of the opaque
+    // token (never the plaintext), with `user_id` (the authenticated t45 human), `expires_at`, and
+    // `rotated_from` (the prior session's hash on a rotation). Appended as a NEW version (#4) —
+    // migrations #1–#3 stay frozen (the checksum guard forbids editing a shipped migration). The
+    // rusqlite `SessionStore` impl that fills these lives in `session_store.rs`. AUTHENTICATION
+    // STATE ONLY: a session proves WHO, not WHAT-may-you-do (authorization is M2).
+    Migration {
+        version: 4,
+        name: "system_sessions",
+        sql: include_str!("schema/system_sessions.sql"),
+    },
 ];
 
 /// The Project DB's ordered migration set (forward-only; append, never edit a shipped entry).
@@ -271,11 +285,12 @@ mod tests {
     #[test]
     fn migrate_is_forward_only_and_idempotent() {
         let mut db = Db::open(&MemorySource).unwrap();
-        // First call applies the whole System set (v1 skeleton + v2 audit chain t76 + v3 identity t45).
+        // First call applies the whole System set (v1 skeleton + v2 audit chain t76 + v3 identity
+        // t45 + v4 sessions t46).
         let applied = migrate(&mut db, SYSTEM_MIGRATIONS).unwrap();
         assert_eq!(
             applied,
-            vec![1, 2, 3],
+            vec![1, 2, 3, 4],
             "first migrate applies every pending version"
         );
         // Second call on the SAME db is a verified no-op (re-verifies the checksum, re-applies none).
@@ -366,7 +381,9 @@ mod tests {
         // t45 migration #3: the identity tables.
         assert!(table_exists(sys.db(), "users"));
         assert!(table_exists(sys.db(), "accounts"));
-        assert_eq!(applied_migrations(sys.db()).unwrap().len(), 3);
+        // t46 migration #4: the sessions table (keyed by the token hash, never the plaintext).
+        assert!(table_exists(sys.db(), "sessions"));
+        assert_eq!(applied_migrations(sys.db()).unwrap().len(), 4);
     }
 
     #[test]
@@ -435,6 +452,6 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1, "data persisted across reopen");
-        assert_eq!(applied_migrations(sys2.db()).unwrap().len(), 3);
+        assert_eq!(applied_migrations(sys2.db()).unwrap().len(), 4);
     }
 }

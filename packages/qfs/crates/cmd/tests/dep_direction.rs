@@ -302,6 +302,13 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         // parser — asserted by `identity_is_a_pure_domain_leaf` below), so the edge adds no
         // runtime/driver coupling to the terminal binary.
         "qfs-identity",
+        // t46 session composition root: the binary wires the System-DB-backed session store
+        // (`SqliteSessionStore` in qfs-store) + the session DOMAIN core (qfs-session), generating the
+        // opaque token from the OS-entropy CSPRNG it owns and persisting only its hash. qfs-session is
+        // a pure-ish leaf (no rusqlite/tokio/rand/lang/plan/driver/codec/parser — asserted by
+        // `session_is_a_pure_domain_leaf` below), so the edge adds no runtime/driver coupling to the
+        // terminal binary (it pulls only qfs-identity/qfs-secrets/qfs-crypto-core leaves).
+        "qfs-session",
     ];
     let workspace_prefixed: Vec<&String> =
         bin_deps.iter().filter(|d| d.starts_with("qfs")).collect();
@@ -1158,6 +1165,96 @@ fn identity_is_a_pure_domain_leaf() {
         store_deps.iter().any(|d| d == "qfs-identity"),
         "qfs-store must depend on qfs-identity (it provides the injected rusqlite IdentityStore \
          impl over the System DB, t45). Deps were: {store_deps:?}"
+    );
+}
+
+#[test]
+fn session_is_a_pure_domain_leaf() {
+    // t46: qfs-session is the session DOMAIN core (the `Session`/`SessionId` model + expiry, the
+    // opaque `SessionToken` hashed at rest, the consumer-side `SessionStore` trait, pure cookie
+    // format/parse). It is a pure-ish leaf — its SQLite I/O is INJECTED (the rusqlite
+    // `SqliteSessionStore` lives in qfs-store) and its token entropy is injected from the binary — so
+    // the domain stays off rusqlite/tokio/rand and the lower spine. This guard pins three facts:
+    //
+    //   (a) qfs-session's ONLY workspace deps are {qfs-identity, qfs-secrets, qfs-crypto-core} — the
+    //       `UserId` a session belongs to + the redacting Secret + the at-rest hash / constant-time
+    //       compare. It does NOT depend on lang/plan/driver/codec/parser nor on qfs-store/rusqlite.
+    //   (b) it carries no tokio/async runtime AND no rand/getrandom (OS entropy is injected from the
+    //       binary leaf, so the core stays deterministic/testable).
+    //   (c) qfs-store consumes it (the injected rusqlite store impl) — the acyclic edge that keeps
+    //       the I/O out of the domain leaf, mirroring the qfs-store -> qfs-identity edge.
+    let graph = load_graph();
+
+    let workspace_crates = [
+        "qfs-cmd",
+        "qfs-core",
+        "qfs-server",
+        "qfs-lang",
+        "qfs-plan",
+        "qfs-driver",
+        "qfs-codec",
+        "qfs-parser",
+        "qfs-types",
+        "qfs-runtime",
+        "qfs-txn",
+        "qfs-pushdown",
+        "qfs-secrets",
+        "qfs-crypto-core",
+        "qfs-identity",
+        "qfs-store",
+        "qfs-session",
+    ];
+
+    // (a) qfs-session's workspace deps are exactly {qfs-identity, qfs-secrets, qfs-crypto-core}.
+    let session_deps = graph
+        .direct_deps
+        .get("qfs-session")
+        .expect("qfs-session is a workspace package");
+    let allowed = ["qfs-identity", "qfs-secrets", "qfs-crypto-core"];
+    for d in session_deps
+        .iter()
+        .filter(|d| workspace_crates.contains(&d.as_str()))
+    {
+        assert!(
+            allowed.contains(&d.as_str()),
+            "confinement violation: qfs-session must depend only on {allowed:?} among workspace \
+             crates (it is a pure-ish domain leaf; SQLite I/O is injected via qfs-store, entropy via \
+             the binary), but depends on {d}. Deps were: {session_deps:?}"
+        );
+    }
+    // The defining absences: no tokio/async runtime, no CSPRNG, no rusqlite, no lower-spine crates.
+    for forbidden in [
+        "tokio",
+        "futures",
+        "async-trait",
+        "rand",
+        "getrandom",
+        "rusqlite",
+        "qfs-lang",
+        "qfs-plan",
+        "qfs-driver",
+        "qfs-codec",
+        "qfs-parser",
+        "qfs-runtime",
+        "qfs-store",
+    ] {
+        assert!(
+            !session_deps.iter().any(|d| d == forbidden),
+            "confinement violation: qfs-session must NOT depend on {forbidden} (it is a pure-ish \
+             leaf; tokio/rand/rusqlite/query logic stay out — entropy is injected from the binary). \
+             Deps were: {session_deps:?}"
+        );
+    }
+
+    // (c) qfs-store consumes qfs-session (the injected rusqlite SessionStore impl).
+    let store_deps = graph
+        .direct_deps
+        .get("qfs-store")
+        .expect("qfs-store is a workspace package");
+    assert!(
+        store_deps.iter().any(|d| d == "qfs-session"),
+        "qfs-store must depend on qfs-session (it provides the injected rusqlite SessionStore impl \
+         over the System DB, t46). Deps were: {store_deps:?}"
     );
 }
 

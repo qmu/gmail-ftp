@@ -54,6 +54,20 @@ pub fn run_serve(config: &Path) -> i32 {
         tracing::warn!(target: "qfs::serve", error = %e, "daemon host setup degraded; serving without the on-disk ledger");
     }
 
+    // t46: open the System-DB session store so the local web/dashboard face CAN issue + validate
+    // sessions (the composition root injecting the store, mirroring how the cron/watchtower bindings
+    // are wired). Best-effort + INERT this milestone: NO endpoint is gated on a session yet
+    // (authorization is M2; refusing unauthenticated requests is t50/t51), so we only prove the store
+    // is ready — the same "wire the System DB without routing a command through it" posture t42 took.
+    match crate::session::open_session_store() {
+        Ok(_store) => {
+            tracing::debug!(target: "qfs::serve", "t46 session store ready (authentication state only; no endpoint gated on it yet)");
+        }
+        Err(e) => {
+            tracing::debug!(target: "qfs::serve", error = %e, "t46 session store unavailable (continuing without sessions)");
+        }
+    }
+
     // The serve composition is async (listener + supervised ctrl_c wait). Build the runtime at
     // this leaf boundary so tokio dead-ends in the binary.
     let rt = match tokio::runtime::Builder::new_multi_thread()

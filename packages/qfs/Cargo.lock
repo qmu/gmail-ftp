@@ -1094,10 +1094,12 @@ dependencies = [
  "qfs-pushdown",
  "qfs-runtime",
  "qfs-secrets",
+ "qfs-session",
  "qfs-skill",
  "qfs-store",
  "qfs-types",
  "qfs-watchtower",
+ "rand 0.9.4",
  "rusqlite",
  "tempfile",
  "time",
@@ -1532,6 +1534,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qfs-session"
+version = "0.0.0"
+dependencies = [
+ "qfs-crypto-core",
+ "qfs-identity",
+ "qfs-secrets",
+ "thiserror",
+]
+
+[[package]]
 name = "qfs-skill"
 version = "0.0.0"
 dependencies = [
@@ -1563,6 +1575,7 @@ version = "0.0.0"
 dependencies = [
  "qfs-crypto-core",
  "qfs-identity",
+ "qfs-session",
  "rusqlite",
  "tempfile",
  "thiserror",
