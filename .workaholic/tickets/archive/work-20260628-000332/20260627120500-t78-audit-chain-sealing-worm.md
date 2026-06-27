@@ -3,9 +3,9 @@ created_at: 2026-06-27T12:05:00+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [Domain, Infrastructure]
-effort:
-commit_hash:
-category:
+effort: M
+commit_hash: cc51a73
+category: Added
 depends_on: [20260627120300-t76-hash-chained-audit-emission.md, 20260626101100-t53-sys-driver-admin-views.md]
 ---
 
