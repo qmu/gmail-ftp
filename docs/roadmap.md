@@ -123,8 +123,8 @@ CREATE TRIGGER notify ON /mail/inbox
   DO INSERT INTO /slack/acme/general/messages VALUES (NEW.subject)
 ```
 
-> Credentials are stored once with `qfs account add <service> <name>` and never printed back. Under the
-> plan this command becomes `qfs connection add …` (decision B); the behavior is unchanged.
+> Credentials are stored once with `qfs connection add <service> <name>` and never printed back
+> (decision B renamed this command from `qfs account add`); the behavior is unchanged.
 
 ### 1.2 Where the language is going 🧭
 
@@ -355,8 +355,8 @@ segment     = (name | "*" | "**") coordinate?    # globs make a path set-valued;
 coordinate  = "@" ref                            # binds to the preceding segment
 ```
 
-The *meaning* of segments **inside** the service — which segment is a connection/account vs. a
-resource (`/sql/pg/orders`: **connection** `pg`, table `orders`; `/google/work/gmail/inbox`: account
+The *meaning* of segments **inside** the service — which segment is a connection vs. a
+resource (`/sql/pg/orders`: **connection** `pg`, table `orders`; `/google/work/gmail/inbox`: connection
 `work`, mailbox `inbox`) — is declared by each driver's schema (`describe`), exactly as a filesystem
 can't tell a dir from a file without asking the FS. That is the path-is-the-type model, not an
 ambiguity.
@@ -364,7 +364,7 @@ ambiguity.
 The connection segment is a **label**, never the coordinates themselves. `pg` is an alias you chose at
 `qfs connection add sql pg …`; the **host, port, username, password, and database name** all live
 *inside* that connection's stored credential (a `postgres://…` string, envelope-encrypted at rest —
-decision E), which the driver fetches by `(driver "sql", account "pg")` and never prints back. Two
+decision E), which the driver fetches by `(driver "sql", connection "pg")` and never prints back. Two
 Postgres databases — a different host, user, or db name — are simply two labels (`pg`, `pg_eu`,
 `analytics`); switching the label switches the whole `(host, user, db)` tuple at once, the same way
 switching `work`→`personal` moves a Google grant. `/sys/connections` maps each label → provider +
@@ -635,8 +635,8 @@ flagged next step. This is **now the default credential backend** (the SQLite Pr
 `secret_store`/`secret_meta` tables) — one persistence path from a single-user laptop to the managed
 cloud. That single-key form is the base case of the **credential vault** (§4.5), which generalizes
 the same envelope into a team key hierarchy. Because the project is still experimental, there is **no
-migration** of the old encrypted file vault; the ideal is built fresh — re-run `qfs account add` once
-per existing account (decision E).
+migration** of the old encrypted file vault; the ideal is built fresh — re-run `qfs connection add` once
+per existing connection (decision E).
 
 Scale keeps SQLite semantics everywhere by using **distributed SQLite**: **Cloudflare Workers + D1**
 (primary) or **AWS Lambda + EFS** (alternative). The binary stays **stateless** — a request arrives at

@@ -263,7 +263,7 @@ fn secrets_with(handle: &str, secret: &str) -> Arc<dyn Secrets> {
     let store = InMemoryStore::new();
     let key = CredentialKey::new(
         DriverId::new(crate::webhook::WEBHOOK_SECRET_DRIVER),
-        qfs_secrets::AccountId::new(handle).unwrap(),
+        qfs_secrets::ConnectionId::new(handle).unwrap(),
     );
     store
         .put(&key, Secret::from_string(secret.to_string()))

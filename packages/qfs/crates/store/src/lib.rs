@@ -185,7 +185,7 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/project.sql"),
     },
     // t43: the envelope-encrypted credential store (secret_store + secret_meta) and the DB-backed
-    // active-account selection. Appended as a NEW version — migration #1's body stays frozen.
+    // active-connection selection. Appended as a NEW version — migration #1's body stays frozen.
     Migration {
         version: 2,
         name: "project_secret_store",

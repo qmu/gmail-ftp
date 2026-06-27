@@ -4,12 +4,12 @@
 //! credential with required scopes and get a secret-free grant/deny.
 //!
 //! The trait is consumer-side and owned-DTO only: it trades in [`CredentialKey`],
-//! [`AccountRecord`], and [`Secret`] — no vendor SDK type crosses it (§9). Every error
+//! [`ConnectionRecord`], and [`Secret`] — no vendor SDK type crosses it (§9). Every error
 //! variant is secret-free by construction (the only one that *could* carry text,
 //! [`SecretError::Backend`], takes a backend *description*, never the credential — see
 //! the redaction test in `lib.rs`).
 
-use crate::key::{AccountRecord, CredentialKey, DriverId};
+use crate::key::{ConnectionRecord, CredentialKey, DriverId};
 use crate::secret::Secret;
 
 /// The single secrets surface. Backends ([`crate::InMemoryStore`], [`crate::EnvStore`],
@@ -36,30 +36,30 @@ pub trait Secrets: Send + Sync {
     fn put(&self, key: &CredentialKey, value: Secret) -> Result<(), SecretError>;
 
     /// Remove the credential for `key`. Removing an absent key is **not** an error
-    /// (idempotent — `qfs account remove` is replayable).
+    /// (idempotent — `qfs connection remove` is replayable).
     ///
     /// # Errors
     /// [`SecretError::Locked`] or [`SecretError::Backend`] on failure.
     fn remove(&self, key: &CredentialKey) -> Result<(), SecretError>;
 
-    /// List the stored accounts, optionally filtered to one `driver`. Returns
-    /// secret-free [`AccountRecord`]s (selectors + metadata only).
+    /// List the stored connections, optionally filtered to one `driver`. Returns
+    /// secret-free [`ConnectionRecord`]s (selectors + metadata only).
     ///
     /// # Errors
     /// [`SecretError::Locked`] or [`SecretError::Backend`] on failure.
-    fn list(&self, driver: Option<&DriverId>) -> Result<Vec<AccountRecord>, SecretError>;
+    fn list(&self, driver: Option<&DriverId>) -> Result<Vec<ConnectionRecord>, SecretError>;
 }
 
 /// A structured, **secret-free** store error (RFD §10 — secrets never enter error text).
 ///
-/// `NotFound` carries the *key* (driver + account — selectors, not the value). `Backend`
+/// `NotFound` carries the *key* (driver + connection — selectors, not the value). `Backend`
 /// carries a description of the failing *operation*, never the credential; constructing
 /// it from a `Secret` is impossible because `Secret` has no `Display`/`Into<String>`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SecretError {
-    /// No credential stored for this `(driver, account)`. Actionable: run `qfs account
-    /// add` for the named account.
-    #[error("no credential for {}/{}", .0.driver.as_str(), .0.account.as_str())]
+    /// No credential stored for this `(driver, connection)`. Actionable: run `qfs connection
+    /// add` for the named connection.
+    #[error("no credential for {}/{}", .0.driver.as_str(), .0.connection.as_str())]
     NotFound(CredentialKey),
 
     /// The backend is sealed and cannot answer (no decryption key / passphrase supplied,
@@ -86,10 +86,10 @@ impl SecretError {
 }
 
 /// The outcome of a scope check: which of a procedure's `requires_scopes` (the t13 hints
-/// on [`qfs_driver::ProcSig`], passed in as owned labels) the resolved account is granted.
+/// on [`qfs_driver::ProcSig`], passed in as owned labels) the resolved connection is granted.
 ///
 /// This is the capability/scope tie-in: a driver requests a credential *with* required
-/// scopes; [`grant_scopes`] compares them against the scopes the stored account was
+/// scopes; [`grant_scopes`] compares them against the scopes the stored connection was
 /// provisioned with and returns a structured grant or a secret-free [`ScopeError`]
 /// listing exactly what is missing — AI-actionable, never a token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,14 +98,14 @@ pub struct ScopeGrant {
     pub granted: Vec<String>,
 }
 
-/// A scope was requested that the resolved account does not hold. Secret-free: it lists
+/// A scope was requested that the resolved connection does not hold. Secret-free: it lists
 /// scope *labels* (the §10 hints), never a credential.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("account lacks required scope(s): {}", .missing.join(", "))]
+#[error("connection lacks required scope(s): {}", .missing.join(", "))]
 pub struct ScopeError {
-    /// The requested scopes the account does not hold — what to re-consent for.
+    /// The requested scopes the connection does not hold — what to re-consent for.
     pub missing: Vec<String>,
-    /// The scopes the account *does* hold, for context (never a credential).
+    /// The scopes the connection *does* hold, for context (never a credential).
     pub held: Vec<String>,
 }
 
@@ -117,13 +117,13 @@ impl ScopeError {
     }
 }
 
-/// Grant exactly the requested scopes that the account holds, or deny with the missing
+/// Grant exactly the requested scopes that the connection holds, or deny with the missing
 /// set. Pure and secret-free: it reasons over scope *labels* only (the `requires_scopes`
 /// hints from t13) and never touches a [`Secret`].
 ///
 /// `required` is the procedure's `requires_scopes`; `held` is the scope set the stored
-/// account was provisioned with. A driver calls this *before* using a fetched credential
-/// so an under-scoped account fails loudly with an actionable list rather than hitting a
+/// connection was provisioned with. A driver calls this *before* using a fetched credential
+/// so an under-scoped connection fails loudly with an actionable list rather than hitting a
 /// 403 deep in a vendor call.
 ///
 /// # Errors
@@ -148,10 +148,13 @@ pub fn grant_scopes(required: &[String], held: &[String]) -> Result<ScopeGrant, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::key::AccountId;
+    use crate::key::ConnectionId;
 
-    fn key(driver: &str, account: &str) -> CredentialKey {
-        CredentialKey::new(DriverId::new(driver), AccountId::new(account).unwrap())
+    fn key(driver: &str, connection: &str) -> CredentialKey {
+        CredentialKey::new(
+            DriverId::new(driver),
+            ConnectionId::new(connection).unwrap(),
+        )
     }
 
     #[test]
@@ -189,7 +192,7 @@ mod tests {
         assert_eq!(err.held, vec!["mail.read".to_string()]);
         assert_eq!(
             err.to_string(),
-            "account lacks required scope(s): mail.send"
+            "connection lacks required scope(s): mail.send"
         );
     }
 

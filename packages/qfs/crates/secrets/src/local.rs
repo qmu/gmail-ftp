@@ -1,7 +1,7 @@
 //! [`LocalStore`] — the native, encrypted-at-rest credential backend (RFD-0001 §10).
 //!
 //! One encrypted blob at `~/.config/qfs/credentials` (XDG), mode `0600`, holding the whole
-//! `(driver, account) -> secret` map. AEAD is ChaCha20-Poly1305; the key comes from a
+//! `(driver, connection) -> secret` map. AEAD is ChaCha20-Poly1305; the key comes from a
 //! caller-supplied 32-byte key (the OS-keyring path in production) or is derived from a
 //! passphrase with argon2id ([`LocalStore::from_passphrase`]). Writes are atomic
 //! (temp-file + `rename`) so a crash mid-write never corrupts the prior blob.
@@ -27,7 +27,7 @@ use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use rand::Rng;
 use time::OffsetDateTime;
 
-use crate::key::{AccountId, AccountRecord, CredentialKey, DriverId};
+use crate::key::{ConnectionId, ConnectionRecord, CredentialKey, DriverId};
 use crate::secret::Secret;
 use crate::store::{SecretError, Secrets};
 
@@ -50,7 +50,7 @@ struct StoredEntry {
     created_at: OffsetDateTime,
 }
 
-/// The whole decrypted credential map (`driver/account -> entry`). This is the plaintext
+/// The whole decrypted credential map (`driver/connection -> entry`). This is the plaintext
 /// that gets AEAD-sealed into the single blob.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Vault {
@@ -213,7 +213,7 @@ impl Secrets for LocalStore {
         Ok(())
     }
 
-    fn list(&self, driver: Option<&DriverId>) -> Result<Vec<AccountRecord>, SecretError> {
+    fn list(&self, driver: Option<&DriverId>) -> Result<Vec<ConnectionRecord>, SecretError> {
         let _g = self.lock.lock();
         let vault = self.load()?;
         let mut out = Vec::new();
@@ -221,10 +221,10 @@ impl Secrets for LocalStore {
             let Some((drv, acct)) = flat.split_once('/') else {
                 continue;
             };
-            let Ok(account) = AccountId::new(acct) else {
+            let Ok(connection) = ConnectionId::new(acct) else {
                 continue;
             };
-            let rec = AccountRecord::new(DriverId::new(drv), account, entry.created_at);
+            let rec = ConnectionRecord::new(DriverId::new(drv), connection, entry.created_at);
             if driver.is_none_or(|d| &rec.driver == d) {
                 out.push(rec);
             }
@@ -377,8 +377,11 @@ mod tests {
         [7u8; KEY_LEN]
     }
 
-    fn ckey(driver: &str, account: &str) -> CredentialKey {
-        CredentialKey::new(DriverId::new(driver), AccountId::new(account).unwrap())
+    fn ckey(driver: &str, connection: &str) -> CredentialKey {
+        CredentialKey::new(
+            DriverId::new(driver),
+            ConnectionId::new(connection).unwrap(),
+        )
     }
 
     /// Round-trip put -> get -> remove against a real encrypted blob in a tempdir.

@@ -76,17 +76,17 @@ pub use qfs_types::{
     Predicate, Provenance, Row, RowBatch, Schema, SchemaSource, TypeError, Typed, TypedPredicate,
     Value,
 };
-// The credential / secret store + multi-account resolution (t27, RFD §10), re-exported
+// The credential / secret store + multi-connection resolution (t27, RFD §10), re-exported
 // so drivers and the server reach the one secrets surface through `qfs-core`. `Secret`
 // is the only type holding key material (redacting Debug/Display, no Clone/Serialize,
-// zeroized on drop); the store keys by `(driver, account)` and the resolver turns a
-// statement's context into a concrete account, recording the `AccountSource` for the
+// zeroized on drop); the store keys by `(driver, connection)` and the resolver turns a
+// statement's context into a concrete connection, recording the `ConnectionSource` for the
 // audit ledger — never the credential.
 pub use qfs_secrets::{
-    grant_scopes, resolve as resolve_account, AccountId, AccountIdError, AccountRecord,
-    AccountSource, ActiveAccounts, CredentialKey, EnvStore, InMemoryStore,
-    Resolution as AccountResolution, ResolveError as AccountResolveError, ScopeError, ScopeGrant,
-    Secret, SecretError, Secrets,
+    grant_scopes, resolve as resolve_connection, ActiveConnections, ConnectionId,
+    ConnectionIdError, ConnectionRecord, ConnectionSource, CredentialKey, EnvStore, InMemoryStore,
+    Resolution as ConnectionResolution, ResolveError as ConnectionResolveError, ScopeError,
+    ScopeGrant, Secret, SecretError, Secrets,
 };
 
 /// The output mode for a session (RFD-0001 §7: `-json` vs human).
@@ -126,10 +126,10 @@ pub struct Engine {
     pub audit_sink: Option<std::sync::Arc<dyn AuditSink>>,
     /// The credential / secret store (t27, RFD §10): the one [`Secrets`] surface the
     /// driver-bind context fetches credentials from at COMMIT time, keyed by
-    /// `(driver, account)`. `None` until a backend is installed (the CLI installs a
+    /// `(driver, connection)`. `None` until a backend is installed (the CLI installs a
     /// [`qfs_secrets::LocalStore`]; the server a `WorkerStore`/`EnvStore`). Held behind
     /// the trait so the engine is oblivious to the backend, and a `Plan` never embeds a
-    /// secret — only an account *selector* (purity invariant, RFD §3).
+    /// secret — only an connection *selector* (purity invariant, RFD §3).
     pub secrets: Option<std::sync::Arc<dyn Secrets>>,
     /// Reserved capability-enforcement flag (E5). Shape only at E0.
     pub capabilities_enforced: bool,
@@ -199,7 +199,7 @@ mod tests {
         // The driver-bind context fetches credentials via the one `Secrets` trait (t27).
         // An in-memory backend (no fs, no network, no real keychain) proves the wiring.
         let store = std::sync::Arc::new(InMemoryStore::new());
-        let key = CredentialKey::new(DriverId::new("mail"), AccountId::new("work").unwrap());
+        let key = CredentialKey::new(DriverId::new("mail"), ConnectionId::new("work").unwrap());
         store.put(&key, Secret::from("tok")).unwrap();
 
         let engine = Engine::new().with_secrets(store);

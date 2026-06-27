@@ -255,13 +255,13 @@ mod tests {
         // `#[serde(skip)]`, so the planted value is absent from the JSON.
         #[derive(Serialize)]
         struct Credential {
-            account: &'static str,
+            connection: &'static str,
             #[serde(skip)]
             #[allow(dead_code)]
             token: Secret,
         }
         let c = Credential {
-            account: "work",
+            connection: "work",
             token: Secret::from("PLANTED-abc-9f8e"),
         };
         let json = serde_json::to_string(&c).unwrap();

@@ -1,4 +1,4 @@
-//! `qfs-secrets` — the credential / secret store + multi-account resolution (RFD-0001 §10).
+//! `qfs-secrets` — the credential / secret store + multi-connection resolution (RFD-0001 §10).
 //!
 //! `qfs` is one binary holding tokens for Gmail, Drive, S3/R2, D1, GitHub, Slack, AWS and
 //! Cloudflare while running cross-service effect-plans — a large blast radius. This crate
@@ -8,15 +8,15 @@
 //!   no `Clone`/`Serialize`, zeroized on drop, value reachable only via [`Secret::expose`].
 //!   Redaction is the headline invariant (see `secret.rs` and the [`tests`] below).
 //! - [`Secrets`] — the one trait drivers + server call ([`get`]/[`put`]/[`remove`]/[`list`]),
-//!   keyed by [`CredentialKey`] = `(driver, account)`. Cross-driver access is impossible by
+//!   keyed by [`CredentialKey`] = `(driver, connection)`. Cross-driver access is impossible by
 //!   construction (a key names exactly one driver).
 //!   [`get`]: Secrets::get [`put`]: Secrets::put [`remove`]: Secrets::remove [`list`]: Secrets::list
 //! - Backends behind that one trait: [`InMemoryStore`] (test/CI/wasm base), [`EnvStore`]
 //!   (12-factor / CI / CF `env` bindings), [`LocalStore`] (native encrypted-at-rest,
 //!   `0600`, AEAD, atomic write), and `WorkerStore` (wasm Secret Store).
-//! - [`resolve`] — the account-resolution ladder
-//!   (`--account` > `AT 'acct'` > active > sole > structured error), recording the chosen
-//!   [`AccountSource`] for the audit ledger ("who ran as whom") — never the credential.
+//! - [`resolve`] — the connection-resolution ladder
+//!   (`--connection` > `AT 'acct'` > active > sole > structured error), recording the chosen
+//!   [`ConnectionSource`] for the audit ledger ("who ran as whom") — never the credential.
 //! - [`grant_scopes`] — the scope tie-in: a driver requests a credential *with* required
 //!   scopes (the `requires_scopes` hints from t13) and gets a structured, secret-free
 //!   grant/deny.
@@ -26,7 +26,7 @@
 //! so the spine stays acyclic (`qfs-secrets -> qfs-types`). Resolution ([`resolve`]) and
 //! the scope check ([`grant_scopes`]) are pure; the only I/O is reading/writing bytes in a
 //! backend, deliberately behind the [`Secrets`] trait so a `Plan` never embeds a secret —
-//! only an account *selector* (RFD §3 purity invariant).
+//! only an connection *selector* (RFD §3 purity invariant).
 //!
 //! ## wasm-friendliness
 //! [`LocalStore`] is `cfg(not(target_arch = "wasm32"))` (no fs on Workers); the wasm build
@@ -54,7 +54,7 @@ mod local;
 #[cfg(target_arch = "wasm32")]
 mod worker;
 
-pub use active::ActiveAccounts;
+pub use active::ActiveConnections;
 pub use backends::{EnvStore, InMemoryStore};
 // The envelope-encryption primitive (t43): the SQLite credential store (in the binary) builds on
 // these — a passphrase-derived KEK wraps a random DEK that seals each secret value. Native-only
@@ -63,8 +63,8 @@ pub use backends::{EnvStore, InMemoryStore};
 pub use envelope::{
     derive_kek, generate_dek, generate_salt, open, seal, unwrap_dek, wrap_dek, EnvelopeError,
 };
-pub use key::{AccountId, AccountIdError, AccountRecord, CredentialKey, DriverId};
-pub use resolve::{resolve, AccountSource, Resolution, ResolveError};
+pub use key::{ConnectionId, ConnectionIdError, ConnectionRecord, CredentialKey, DriverId};
+pub use resolve::{resolve, ConnectionSource, Resolution, ResolveError};
 pub use secret::{Secret, REDACTED};
 pub use store::{grant_scopes, ScopeError, ScopeGrant, SecretError, Secrets};
 
@@ -92,7 +92,7 @@ mod tests {
 
         // 2. The store NotFound error carries the KEY (selectors), never the value — and
         //    we feed a store that does not have the secret to exercise the miss path.
-        let key = CredentialKey::new(DriverId::new("mail"), AccountId::new("work").unwrap());
+        let key = CredentialKey::new(DriverId::new("mail"), ConnectionId::new("work").unwrap());
         let store = InMemoryStore::new();
         let not_found = store.get(&key).unwrap_err();
 
@@ -105,10 +105,10 @@ mod tests {
         let scope =
             grant_scopes(&["mail.send".to_string()], &["mail.read".to_string()]).unwrap_err();
         let ambiguous = {
-            // Two accounts, no selector -> Ambiguous; lists account NAMES, not secrets.
+            // Two connections, no selector -> Ambiguous; lists connection NAMES, not secrets.
             store
                 .put(
-                    &CredentialKey::new(DriverId::new("mail"), AccountId::new("home").unwrap()),
+                    &CredentialKey::new(DriverId::new("mail"), ConnectionId::new("home").unwrap()),
                     Secret::from(PLANTED),
                 )
                 .unwrap();
@@ -117,7 +117,7 @@ mod tests {
                 &DriverId::new("mail"),
                 None,
                 None,
-                &ActiveAccounts::new(),
+                &ActiveConnections::new(),
                 &available,
             )
             .unwrap_err()
@@ -150,14 +150,14 @@ mod tests {
         assert!(all.iter().any(|s| s.contains(REDACTED)));
     }
 
-    /// End-to-end multi-account flow over the in-memory backend + resolver + scope grant,
-    /// proving the pieces compose: store two accounts, resolve by each rung, grant scopes.
+    /// End-to-end multi-connection flow over the in-memory backend + resolver + scope grant,
+    /// proving the pieces compose: store two connections, resolve by each rung, grant scopes.
     #[test]
-    fn end_to_end_multi_account_resolution_and_scope_grant() {
+    fn end_to_end_multi_connection_resolution_and_scope_grant() {
         let store = InMemoryStore::new();
         let mail = DriverId::new("mail");
-        let work = CredentialKey::new(mail.clone(), AccountId::new("work").unwrap());
-        let home = CredentialKey::new(mail.clone(), AccountId::new("home").unwrap());
+        let work = CredentialKey::new(mail.clone(), ConnectionId::new("work").unwrap());
+        let home = CredentialKey::new(mail.clone(), ConnectionId::new("home").unwrap());
         store.put(&work, Secret::from("tok-work")).unwrap();
         store.put(&home, Secret::from("tok-home")).unwrap();
 
@@ -166,27 +166,27 @@ mod tests {
 
         // Ambiguous without a selector.
         assert_eq!(
-            resolve(&mail, None, None, &ActiveAccounts::new(), &available)
+            resolve(&mail, None, None, &ActiveConnections::new(), &available)
                 .unwrap_err()
                 .code(),
-            "account_ambiguous"
+            "connection_ambiguous"
         );
 
-        // Flag selects, then fetch that account's secret.
-        let chosen = AccountId::new("work").unwrap();
+        // Flag selects, then fetch that connection's secret.
+        let chosen = ConnectionId::new("work").unwrap();
         let r = resolve(
             &mail,
             Some(&chosen),
             None,
-            &ActiveAccounts::new(),
+            &ActiveConnections::new(),
             &available,
         )
         .unwrap();
-        assert_eq!(r.source, AccountSource::Flag);
-        let key = CredentialKey::new(mail.clone(), r.account);
+        assert_eq!(r.source, ConnectionSource::Flag);
+        let key = CredentialKey::new(mail.clone(), r.connection);
         assert_eq!(store.get(&key).unwrap().expose_str(), Some("tok-work"));
 
-        // Scope grant for the resolved account.
+        // Scope grant for the resolved connection.
         let grant = grant_scopes(
             &["mail.read".to_string()],
             &["mail.read".to_string(), "mail.send".to_string()],
@@ -203,7 +203,7 @@ mod tests {
             std::sync::Arc::new(InMemoryStore::new()),
             std::sync::Arc::new(EnvStore::from_map("QFS_SECRET_", Default::default())),
         ];
-        let key = CredentialKey::new(DriverId::new("mail"), AccountId::new("work").unwrap());
+        let key = CredentialKey::new(DriverId::new("mail"), ConnectionId::new("work").unwrap());
         for h in &handles {
             // A miss is a structured NotFound on every backend.
             assert_eq!(h.get(&key).unwrap_err().code(), "secret_not_found");

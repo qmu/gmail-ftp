@@ -60,7 +60,7 @@ is trusted alone, and every gate defaults to refusal.
 | **`irreversible` flag + `IrreversibleGuard`/`RunMode`** (`qfs-core::security`) | Effect nodes carry `irreversible` (REMOVE/CALL). The guard fails closed in `Ci`/`Server`/`CliOneShot` without an explicit `--commit-irreversible` ack; interactive `Cli` prompts after PREVIEW. | t37 (flag: t35/E2) |
 | **HTTP eval-error hygiene** (`qfs-http::error::eval_detail`) | Caller-facing error bodies render `code` + a generic per-class detail for non-allowlisted classes (Auth/Internal) instead of the raw `ExecError.message` — UNCONDITIONAL hygiene, not driver-dependent. | t37 (carry-over from t32) |
 | **No-plaintext-token-`String` gate** (`qfs-secrets/tests/no_plaintext_token_string.rs`) | A mechanical CI test asserting no credential/plan type holds a secret-shaped `String` field — the type system, not discipline, keeps secrets out. | t37 |
-| **Purity invariant** (`qfs-plan` is I/O-free; a `Plan` embeds only an account *selector*, never a secret) | Nothing reaches I/O before the gates; PREVIEW-as-CI surfaces denials with no live creds. | t01/t10 (mechanically guarded), §3 |
+| **Purity invariant** (`qfs-plan` is I/O-free; a `Plan` embeds only a connection *selector*, never a secret) | Nothing reaches I/O before the gates; PREVIEW-as-CI surfaces denials with no live creds. | t01/t10 (mechanically guarded), §3 |
 
 ## 6. Attack trees (every leaf → control + owning ticket)
 

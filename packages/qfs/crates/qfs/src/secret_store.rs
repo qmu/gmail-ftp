@@ -23,8 +23,8 @@
 use std::sync::Mutex;
 
 use qfs_secrets::{
-    derive_kek, generate_dek, generate_salt, open, seal, unwrap_dek, wrap_dek, AccountId,
-    AccountRecord, CredentialKey, DriverId, Secret, SecretError, Secrets,
+    derive_kek, generate_dek, generate_salt, open, seal, unwrap_dek, wrap_dek, ConnectionId,
+    ConnectionRecord, CredentialKey, DriverId, Secret, SecretError, Secrets,
 };
 use rusqlite::{Connection, OptionalExtension};
 use time::format_description::well_known::Rfc3339;
@@ -105,8 +105,8 @@ impl Secrets for SqliteSecrets {
         let conn = self.lock()?;
         let row: Option<(Vec<u8>, Vec<u8>)> = conn
             .query_row(
-                "SELECT nonce, ciphertext FROM secret_store WHERE driver = ?1 AND account = ?2",
-                rusqlite::params![key.driver.as_str(), key.account.as_str()],
+                "SELECT nonce, ciphertext FROM secret_store WHERE driver = ?1 AND connection = ?2",
+                rusqlite::params![key.driver.as_str(), key.connection.as_str()],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
@@ -128,12 +128,12 @@ impl Secrets for SqliteSecrets {
         let (nonce, ciphertext) = seal(&self.dek, value.expose())
             .map_err(|_| SecretError::Backend("sealing credential".into()))?;
         conn.execute(
-            "INSERT INTO secret_store (driver, account, nonce, ciphertext) VALUES (?1, ?2, ?3, ?4) \
-             ON CONFLICT(driver, account) DO UPDATE SET \
+            "INSERT INTO secret_store (driver, connection, nonce, ciphertext) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(driver, connection) DO UPDATE SET \
                  nonce = excluded.nonce, \
                  ciphertext = excluded.ciphertext, \
                  created_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')",
-            rusqlite::params![key.driver.as_str(), key.account.as_str(), nonce.as_slice(), ciphertext],
+            rusqlite::params![key.driver.as_str(), key.connection.as_str(), nonce.as_slice(), ciphertext],
         )
         .map_err(|e| SecretError::Backend(format!("storing credential: {e}")))?;
         Ok(())
@@ -143,20 +143,20 @@ impl Secrets for SqliteSecrets {
         let conn = self.lock()?;
         // Idempotent: deleting an absent key affects zero rows and is still Ok.
         conn.execute(
-            "DELETE FROM secret_store WHERE driver = ?1 AND account = ?2",
-            rusqlite::params![key.driver.as_str(), key.account.as_str()],
+            "DELETE FROM secret_store WHERE driver = ?1 AND connection = ?2",
+            rusqlite::params![key.driver.as_str(), key.connection.as_str()],
         )
         .map_err(|e| SecretError::Backend(format!("removing credential: {e}")))?;
         Ok(())
     }
 
-    fn list(&self, driver: Option<&DriverId>) -> Result<Vec<AccountRecord>, SecretError> {
+    fn list(&self, driver: Option<&DriverId>) -> Result<Vec<ConnectionRecord>, SecretError> {
         let conn = self.lock()?;
         let mut stmt = conn
             .prepare(
-                "SELECT driver, account, created_at FROM secret_store ORDER BY driver, account",
+                "SELECT driver, connection, created_at FROM secret_store ORDER BY driver, connection",
             )
-            .map_err(|e| SecretError::Backend(format!("listing accounts: {e}")))?;
+            .map_err(|e| SecretError::Backend(format!("listing connections: {e}")))?;
         let rows = stmt
             .query_map([], |r| {
                 Ok((
@@ -165,18 +165,18 @@ impl Secrets for SqliteSecrets {
                     r.get::<_, String>(2)?,
                 ))
             })
-            .map_err(|e| SecretError::Backend(format!("listing accounts: {e}")))?;
+            .map_err(|e| SecretError::Backend(format!("listing connections: {e}")))?;
         let mut out = Vec::new();
         for row in rows {
             let (drv, acct, created) =
-                row.map_err(|e| SecretError::Backend(format!("listing accounts: {e}")))?;
-            // A row whose account name no longer parses is skipped rather than failing the list
+                row.map_err(|e| SecretError::Backend(format!("listing connections: {e}")))?;
+            // A row whose connection name no longer parses is skipped rather than failing the list
             // (mirrors LocalStore::list); the names were validated on `put`, so this is defensive.
-            let Ok(account) = AccountId::new(acct) else {
+            let Ok(connection) = ConnectionId::new(acct) else {
                 continue;
             };
             let created_at = parse_created_at(&created);
-            let rec = AccountRecord::new(DriverId::new(drv), account, created_at);
+            let rec = ConnectionRecord::new(DriverId::new(drv), connection, created_at);
             if driver.is_none_or(|d| &rec.driver == d) {
                 out.push(rec);
             }
@@ -192,27 +192,27 @@ fn parse_created_at(s: &str) -> OffsetDateTime {
     OffsetDateTime::parse(s, &Rfc3339).unwrap_or(OffsetDateTime::UNIX_EPOCH)
 }
 
-/// Set (UPSERT) the active account for `driver` in the `active_account` table — last-writer-wins,
+/// Set (UPSERT) the active connection for `driver` in the `active_account` table — last-writer-wins,
 /// the same semantics as the old `credentials.active` sidecar. Selectors only; no passphrase.
 ///
 /// # Errors
 /// [`SecretError::Backend`] on a DB failure (secret-free message).
-pub fn db_set_active(conn: &Connection, driver: &str, account: &str) -> Result<(), SecretError> {
+pub fn db_set_active(conn: &Connection, driver: &str, connection: &str) -> Result<(), SecretError> {
     conn.execute(
-        "INSERT INTO active_account (driver, account) VALUES (?1, ?2) \
-         ON CONFLICT(driver) DO UPDATE SET account = excluded.account",
-        rusqlite::params![driver, account],
+        "INSERT INTO active_account (driver, connection) VALUES (?1, ?2) \
+         ON CONFLICT(driver) DO UPDATE SET connection = excluded.connection",
+        rusqlite::params![driver, connection],
     )
-    .map_err(|e| SecretError::Backend(format!("setting active account: {e}")))?;
+    .map_err(|e| SecretError::Backend(format!("setting active connection: {e}")))?;
     Ok(())
 }
 
-/// Read the active account for `driver` from the `active_account` table, or `None` if unset /
+/// Read the active connection for `driver` from the `active_account` table, or `None` if unset /
 /// unreadable. Best-effort (selectors only; no passphrase) so the commit resolver can fall back.
 #[must_use]
 pub fn db_get_active(conn: &Connection, driver: &str) -> Option<String> {
     conn.query_row(
-        "SELECT account FROM active_account WHERE driver = ?1",
+        "SELECT connection FROM active_account WHERE driver = ?1",
         rusqlite::params![driver],
         |r| r.get::<_, String>(0),
     )
@@ -233,8 +233,11 @@ mod tests {
             .into_connection()
     }
 
-    fn ckey(driver: &str, account: &str) -> CredentialKey {
-        CredentialKey::new(DriverId::new(driver), AccountId::new(account).unwrap())
+    fn ckey(driver: &str, connection: &str) -> CredentialKey {
+        CredentialKey::new(
+            DriverId::new(driver),
+            ConnectionId::new(connection).unwrap(),
+        )
     }
 
     #[test]
@@ -335,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn active_account_set_get_round_trip() {
+    fn active_connection_set_get_round_trip() {
         let conn = migrated_conn();
         assert!(db_get_active(&conn, "mail").is_none());
         db_set_active(&conn, "mail", "work").unwrap();

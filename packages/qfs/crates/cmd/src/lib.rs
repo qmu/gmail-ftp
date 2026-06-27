@@ -61,26 +61,26 @@ pub type DescribeProvider<'a> = dyn Fn() -> qfs_core::MountRegistry + 'a;
 /// edge adds zero transitive runtime weight. The argument is `include_examples`.
 pub type SkillProvider<'a> = dyn Fn(bool) -> String + 'a;
 
-/// A parsed `qfs account <verb>` request, handed to the binary-injected [`AccountLauncher`]. The
+/// A parsed `qfs connection <verb>` request, handed to the binary-injected [`ConnectionLauncher`]. The
 /// credential value itself is **never** carried here (it would leak into argv / history / `ps`);
-/// the launcher reads it from stdin/prompt. Driver + account selectors are safe metadata.
+/// the launcher reads it from stdin/prompt. Driver + connection selectors are safe metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AccountAction {
-    /// `account add <driver> <account>` — store (or replace) a credential.
-    Add { driver: String, account: String },
-    /// `account list [driver]` — list configured accounts (metadata only).
+pub enum ConnectionAction {
+    /// `connection add <driver> <connection>` — store (or replace) a credential.
+    Add { driver: String, connection: String },
+    /// `connection list [driver]` — list configured connections (metadata only).
     List { driver: Option<String> },
-    /// `account use <driver> <account>` — set the persistent active account.
-    Use { driver: String, account: String },
-    /// `account remove <driver> <account>` — delete (idempotent).
-    Remove { driver: String, account: String },
+    /// `connection use <driver> <connection>` — set the persistent active connection.
+    Use { driver: String, connection: String },
+    /// `connection remove <driver> <connection>` — delete (idempotent).
+    Remove { driver: String, connection: String },
 }
 
-/// The injected **account launcher**: the binary supplies the credential-store I/O (it depends on
+/// The injected **connection launcher**: the binary supplies the credential-store I/O (it depends on
 /// `qfs-secrets`'s encrypted `LocalStore`, which `qfs-cmd` may not — the dep_direction guard keeps
 /// `qfs-cmd` off the concrete backends). `qfs-cmd` only parses the verb and calls this, exactly
 /// like the shell / serve / describe launchers. Returns the process exit code.
-pub type AccountLauncher<'a> = dyn Fn(&AccountAction) -> i32 + 'a;
+pub type ConnectionLauncher<'a> = dyn Fn(&ConnectionAction) -> i32 + 'a;
 
 /// The injected **run-context provider**: the binary supplies the `(Engine, ReadRegistry)` for
 /// `qfs run` — the [`Engine`] whose mount registry has the real drivers (so a `FROM …` source
@@ -169,46 +169,46 @@ enum Command {
         /// Path to the `.qfs` server config.
         config: PathBuf,
     },
-    /// Manage stored credentials per driver/account (t27, RFD-0001 §10). The account
+    /// Manage stored credentials per driver/connection (t27, RFD-0001 §10). The connection
     /// *name* is metadata (safe to print); the credential itself is never echoed.
-    Account {
+    Connection {
         #[command(subcommand)]
-        verb: AccountVerb,
+        verb: ConnectionVerb,
     },
     // The absence of a subcommand starts the interactive shell (handled in `run`).
 }
 
-/// `qfs account <verb>` — the credential-store management verbs (t27). Each maps onto a
+/// `qfs connection <verb>` — the credential-store management verbs (t27). Each maps onto a
 /// [`qfs_core::Secrets`] backend + the resolution model; the credential value is read
 /// from a prompt / stdin (never an argv, which would leak into shell history and `ps`).
 #[derive(Subcommand, Debug)]
-enum AccountVerb {
-    /// Add (or replace) the credential for a driver's named account.
+enum ConnectionVerb {
+    /// Add (or replace) the credential for a driver's named connection.
     Add {
-        /// The driver this account belongs to, e.g. `mail`, `s3`.
+        /// The driver this connection belongs to, e.g. `mail`, `s3`.
         driver: String,
-        /// The account name, e.g. `work`, `personal`.
-        account: String,
+        /// The connection name, e.g. `work`, `personal`.
+        connection: String,
     },
-    /// List configured accounts (optionally for one driver). Prints selectors + metadata
+    /// List configured connections (optionally for one driver). Prints selectors + metadata
     /// only — never a credential.
     List {
         /// Restrict the listing to one driver.
         driver: Option<String>,
     },
-    /// Set the persistent active account for a driver (`account use`).
+    /// Set the persistent active connection for a driver (`connection use`).
     Use {
-        /// The driver to set the active account for.
+        /// The driver to set the active connection for.
         driver: String,
-        /// The account to make active.
-        account: String,
+        /// The connection to make active.
+        connection: String,
     },
-    /// Remove the credential for a driver's named account (idempotent).
+    /// Remove the credential for a driver's named connection (idempotent).
     Remove {
         /// The driver.
         driver: String,
-        /// The account to remove.
-        account: String,
+        /// The connection to remove.
+        connection: String,
     },
 }
 
@@ -221,7 +221,7 @@ enum AccountVerb {
 /// process exit code; the binary forwards it to `std::process::exit`.
 #[must_use]
 // The binary's single composition-root entrypoint: each argument is a distinct injected seam
-// (shell / serve / describe / skill / account / commit-applier / run-context) the leaf binary
+// (shell / serve / describe / skill / connection / commit-applier / run-context) the leaf binary
 // supplies so qfs-cmd stays off the concrete driver/runtime/secrets crates. The count is the
 // surface of that injection, not incidental coupling.
 #[allow(clippy::too_many_arguments)]
@@ -231,7 +231,7 @@ pub fn run<I, T>(
     serve: &ServeLauncher,
     describe: &DescribeProvider,
     skill: &SkillProvider,
-    account: &AccountLauncher,
+    connection: &ConnectionLauncher,
     apply: &qfs_exec::WorldApply,
     run_ctx: &RunContextProvider,
 ) -> i32
@@ -331,11 +331,11 @@ where
             tracing::debug!(target: "qfs::cmd", "dispatch serve via launcher");
             return serve(&config);
         }
-        // `account` is dispatched through the injected launcher (the binary owns the encrypted
+        // `connection` is dispatched through the injected launcher (the binary owns the encrypted
         // credential store; qfs-cmd stays off the concrete backend). Returns the exit code directly.
-        Some(Command::Account { verb }) => {
-            tracing::debug!(target: "qfs::cmd", "dispatch account via launcher");
-            return account(&account_action(&verb));
+        Some(Command::Connection { verb }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch connection via launcher");
+            return connection(&connection_action(&verb));
         }
     };
 
@@ -522,25 +522,25 @@ fn read_stdin() -> String {
     buf
 }
 
-/// Map the clap-parsed [`AccountVerb`] to the public [`AccountAction`] handed to the injected
-/// [`AccountLauncher`]. Pure (selectors only); the credential value is never carried — the
+/// Map the clap-parsed [`ConnectionVerb`] to the public [`ConnectionAction`] handed to the injected
+/// [`ConnectionLauncher`]. Pure (selectors only); the credential value is never carried — the
 /// launcher reads it from stdin/prompt, never from argv (which would leak into history / `ps`).
-fn account_action(verb: &AccountVerb) -> AccountAction {
+fn connection_action(verb: &ConnectionVerb) -> ConnectionAction {
     match verb {
-        AccountVerb::Add { driver, account } => AccountAction::Add {
+        ConnectionVerb::Add { driver, connection } => ConnectionAction::Add {
             driver: driver.clone(),
-            account: account.clone(),
+            connection: connection.clone(),
         },
-        AccountVerb::List { driver } => AccountAction::List {
+        ConnectionVerb::List { driver } => ConnectionAction::List {
             driver: driver.clone(),
         },
-        AccountVerb::Use { driver, account } => AccountAction::Use {
+        ConnectionVerb::Use { driver, connection } => ConnectionAction::Use {
             driver: driver.clone(),
-            account: account.clone(),
+            connection: connection.clone(),
         },
-        AccountVerb::Remove { driver, account } => AccountAction::Remove {
+        ConnectionVerb::Remove { driver, connection } => ConnectionAction::Remove {
             driver: driver.clone(),
-            account: account.clone(),
+            connection: connection.clone(),
         },
     }
 }
@@ -667,9 +667,9 @@ mod tests {
         }
     }
 
-    /// A stub account launcher returning a sentinel exit code, so a test can assert the `account`
+    /// A stub connection launcher returning a sentinel exit code, so a test can assert the `connection`
     /// arm dispatched into the injected launcher (the real store I/O lives in the binary crate).
-    fn stub_account(_action: &AccountAction) -> i32 {
+    fn stub_connection(_action: &ConnectionAction) -> i32 {
         7
     }
 
@@ -685,8 +685,8 @@ mod tests {
         (Engine::new(), qfs_exec::ReadRegistry::new())
     }
 
-    /// Run with the no-op shell + serve launchers + empty describe + stub skill + stub account
-    /// providers (every non-shell/serve/describe/skill/account test path ignores them).
+    /// Run with the no-op shell + serve launchers + empty describe + stub skill + stub connection
+    /// providers (every non-shell/serve/describe/skill/connection test path ignores them).
     fn run_t<I, T>(args: I) -> i32
     where
         I: IntoIterator<Item = T>,
@@ -698,7 +698,7 @@ mod tests {
             &|_cfg| 0,
             &empty_describe,
             &stub_skill,
-            &stub_account,
+            &stub_connection,
             &noop_apply,
             &stub_run_ctx,
         )
@@ -739,7 +739,7 @@ mod tests {
             &|_cfg| 0,
             &empty_describe,
             &stub_skill,
-            &stub_account,
+            &stub_connection,
             &noop_apply,
             &stub_run_ctx,
         );
@@ -787,7 +787,7 @@ mod tests {
             },
             &empty_describe,
             &stub_skill,
-            &stub_account,
+            &stub_connection,
             &noop_apply,
             &stub_run_ctx,
         );
@@ -799,50 +799,50 @@ mod tests {
     }
 
     #[test]
-    fn account_verbs_map_to_the_public_action() {
+    fn connection_verbs_map_to_the_public_action() {
         // The clap verb maps 1:1 to the injected-launcher action (selectors only, no secret).
         assert_eq!(
-            account_action(&AccountVerb::Add {
+            connection_action(&ConnectionVerb::Add {
                 driver: "mail".into(),
-                account: "work".into()
+                connection: "work".into()
             }),
-            AccountAction::Add {
+            ConnectionAction::Add {
                 driver: "mail".into(),
-                account: "work".into()
+                connection: "work".into()
             }
         );
         assert_eq!(
-            account_action(&AccountVerb::List { driver: None }),
-            AccountAction::List { driver: None }
+            connection_action(&ConnectionVerb::List { driver: None }),
+            ConnectionAction::List { driver: None }
         );
         assert_eq!(
-            account_action(&AccountVerb::Use {
+            connection_action(&ConnectionVerb::Use {
                 driver: "s3".into(),
-                account: "prod".into()
+                connection: "prod".into()
             }),
-            AccountAction::Use {
+            ConnectionAction::Use {
                 driver: "s3".into(),
-                account: "prod".into()
+                connection: "prod".into()
             }
         );
         assert_eq!(
-            account_action(&AccountVerb::Remove {
+            connection_action(&ConnectionVerb::Remove {
                 driver: "mail".into(),
-                account: "work".into()
+                connection: "work".into()
             }),
-            AccountAction::Remove {
+            ConnectionAction::Remove {
                 driver: "mail".into(),
-                account: "work".into()
+                connection: "work".into()
             }
         );
     }
 
     #[test]
-    fn account_subcommand_parses_and_dispatches_to_the_launcher() {
-        // `qfs account …` parses cleanly and routes into the injected account launcher (the stub
+    fn connection_subcommand_parses_and_dispatches_to_the_launcher() {
+        // `qfs connection …` parses cleanly and routes into the injected connection launcher (the stub
         // returns the sentinel 7). The real encrypted-store I/O lives in the binary crate.
-        assert_eq!(run_t(["qfs", "account", "list"]), 7);
-        assert_eq!(run_t(["qfs", "account", "add", "mail", "work"]), 7);
+        assert_eq!(run_t(["qfs", "connection", "list"]), 7);
+        assert_eq!(run_t(["qfs", "connection", "add", "mail", "work"]), 7);
     }
 
     #[test]
@@ -868,7 +868,7 @@ mod tests {
                 &|_| 0,
                 &empty_describe,
                 &provider,
-                &stub_account,
+                &stub_connection,
                 &noop_apply,
                 &stub_run_ctx
             ),
@@ -882,7 +882,7 @@ mod tests {
                 &|_| 0,
                 &empty_describe,
                 &provider,
-                &stub_account,
+                &stub_connection,
                 &noop_apply,
                 &stub_run_ctx
             ),

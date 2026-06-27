@@ -145,7 +145,7 @@ FROM /local/config.json
 ## Credentials, briefly
 
 `describe` and `preview` never need a credential. To **commit** against a live service you store one
-once with `qfs account add <service> <name>` — and qfs never prints it back. See
-[Accounts & credentials](/guide/accounts).
+once with `qfs connection add <service> <name>` — and qfs never prints it back. See
+[Connections & credentials](/guide/connections).
 
 **Next:** put it all together in [the Cookbook →](/cookbook/)

@@ -519,8 +519,8 @@ fn no_secret_appears_in_any_error_or_dto_surface() {
 fn email_account_key_encoding_round_trips_and_is_distinct() {
     for email in ["alice@example.com", "a.b+tag@sub.example.co.jp", "x@y"] {
         let key = refresh_token_key(email).unwrap();
-        // The stored AccountId is t27-valid (no '@', '/', whitespace).
-        let acct = key.account.as_str();
+        // The stored ConnectionId is t27-valid (no '@', '/', whitespace).
+        let acct = key.connection.as_str();
         assert!(!acct.contains('@'));
         assert!(!acct.contains('/'));
         assert!(!acct.chars().any(char::is_whitespace));
@@ -529,8 +529,8 @@ fn email_account_key_encoding_round_trips_and_is_distinct() {
     }
     // Distinct emails -> distinct keys (no collision).
     assert_ne!(
-        refresh_token_key("a@b.com").unwrap().account,
-        refresh_token_key("a%40b.com").unwrap().account
+        refresh_token_key("a@b.com").unwrap().connection,
+        refresh_token_key("a%40b.com").unwrap().connection
     );
     // Empty email is rejected, not silently keyed.
     assert_eq!(refresh_token_key("").unwrap_err().code(), "auth_invalid");

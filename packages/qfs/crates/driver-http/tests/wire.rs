@@ -22,7 +22,7 @@ use qfs_driver_http::{
 use qfs_plan::{DriverId, EffectKind, EffectNode, NodeId, PlanBuilder, Target, VfsPath};
 use qfs_runtime::{CapabilitySet, DriverRegistry, Interpreter};
 use qfs_secrets::{
-    AccountId, CredentialKey, DriverId as SecDriverId, InMemoryStore, Secret, Secrets,
+    ConnectionId, CredentialKey, DriverId as SecDriverId, InMemoryStore, Secret, Secrets,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -74,7 +74,7 @@ async fn select_over_real_reqwest_against_loopback_decodes_rows_and_injects_auth
     let store = InMemoryStore::new();
     store
         .put(
-            &CredentialKey::new(SecDriverId::new("api"), AccountId::new("work").unwrap()),
+            &CredentialKey::new(SecDriverId::new("api"), ConnectionId::new("work").unwrap()),
             Secret::from(TOKEN),
         )
         .unwrap();

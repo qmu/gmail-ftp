@@ -339,7 +339,7 @@ FROM /sys/audit
 FROM /sys/connections
 |> WHERE status IN ('error', 'expired')
      OR last_sync_at < '2026-06-01'
-|> SELECT driver, account, status, last_sync_at
+|> SELECT driver, connection, status, last_sync_at
 |> ORDER BY last_sync_at ASC
 ```
 
@@ -3470,7 +3470,7 @@ FROM /sys/connections
 |> SELECT service, name, scopes
 ```
 
-**"Show me the GitHub and Slack accounts this agent is allowed to act as."**
+**"Show me the GitHub and Slack connections this agent is allowed to act as."**
 
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M2; features=FROM,WHERE,SELECT,IN,ORDER BY

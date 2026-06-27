@@ -111,11 +111,11 @@ qfs describe /mail/drafts --json | jq .verbs
 once:
 
 ```sh
-qfs account add mail work        # prompts for the credential; it's never printed back
-qfs account list                 # shows account names only, never secrets
+qfs connection add mail work     # prompts for the credential; it's never printed back
+qfs connection list              # shows connection names only, never secrets
 ```
 
-See [Accounts & credentials](/guide/accounts) for details.
+See [Connections & credentials](/guide/connections) for details.
 
 ## Where to go next
 

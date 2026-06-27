@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use qfs_secrets::{AccountId, CredentialKey, DriverId, Secret, Secrets};
+use qfs_secrets::{ConnectionId, CredentialKey, DriverId, Secret, Secrets};
 use qfs_types::Row;
 
 use crate::error::SqlError;
@@ -31,7 +31,7 @@ use qfs_sql_core::{Catalog, Dialect, DmlOp, Param, SelectPlan};
 /// - [`SqlError::Credential`] if the secret is missing/locked/unreadable.
 /// - [`SqlError::UnknownScheme`] if the URI scheme is not a recognised dialect.
 pub fn resolve_dialect(secrets: &dyn Secrets, conn: &str) -> Result<(Dialect, Secret), SqlError> {
-    let account = AccountId::new(conn).map_err(|_| SqlError::UnknownConnection {
+    let account = ConnectionId::new(conn).map_err(|_| SqlError::UnknownConnection {
         conn: conn.to_string(),
     })?;
     let key = CredentialKey::new(DriverId::new("sql"), account);

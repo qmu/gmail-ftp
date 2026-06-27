@@ -535,7 +535,7 @@ fn runtime_is_confined_to_plan_and_types() {
 
 #[test]
 fn secrets_is_confined_to_types_and_core_consumes_it() {
-    // t27: qfs-secrets is the credential / secret store + multi-account resolution
+    // t27: qfs-secrets is the credential / secret store + multi-connection resolution
     // (RFD §10). It is consumer-side, owned-DTO only, and reuses the canonical
     // `qfs_types::DriverId` — so among workspace crates it depends ONLY on qfs-types
     // (a leaf), keeping the spine acyclic (qfs-secrets → qfs-types). qfs-core consumes

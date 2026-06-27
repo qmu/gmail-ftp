@@ -1,5 +1,5 @@
-//! The `qfs account` composition root: the real credential-store I/O that backs
-//! `qfs account add/list/use/remove`, injected into `qfs-cmd` as the [`qfs_cmd::AccountLauncher`].
+//! The `qfs connection` composition root: the real credential-store I/O that backs
+//! `qfs connection add/list/use/remove`, injected into `qfs-cmd` as the [`qfs_cmd::ConnectionLauncher`].
 //!
 //! `qfs-cmd` may not depend on the concrete `qfs-secrets` backend (the dep_direction guard), so —
 //! exactly like the shell / serve / describe launchers — the binary owns this and `qfs-cmd` only
@@ -11,21 +11,21 @@
 //! - Credentials live in the envelope-encrypted SQLite **Project DB** ([`crate::secret_store`]):
 //!   a random data-key (DEK) encrypts each secret value (ChaCha20-Poly1305), and the DEK is wrapped
 //!   under a key derived from the `QFS_PASSPHRASE` env var (argon2id) — the t43 replacement for the
-//!   old file vault. The active-account selection lives in the DB's `active_account` table (no
+//!   old file vault. The active-connection selection lives in the DB's `active_account` table (no
 //!   passphrase needed — selectors only). Secrets are never printed, logged, or echoed.
 
 use std::io::Read;
 
-use qfs_cmd::AccountAction;
-use qfs_secrets::{AccountId, CredentialKey, DriverId, Secret, Secrets};
+use qfs_cmd::ConnectionAction;
+use qfs_secrets::{ConnectionId, CredentialKey, DriverId, Secret, Secrets};
 use rusqlite::Connection;
 
 use crate::secret_store::{self, SqliteSecrets};
 
-/// The injected account launcher. Returns the process exit code (`0` ok, `1` on a structured,
+/// The injected connection launcher. Returns the process exit code (`0` ok, `1` on a structured,
 /// secret-free error). Never panics.
 #[must_use]
-pub fn run_account(action: &AccountAction) -> i32 {
+pub fn run_connection(action: &ConnectionAction) -> i32 {
     match run_inner(action) {
         Ok(msg) => {
             eprintln!("qfs: {msg}");
@@ -63,7 +63,7 @@ fn open_store() -> Result<SqliteSecrets, String> {
 }
 
 /// Open the credential store for the **commit resolver** (read path): the same envelope-encrypted
-/// SQLite store `account add` writes to, when `QFS_PASSPHRASE` + the Project DB are both available.
+/// SQLite store `connection add` writes to, when `QFS_PASSPHRASE` + the Project DB are both available.
 /// Returns `None` (best-effort, never an error) when the store cannot be unlocked — the commit
 /// registry then falls back to the env-var store, and a missing credential surfaces lazily as a
 /// clear per-leg auth error rather than a panic. Never logs the passphrase.
@@ -72,26 +72,27 @@ pub fn open_store_for_commit() -> Option<SqliteSecrets> {
     open_store().ok()
 }
 
-/// The persisted active account name for `driver`, read from the Project DB's `active_account` table
-/// (selectors only — no secret, so no passphrase is needed to read it). This is the same selection
-/// `qfs account use <driver> <account>` writes; the commit resolver consumes it to pick which
-/// credential to apply with. Returns `None` when unset/unreadable.
+/// The persisted active connection name for `driver`, read from the Project DB's `active_account`
+/// table (selectors only — no secret, so no passphrase is needed to read it). This is the same
+/// selection `qfs connection use <driver> <connection>` writes; the commit resolver consumes it to
+/// pick which credential to apply with. Returns `None` when unset/unreadable.
 #[must_use]
-pub fn active_account(driver: &str) -> Option<String> {
+pub fn active_connection(driver: &str) -> Option<String> {
     let conn = open_project_conn().ok()?;
     secret_store::db_get_active(&conn, driver)
 }
 
-fn cred_key(driver: &str, account: &str) -> Result<CredentialKey, String> {
-    let acct = AccountId::new(account).map_err(|e| format!("invalid account name: {e:?}"))?;
-    Ok(CredentialKey::new(DriverId(driver.to_string()), acct))
+fn cred_key(driver: &str, connection: &str) -> Result<CredentialKey, String> {
+    let conn_id =
+        ConnectionId::new(connection).map_err(|e| format!("invalid connection name: {e:?}"))?;
+    Ok(CredentialKey::new(DriverId(driver.to_string()), conn_id))
 }
 
-fn run_inner(action: &AccountAction) -> Result<String, String> {
+fn run_inner(action: &ConnectionAction) -> Result<String, String> {
     match action {
-        AccountAction::Add { driver, account } => {
+        ConnectionAction::Add { driver, connection } => {
             let store = open_store()?;
-            let key = cred_key(driver, account)?;
+            let key = cred_key(driver, connection)?;
             // The credential value comes from stdin — never argv.
             let mut buf = String::new();
             std::io::stdin()
@@ -100,47 +101,49 @@ fn run_inner(action: &AccountAction) -> Result<String, String> {
             let value = buf.trim_end_matches(['\n', '\r']).to_string();
             if value.is_empty() {
                 return Err(
-                    "no secret on stdin — pipe it, e.g. `printf %s \"$TOKEN\" | qfs account add mail work`"
+                    "no secret on stdin — pipe it, e.g. `printf %s \"$TOKEN\" | qfs connection add mail work`"
                         .into(),
                 );
             }
             store
                 .put(&key, Secret::from(value))
                 .map_err(|e| format!("storing the credential: {e}"))?;
-            Ok(format!("stored credential for {driver}/{account}"))
+            Ok(format!("stored credential for {driver}/{connection}"))
         }
-        AccountAction::List { driver } => {
+        ConnectionAction::List { driver } => {
             let store = open_store()?;
             let filter = driver.as_ref().map(|d| DriverId(d.clone()));
             let recs = store
                 .list(filter.as_ref())
-                .map_err(|e| format!("listing accounts: {e}"))?;
+                .map_err(|e| format!("listing connections: {e}"))?;
             if recs.is_empty() {
-                return Ok("no accounts configured".into());
+                return Ok("no connections configured".into());
             }
             // Selectors + metadata only — never a credential.
             for r in &recs {
-                println!("{}/{}\t{}", r.driver.0, r.account, r.created_at);
+                println!("{}/{}\t{}", r.driver.0, r.connection, r.created_at);
             }
-            Ok(format!("{} account(s)", recs.len()))
+            Ok(format!("{} connection(s)", recs.len()))
         }
-        AccountAction::Remove { driver, account } => {
+        ConnectionAction::Remove { driver, connection } => {
             let store = open_store()?;
-            let key = cred_key(driver, account)?;
+            let key = cred_key(driver, connection)?;
             store
                 .remove(&key)
                 .map_err(|e| format!("removing the credential: {e}"))?;
-            Ok(format!("removed {driver}/{account} (idempotent)"))
+            Ok(format!("removed {driver}/{connection} (idempotent)"))
         }
-        AccountAction::Use { driver, account } => {
+        ConnectionAction::Use { driver, connection } => {
             // Validate the names, then persist the active selection into the Project DB's
             // `active_account` table (selectors only — no passphrase needed). The commit resolver
-            // reads it back via `active_account()`.
-            let _ = cred_key(driver, account)?;
+            // reads it back via `active_connection()`.
+            let _ = cred_key(driver, connection)?;
             let conn = open_project_conn()?;
-            secret_store::db_set_active(&conn, driver, account)
-                .map_err(|e| format!("setting the active account: {e}"))?;
-            Ok(format!("active account for {driver} set to {account}"))
+            secret_store::db_set_active(&conn, driver, connection)
+                .map_err(|e| format!("setting the active connection: {e}"))?;
+            Ok(format!(
+                "active connection for {driver} set to {connection}"
+            ))
         }
     }
 }
@@ -150,14 +153,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cred_key_rejects_an_invalid_account_name() {
+    fn cred_key_rejects_an_invalid_connection_name() {
         assert!(cred_key("mail", "").is_err());
         let k = cred_key("mail", "work").expect("valid");
         assert_eq!(k.driver.0, "mail");
-        assert_eq!(k.account.as_str(), "work");
+        assert_eq!(k.connection.as_str(), "work");
     }
 
-    /// The active-account selection now round-trips through the Project DB's `active_account`
+    /// The active-connection selection now round-trips through the Project DB's `active_account`
     /// table (replacing the old `.active` sidecar): `use` UPSERTs, the resolver reads back, and
     /// per-driver rows stay independent (last-writer-wins). Exercised over the same DB seam the
     /// binary uses (`db_set_active` / `db_get_active`).
@@ -172,7 +175,7 @@ mod tests {
         assert!(secret_store::db_get_active(&conn, "mail").is_none());
         secret_store::db_set_active(&conn, "mail", "work").unwrap();
         secret_store::db_set_active(&conn, "s3", "prod").unwrap();
-        // Replacing mail's account must NOT affect s3 and must not duplicate the row.
+        // Replacing mail's connection must NOT affect s3 and must not duplicate the row.
         secret_store::db_set_active(&conn, "mail", "personal").unwrap();
 
         assert_eq!(

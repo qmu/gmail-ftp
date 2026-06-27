@@ -11,7 +11,7 @@
 //! binary is that leaf, so it builds the wired shell and injects it into `qfs-cmd` via the
 //! [`qfs_cmd::ShellLauncher`]. The shell LOGIC itself lives in `qfs-exec`; this only wires it.
 
-use qfs::{account, commit, describe, serve, shell, store, version};
+use qfs::{commit, connection, describe, serve, shell, store, version};
 
 fn main() {
     // t40: the binary owns the build metadata (semver + git sha + target triple baked in by
@@ -50,11 +50,11 @@ fn main() {
         // `qfs_skill::render(..)` — this NORMAL `qfs → qfs-skill` edge is what makes SKILL.md ship in
         // the artifact and be discoverable from the running binary.
         &qfs_skill::render,
-        // `qfs account add/list/use/remove`: the real credential-store I/O, injected here (the
+        // `qfs connection add/list/use/remove`: the real credential-store I/O, injected here (the
         // binary owns the envelope-encrypted SQLite store over the Project DB — t43; qfs-cmd stays
         // off the concrete backend). The secret is read from stdin, never argv; each value is
         // AEAD-sealed under a data-key wrapped by the `QFS_PASSPHRASE`-derived key.
-        &account::run_account,
+        &connection::run_connection,
         // The REAL `qfs run --commit` apply path: drives the qfs-runtime interpreter over the live
         // driver registry (local-fs today). qfs-cmd/qfs-exec stay off qfs-runtime; this is the leaf.
         &commit::apply_plan,

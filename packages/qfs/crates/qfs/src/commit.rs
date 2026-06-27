@@ -5,7 +5,7 @@
 //! `qfs-cmd` and `qfs-exec` are deliberately confined off `qfs-runtime` (the interpreter is the
 //! sole impure stage). The terminal binary is the allowlisted runtime leaf that owns the
 //! interpreter + the live drivers, so the real commit composition lives here — exactly like the
-//! shell / serve / account launchers.
+//! shell / serve / connection launchers.
 //!
 //! Today the registry carries the **local filesystem** driver (no credentials needed), which
 //! proves the commit path is real end to end: `qfs run "UPSERT INTO /local/… " --commit` actually
@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use qfs_exec::{ErrorKind, ExecError};
 use qfs_runtime::{CapabilitySet, DriverRegistry, Interpreter, LegStatus};
-use qfs_secrets::{AccountId, CredentialKey, EnvStore, Secrets};
+use qfs_secrets::{ConnectionId, CredentialKey, EnvStore, Secrets};
 use qfs_types::DriverId;
 
 /// Apply `plan` to the World via the runtime interpreter. Returns `Ok(())` once every leg applied,
@@ -140,23 +140,24 @@ fn live_registry() -> DriverRegistry {
 }
 
 /// Resolve the `(store, credential key)` a networked driver applies with. Reads the **same**
-/// credential `qfs account add <driver> <name>` wrote: the envelope-encrypted SQLite store
+/// credential `qfs connection add <driver> <name>` wrote: the envelope-encrypted SQLite store
 /// ([`crate::secret_store::SqliteSecrets`]) when `QFS_PASSPHRASE` + the Project DB exist, else the
-/// process-env store (`QFS_SECRET_*`, the agent / CI path). The account is the one `qfs account use
+/// process-env store (`QFS_SECRET_*`, the agent / CI path). The connection is the one `qfs connection use
 /// <driver> <name>` selected (the Project DB's `active_account` table), defaulting to `default`. The
 /// secret is **not** read here — the client reads it lazily at request-build time, so a
 /// missing/locked credential becomes a clear per-leg auth error at commit, never a panic at registry
-/// build. Returns `None` only if the account id cannot be constructed (impossible for the literal
+/// build. Returns `None` only if the connection id cannot be constructed (impossible for the literal
 /// `default` fallback) — in which case the driver is simply left unregistered rather than panicking.
 fn networked_credential(driver: &str) -> Option<(Arc<dyn Secrets>, CredentialKey)> {
-    let store: Arc<dyn Secrets> = match crate::account::open_store_for_commit() {
+    let store: Arc<dyn Secrets> = match crate::connection::open_store_for_commit() {
         Some(sqlite) => Arc::new(sqlite),
         None => Arc::new(EnvStore::from_process_env()),
     };
-    let account = crate::account::active_account(driver).unwrap_or_else(|| "default".to_string());
-    // `default` is always a valid account name; an invalid persisted selection falls back to it.
-    let acct = AccountId::new(&account)
-        .or_else(|_| AccountId::new("default"))
+    let connection =
+        crate::connection::active_connection(driver).unwrap_or_else(|| "default".to_string());
+    // `default` is always a valid connection name; an invalid persisted selection falls back to it.
+    let acct = ConnectionId::new(&connection)
+        .or_else(|_| ConnectionId::new("default"))
         .ok()?;
     let cred = CredentialKey::new(qfs_secrets::DriverId(driver.to_string()), acct);
     Some((store, cred))

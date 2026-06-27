@@ -19,10 +19,10 @@ Welcome to the qfs docs. Here's the map.
 
 ## Use it
 
-- **[CLI reference](/guide/cli)** — every command and flag (`run`, `describe`, `account`, `skill`,
+- **[CLI reference](/guide/cli)** — every command and flag (`run`, `describe`, `connection`, `skill`,
   `serve`).
 - **[Interactive shell](/guide/shell)** — explore your services like a filesystem.
-- **[Accounts & credentials](/guide/accounts)** — store credentials safely and scope access.
+- **[Connections & credentials](/guide/connections)** — store credentials safely and scope access.
 
 ## Reference
 

@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use qfs_secrets::{AccountId, CredentialKey, DriverId, Secret, Secrets};
+use qfs_secrets::{ConnectionId, CredentialKey, DriverId, Secret, Secrets};
 
 use crate::error::AuthError;
 use crate::oauth::OAuthClient;
@@ -28,7 +28,7 @@ use crate::token::{AccessToken, Clock, SystemClock};
 /// account namespace — a single consent serves them all.
 pub const GOOGLE_DRIVER_ID: &str = "google";
 
-/// Encode a Google profile **email** into a t27-valid [`AccountId`]. The t27 [`AccountId`]
+/// Encode a Google profile **email** into a t27-valid [`ConnectionId`]. The t27 [`ConnectionId`]
 /// deliberately forbids `@`, `/`, and whitespace (they collide with the `@account` selector and
 /// the `driver/account` store-key encoding), but a Google account *is* an email containing `@`.
 /// We percent-style escape exactly those three classes — using `%` (an allowed char) as the
@@ -77,7 +77,7 @@ pub fn decode_account_email(encoded: &str) -> String {
 }
 
 /// The `(google, <encoded-email>)` [`CredentialKey`] used for storage/retrieval. The account
-/// email is encoded into a t27-valid [`AccountId`] (see [`encode_account_email`]); the stored
+/// email is encoded into a t27-valid [`ConnectionId`] (see [`encode_account_email`]); the stored
 /// *value* is the refresh token.
 ///
 /// # Errors
@@ -90,7 +90,7 @@ pub fn refresh_token_key(email: &str) -> Result<CredentialKey, AuthError> {
         });
     }
     let encoded = encode_account_email(email);
-    let account = AccountId::new(encoded).map_err(|e| AuthError::Invalid {
+    let account = ConnectionId::new(encoded).map_err(|e| AuthError::Invalid {
         reason: format!("account email could not be encoded to an account id: {e}"),
     })?;
     Ok(CredentialKey::new(DriverId::new(GOOGLE_DRIVER_ID), account))

@@ -715,7 +715,7 @@ fn quiet_suppresses_progress_but_not_the_error_body() {
 fn top_level_help_is_stable_and_exit_zero() {
     let o = qfs(&["--help"]);
     assert_eq!(o.code, 0, "--help exits 0");
-    for needle in ["Usage: qfs", "run", "serve", "account", "--json"] {
+    for needle in ["Usage: qfs", "run", "serve", "connection", "--json"] {
         assert!(
             o.stdout.contains(needle),
             "`qfs --help` lost `{needle}`:\n{}",
@@ -792,13 +792,13 @@ fn error_dto_is_whitelisted_fields_only_no_secret_leak() {
 }
 
 #[test]
-fn account_stub_prints_no_credential_material() {
-    // `account list` is an E0 stub, but it must never echo a credential. Plant a canary in the
-    // env the child inherits and confirm neither stream reflects it (the account name is safe
+fn connection_stub_prints_no_credential_material() {
+    // `connection list` is an E0 stub, but it must never echo a credential. Plant a canary in the
+    // env the child inherits and confirm neither stream reflects it (the connection name is safe
     // metadata; the credential value is not).
     const CANARY: &str = "CANARY-SECRET-acct-do-not-leak";
     let child = Command::new(qfs_bin())
-        .args(["--json", "account", "list"])
+        .args(["--json", "connection", "list"])
         .env("RUST_LOG", "off")
         .env("QFS_FAKE_TOKEN", CANARY)
         .stdin(Stdio::null())
@@ -811,7 +811,7 @@ fn account_stub_prints_no_credential_material() {
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     assert!(
         !blob.contains(CANARY),
-        "account stub leaked the planted credential value: {blob}"
+        "connection stub leaked the planted credential value: {blob}"
     );
 }
 

@@ -1,4 +1,4 @@
-# Accounts & credentials
+# Connections & credentials
 
 You don't need any credential to **describe** a path or **preview** a query — both are completely
 offline. You only need one to **commit** against a live service.
@@ -6,42 +6,42 @@ offline. You only need one to **commit** against a live service.
 ## Storing a credential
 
 ```sh
-qfs account add <service> <name>
+qfs connection add <service> <name>
 ```
 
-- `<service>` is the driver the account belongs to — `mail`, `s3`, `github`, `slack`, `sql`, …
+- `<service>` is the driver the connection belongs to — `mail`, `s3`, `github`, `slack`, `sql`, …
 - `<name>` is your label for it — `work`, `personal`, `prod`, …
 
-qfs stores the secret securely and **never prints it back**. The account *name* is just metadata
+qfs stores the secret securely and **never prints it back**. The connection *name* is just metadata
 (safe to show); the credential itself is write-only from your shell's perspective.
 
 ```sh
-qfs account add mail work
-qfs account add s3 prod
-qfs account add github personal
+qfs connection add mail work
+qfs connection add s3 prod
+qfs connection add github personal
 ```
 
-## Listing accounts
+## Listing connections
 
 ```sh
-qfs account list            # all services
-qfs account list mail       # just one service
+qfs connection list            # all services
+qfs connection list mail       # just one service
 ```
 
 This prints **names and metadata only** — never a secret.
 
-## Choosing the active account
+## Choosing the active connection
 
-A service can have several accounts (e.g. `work` and `personal` mail). Set which one is active:
+A service can have several connections (e.g. `work` and `personal` mail). Set which one is active:
 
 ```sh
-qfs account use mail work
+qfs connection use mail work
 ```
 
-## Removing an account
+## Removing a connection
 
 ```sh
-qfs account remove mail work     # idempotent — fine to run twice
+qfs connection remove mail work     # idempotent — fine to run twice
 ```
 
 ## Least privilege

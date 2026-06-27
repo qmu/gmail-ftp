@@ -4,7 +4,7 @@
 //!   real keychain) and the wasm-friendly base the `WorkerStore` builds on.
 //! - [`EnvStore`] — read-only resolution from environment variables, the `12-factor` /
 //!   CI / Cloudflare-`env`-binding case. A credential lives at
-//!   `QFS_SECRET_<DRIVER>_<ACCOUNT>` (upper-cased); listing scans the process env.
+//!   `QFS_SECRET_<DRIVER>_<CONNECTION>` (upper-cased); listing scans the process env.
 //!
 //! Both are pluggable behind [`Secrets`] exactly like [`crate::LocalStore`], proving the
 //! backend abstraction: a driver depends on `&dyn Secrets` and never knows which one it
@@ -15,7 +15,7 @@ use std::sync::Mutex;
 
 use time::OffsetDateTime;
 
-use crate::key::{AccountId, AccountRecord, CredentialKey, DriverId};
+use crate::key::{ConnectionId, ConnectionRecord, CredentialKey, DriverId};
 use crate::secret::Secret;
 use crate::store::{SecretError, Secrets};
 
@@ -89,7 +89,7 @@ impl Secrets for InMemoryStore {
         Ok(())
     }
 
-    fn list(&self, driver: Option<&DriverId>) -> Result<Vec<AccountRecord>, SecretError> {
+    fn list(&self, driver: Option<&DriverId>) -> Result<Vec<ConnectionRecord>, SecretError> {
         let guard = self.lock()?;
         let mut out = Vec::new();
         for (flat, entry) in guard.iter() {
@@ -104,21 +104,21 @@ impl Secrets for InMemoryStore {
     }
 }
 
-/// Rebuild an [`AccountRecord`] from a `driver/account` flat key + its timestamp. Returns
+/// Rebuild an [`ConnectionRecord`] from a `driver/connection` flat key + its timestamp. Returns
 /// `None` if the key does not split cleanly (defensive; keys are always well-formed here).
-fn record_from_flat(flat: &str, created_at: OffsetDateTime) -> Option<AccountRecord> {
-    let (driver, account) = flat.split_once('/')?;
-    let account = AccountId::new(account).ok()?;
-    Some(AccountRecord::new(
+fn record_from_flat(flat: &str, created_at: OffsetDateTime) -> Option<ConnectionRecord> {
+    let (driver, connection) = flat.split_once('/')?;
+    let connection = ConnectionId::new(connection).ok()?;
+    Some(ConnectionRecord::new(
         DriverId::new(driver),
-        account,
+        connection,
         created_at,
     ))
 }
 
 /// A read-only [`Secrets`] backend over environment variables — the 12-factor / CI /
-/// Cloudflare-`env`-binding case. A credential for `(driver, account)` lives at
-/// `QFS_SECRET_<DRIVER>_<ACCOUNT>` with both halves upper-cased.
+/// Cloudflare-`env`-binding case. A credential for `(driver, connection)` lives at
+/// `QFS_SECRET_<DRIVER>_<CONNECTION>` with both halves upper-cased.
 ///
 /// `put`/`remove` are unsupported (the process env is read-only here); they return a
 /// structured [`SecretError::Backend`] so a misuse fails loudly rather than silently
@@ -163,14 +163,14 @@ impl EnvStore {
         }
     }
 
-    /// The env var name a `(driver, account)` credential is read from.
+    /// The env var name a `(driver, connection)` credential is read from.
     #[must_use]
     pub fn var_name(&self, key: &CredentialKey) -> String {
         format!(
             "{}{}_{}",
             self.prefix,
             key.driver.as_str().to_uppercase(),
-            key.account.as_str().to_uppercase()
+            key.connection.as_str().to_uppercase()
         )
     }
 }
@@ -195,14 +195,14 @@ impl Secrets for EnvStore {
         ))
     }
 
-    fn list(&self, driver: Option<&DriverId>) -> Result<Vec<AccountRecord>, SecretError> {
+    fn list(&self, driver: Option<&DriverId>) -> Result<Vec<ConnectionRecord>, SecretError> {
         let want = driver.map(|d| d.as_str().to_uppercase());
         let mut out = Vec::new();
         for name in (self.names)() {
             let Some(rest) = name.strip_prefix(&self.prefix) else {
                 continue;
             };
-            // `<DRIVER>_<ACCOUNT>` — split on the first `_`. Driver/account are lower-cased
+            // `<DRIVER>_<CONNECTION>` — split on the first `_`. Driver/connection are lower-cased
             // back for the record (we only have the upper-cased env form, so the record
             // reflects the canonical lower-case selector).
             let Some((drv, acct)) = rest.split_once('_') else {
@@ -213,12 +213,12 @@ impl Secrets for EnvStore {
                     continue;
                 }
             }
-            let Ok(account) = AccountId::new(acct.to_lowercase()) else {
+            let Ok(connection) = ConnectionId::new(acct.to_lowercase()) else {
                 continue;
             };
-            out.push(AccountRecord::new(
+            out.push(ConnectionRecord::new(
                 DriverId::new(drv.to_lowercase()),
-                account,
+                connection,
                 OffsetDateTime::UNIX_EPOCH,
             ));
         }
@@ -230,8 +230,11 @@ impl Secrets for EnvStore {
 mod tests {
     use super::*;
 
-    fn key(driver: &str, account: &str) -> CredentialKey {
-        CredentialKey::new(DriverId::new(driver), AccountId::new(account).unwrap())
+    fn key(driver: &str, connection: &str) -> CredentialKey {
+        CredentialKey::new(
+            DriverId::new(driver),
+            ConnectionId::new(connection).unwrap(),
+        )
     }
 
     /// In-memory backend round-trips put -> get -> remove, and a miss is a structured
@@ -255,7 +258,7 @@ mod tests {
         store.remove(&k).unwrap();
     }
 
-    /// Multi-account listing: same driver, several accounts; `list(Some(driver))` filters.
+    /// Multi-connection listing: same driver, several connections; `list(Some(driver))` filters.
     #[test]
     fn in_memory_lists_and_filters_by_driver() {
         let store = InMemoryStore::new();
@@ -301,9 +304,9 @@ mod tests {
             "secret_backend"
         );
 
-        // list reconstructs the (driver, account) selectors from the env namespace.
+        // list reconstructs the (driver, connection) selectors from the env namespace.
         let recs = store.list(Some(&DriverId::new("mail"))).unwrap();
         assert_eq!(recs.len(), 1);
-        assert_eq!(recs[0].account.as_str(), "work");
+        assert_eq!(recs[0].connection.as_str(), "work");
     }
 }
