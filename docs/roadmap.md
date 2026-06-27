@@ -35,12 +35,16 @@ Before any feature, two rules decide whether it is allowed to exist.
    dashboard, a line in the terminal, and a tool call from Claude are the same operation rendered three
    ways. That sameness is the product.
 
-   > **Implementation status (t51 — the second face begins).** The CLI ✅ and the MCP endpoint ✅ are
-   > live; the **web dashboard** now has a shipped ✅ **read-only shell** — a static SPA embedded in the
+   > **Implementation status (t52 — the dashboard commits).** The CLI ✅ and the MCP endpoint ✅ are
+   > live; the **web dashboard** now has a shipped ✅ embedded SPA — a static page in the
    > binary (`GET /`, `GET /assets/*`) that the in-house listener serves over loopback, plus a thin JSON
    > bridge (`POST /api/describe`, `POST /api/run`) that drives the **same** injected engine the MCP face
-   > uses. It serves **describe + preview only** (pure introspection and a zero-effect dry-run); there is
-   > **no commit path in the shell yet** — the preview→commit approval cards 🧭 (t52) are still proposed.
+   > uses. The **preview→commit approval cards** ✅ (t52) have landed: a preview renders the plan's
+   > effects as a card, and `POST /api/commit` applies an approved plan through the **same** default-deny
+   > policy gate + irreversible-effect guard the CLI/MCP use — a reversible in-policy plan auto-commits,
+   > an out-of-policy plan is refused with the decision, and an **irreversible** plan (REMOVE / CALL) is
+   > never auto-applied: it raises a distinct one-time confirm that posts the explicit ack (the same
+   > acknowledgement `--commit-irreversible` drives). The *selectable* commit modes (§2.4) remain 🧭 t59.
    > The first `/sys/*` admin views ✅ (t53) have landed: the deployment's own state (`/sys/users`,
    > `/sys/projects`, `/sys/audit`, `/sys/connections`, `/sys/policies`) is now an ordinary set of qfs
    > paths backed by the System DB, readable from every face and writable via a gated

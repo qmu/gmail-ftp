@@ -9,27 +9,38 @@
 //! one statement-execution adapter. The constraint the roadmap names is enforced from day one: the
 //! dashboard exposes **no capability the CLI/MCP lack**.
 //!
-//! ## This slice is the SHELL — preview/read ONLY
+//! ## describe + preview + the t52 approval-card commit
 //! - `describe` is PURE (no creds, no I/O, no network) — exactly `qfs describe <path>`.
 //! - `preview` builds the effect plan and renders its secret-free dry-run summary, applying ZERO
-//!   effects (exactly the MCP `preview` tool).
-//! - There is **no commit path here by design**. A `commit` mode is REFUSED — the irreversible
-//!   approval cards are t52, and adding a shortcut commit here would break the one-engine rule.
+//!   effects (exactly the MCP `preview` tool). `POST /api/run` stays preview/read only; a `commit`
+//!   *mode* there is still refused (the apply path is the dedicated, gated `/api/commit`).
+//! - `commit` (t52) routes a previewed statement through the SAME single commit path the MCP
+//!   `commit` tool uses ([`qfs_mcp::commit_plan`]): the default-deny policy gate
+//!   (`qfs_server::gate_plan`) THEN the [`qfs_core::IrreversibleGuard`]. A reversible in-policy
+//!   plan auto-applies (roadmap §2.4 *Autonomous-in-policy*); an out-of-policy plan is REFUSED with
+//!   the decision; an irreversible plan (REMOVE / CALL) WITHOUT an explicit ack is REFUSED with a
+//!   legible "needs human approval" signal — the dashboard's one-time approval card supplies that
+//!   ack as `ack=true` on a second, explicit confirm. The card gets NO capability the CLI/MCP lack.
 //!
 //! ## Secret discipline (RFD §10)
 //! The bridge never returns credential material: describe is pure, the preview is a secret-free
-//! plan summary, and engine errors are surfaced as the owned, secret-free [`qfs_mcp::EngineError`]
-//! (`{ "error": { "code", "message" } }`) — never a raw upstream error, token, or path-secret. The
-//! browser-supplied statement is parsed and planned through the normal pipeline (no string-splicing),
-//! so a request value carries zero parse-time injection surface. No connection/credential listing is
-//! served to the browser in this slice.
+//! plan summary, the commit outcome carries only the secret-free dry-run summary / per-effect
+//! `"<VERB> <driver>:<path>"` labels, and engine errors are surfaced as the owned, secret-free
+//! [`qfs_mcp::EngineError`] (`{ "error": { "code", "message" } }`) — never a raw upstream error,
+//! token, or path-secret. The browser-supplied statement is parsed and planned through the normal
+//! pipeline (no string-splicing), so a request value carries zero parse-time injection surface. No
+//! connection/credential listing is served to the browser.
 //!
-//! ## Session gate seam (deferred to t46/t50, documented hook)
+//! ## Network posture — loopback-only; bearer-gating the commit is a documented follow-up
 //! The shell is served loopback-only (the [`qfs_http::DEFAULT_BIND_ADDR`] default) and is NOT yet
-//! gated on a session cookie: t46 opened the session store but no endpoint is gated on it yet, so —
-//! per the ticket — this slice ships the loopback-only posture rather than inventing bespoke auth.
-//! When identity is turned on, the `/` and `/api/*` routes are where a session check lands (a 401 +
-//! sign-in redirect); that wiring is a follow-up, called out here rather than guessed at.
+//! gated on a session cookie or the t50 bearer token: t46/t50 opened the session/OAuth machinery
+//! but no dashboard endpoint consumes a browser session→bearer mapping yet. Rather than invent a
+//! bespoke auth surface, `/api/commit` keeps the loopback-only posture AND — crucially — inherits
+//! the SAME default-deny policy gate the unauthenticated MCP surface relied on before its own
+//! bearer gate: a dashboard commit can do nothing the engine's policy does not already grant, so it
+//! opens no privileged, looser path to the network. Threading the t50 authorizer (and a single-use
+//! ack token to defeat replay) through `/api/commit` is the called-out follow-up — flagged here
+//! rather than half-wired.
 //!
 //! ## Self-contained assets (offline-clean)
 //! The HTML/CSS/JS are embedded via [`include_str!`] (mirroring `qfs-skill`) so they SHIP in the
@@ -37,7 +48,7 @@
 //! offline-clean and the hermetic-test rule holds.
 
 use qfs_http::{HttpRequest, HttpResponse, Method};
-use qfs_mcp::{EngineError, McpEngine};
+use qfs_mcp::{commit_plan, CommitOutcome, EngineError, McpEngine};
 use serde::Deserialize;
 
 /// The embedded SPA assets (compiled into the binary, mirroring the `qfs-skill` `include_str!`
@@ -56,6 +67,9 @@ pub const ASSET_PREFIX: &str = "/assets/";
 pub const API_DESCRIBE: &str = "/api/describe";
 /// The thin bridge: a dry-run plan preview for a posted statement (`POST /api/run`).
 pub const API_RUN: &str = "/api/run";
+/// The gated commit bridge: apply a previewed statement through the one commit path (`POST
+/// /api/commit`). The ONLY mutating dashboard endpoint (t52's approval-card target).
+pub const API_COMMIT: &str = "/api/commit";
 /// The reserved bridge prefix (every `/api/...` path is owned by the dashboard once mounted).
 pub const API_PREFIX: &str = "/api/";
 
@@ -73,9 +87,23 @@ struct RunRequest {
     /// The browser-composed qfs statement (parsed + planned through the normal pipeline).
     statement: String,
     /// The requested mode. `None`/`"preview"`/`"read"` → the dry-run preview; anything else (notably
-    /// `"commit"`) is refused — this shell has no apply path.
+    /// `"commit"`) is refused — the apply path is the dedicated, gated `/api/commit`, not `/api/run`.
     #[serde(default)]
     mode: Option<String>,
+}
+
+/// The commit-bridge request body (`{ "statement": "...", "ack": false }`). `ack` is the approval
+/// card's explicit confirmation: it is the SAME acknowledgement the CLI's `--commit-irreversible`
+/// flag and the MCP `commit` tool's `ack=true` supply, flowing through the SAME
+/// [`qfs_core::IrreversibleGuard`]. It defaults to `false`, so an irreversible plan is refused
+/// (held for the card) unless the human explicitly confirms.
+#[derive(Debug, Deserialize)]
+struct CommitRequest {
+    /// The browser-composed qfs statement to apply (the one the human previewed).
+    statement: String,
+    /// The explicit irreversible-effect acknowledgement (the approval card's second confirm).
+    #[serde(default)]
+    ack: bool,
 }
 
 /// Serve a dashboard route, if this request targets one. Returns `Some(response)` for a path the
@@ -95,6 +123,8 @@ pub fn serve_dashboard(engine: &dyn McpEngine, req: &HttpRequest) -> Option<Http
         // The thin JSON bridge — preview/read only, through the SAME engine the CLI/MCP use.
         Method::Post if req.path == API_DESCRIBE => Some(describe_response(engine, &req.body)),
         Method::Post if req.path == API_RUN => Some(run_response(engine, &req.body)),
+        // The gated commit bridge (t52): apply through the one commit path (gate + guard).
+        Method::Post if req.path == API_COMMIT => Some(commit_response(engine, &req.body)),
         // Any other method/path under the reserved bridge prefix → a legible JSON 404 (the shell
         // owns the whole `/api/` namespace so a typo does not silently fall through to the 404 page).
         _ if req.path.starts_with(API_PREFIX) => Some(json_error(
@@ -185,6 +215,71 @@ fn run_response(engine: &dyn McpEngine, body: &[u8]) -> HttpResponse {
         Ok(v) => json_ok(&v),
         Err(e) => json_error(500, &EngineError::internal(e.to_string())),
     }
+}
+
+/// The commit bridge (`POST /api/commit`): decode `{ statement, ack? }` and route it through the
+/// SAME single commit path the MCP `commit` tool uses ([`qfs_mcp::commit_plan`]) — the default-deny
+/// policy gate THEN the [`qfs_core::IrreversibleGuard`], THEN the injected runtime-backed apply. The
+/// dashboard adds NO commit logic of its own; it only renders the structured [`CommitOutcome`] as
+/// secret-free JSON for the approval card:
+///   - **applied** (reversible in-policy, or irreversible WITH `ack`): `200`,
+///     `{ "applied": true, "committed": true, "preview": { … } }`.
+///   - **policy refusal** (out of policy): `403`,
+///     `{ "applied": false, "refused": "policy_denied", "reason", "effects": [ … ] }`.
+///   - **needs approval** (irreversible, no `ack`): `200`,
+///     `{ "applied": false, "refused": "needs_human_approval", "needs_ack": true, "reason",
+///       "effects": [ … ] }` — the card shows the effects and asks for the explicit second confirm.
+///   - **engine error** (parse / apply failure): the secret-free `{ "error": { code, message } }`.
+fn commit_response(engine: &dyn McpEngine, body: &[u8]) -> HttpResponse {
+    let req: CommitRequest = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(e) => return bad_request(&e),
+    };
+    // The ONE commit path (no dashboard-local applier, no second gate/guard): a reversible in-policy
+    // plan auto-applies, an out-of-policy plan is refused with the decision, and an irreversible plan
+    // is held for the card's explicit ack — exactly what the CLI/MCP do for the same plan.
+    match commit_plan(engine, &req.statement, req.ack) {
+        CommitOutcome::Applied(committed) => match serde_json::to_value(&committed) {
+            // `committed` serializes to `{ "preview": …, "committed": true }`; the browser also gets
+            // a top-level `applied: true` so the card can branch without inspecting the summary.
+            Ok(serde_json::Value::Object(mut map)) => {
+                map.insert("applied".to_string(), serde_json::Value::Bool(true));
+                json_ok(&serde_json::Value::Object(map))
+            }
+            Ok(other) => json_ok(&other),
+            Err(e) => json_error(500, &EngineError::internal(e.to_string())),
+        },
+        CommitOutcome::PolicyDenied { reason, effects } => {
+            json_refused(403, "policy_denied", &reason, &effects, false)
+        }
+        CommitOutcome::NeedsApproval { reason, effects } => {
+            json_refused(200, "needs_human_approval", &reason, &effects, true)
+        }
+        CommitOutcome::Failed(e) => json_error(engine_status(&e), &e),
+    }
+}
+
+/// Render a REFUSED commit (policy deny or needs-approval) as secret-free JSON: the stable refusal
+/// tag + reason + the per-effect summaries, plus `applied: false` and a `needs_ack` flag the
+/// approval card reads to decide whether to offer the explicit second confirm.
+fn json_refused(
+    status: u16,
+    refused: &str,
+    reason: &str,
+    effects: &[String],
+    needs_ack: bool,
+) -> HttpResponse {
+    let body = serde_json::json!({
+        "applied": false,
+        "refused": refused,
+        "needs_ack": needs_ack,
+        "reason": reason,
+        "effects": effects,
+    });
+    let bytes = serde_json::to_vec(&body).unwrap_or_else(|_| {
+        br#"{"error":{"code":"internal","message":"could not encode refusal"}}"#.to_vec()
+    });
+    HttpResponse::new(status, "application/json", bytes)
 }
 
 /// Map a secret-free engine error onto an HTTP status: an unknown mount is a 404, everything else a
@@ -435,5 +530,203 @@ mod tests {
         assert!(serve_dashboard(&StubEngine, &get("/mcp")).is_none());
         assert!(serve_dashboard(&StubEngine, &get("/hooks/x")).is_none());
         assert!(serve_dashboard(&StubEngine, &post("/mcp", json!({}))).is_none());
+    }
+
+    // ---- t52: the gated `/api/commit` approval-card bridge -------------------------------------
+
+    use std::sync::Mutex;
+
+    /// A commit-capable stub: `build_plan` returns a configured effect plan, `commit_policy` returns
+    /// a configured policy (default-deny if unset), and `apply` records that it was reached (the
+    /// load-bearing "applied vs. not" assertion). Mirrors the MCP protocol tests' `FakeEngine` so the
+    /// dashboard exercises the SAME gate + guard the MCP face does.
+    #[derive(Default)]
+    struct CommitStub {
+        /// The plan `build_plan` yields (an effect plan); `None` ⇒ a pure (no-effect) plan.
+        plan: Option<qfs_core::Plan>,
+        /// The policy `commit` gates against; `None` ⇒ default-deny.
+        policy: Option<qfs_mcp::Policy>,
+        /// Set to `true` by `apply` — proves whether the injected applier was reached.
+        applied: Mutex<bool>,
+    }
+
+    fn insert_plan() -> qfs_core::Plan {
+        use qfs_core::{DriverId, EffectKind, EffectNode, NodeId, Plan, Target, VfsPath};
+        let mut plan = Plan::pure();
+        plan.nodes = vec![EffectNode::new(
+            NodeId(0),
+            EffectKind::Insert,
+            Target::new(DriverId::new("mail"), VfsPath::new("/mail/drafts")),
+        )];
+        plan
+    }
+
+    fn remove_plan() -> qfs_core::Plan {
+        use qfs_core::{DriverId, EffectKind, EffectNode, NodeId, Plan, Target, VfsPath};
+        let mut plan = Plan::pure();
+        plan.nodes = vec![EffectNode::new(
+            NodeId(0),
+            EffectKind::Remove,
+            Target::new(DriverId::new("local"), VfsPath::new("/local/x")),
+        )];
+        plan
+    }
+
+    /// A policy that explicitly ALLOWs the given verbs on any driver (an explicit verb list, so an
+    /// irreversible verb like REMOVE is genuinely granted by the gate).
+    fn allow_policy(verbs: &[qfs_mcp::Verb]) -> qfs_mcp::Policy {
+        use qfs_mcp::{DriverGlob, Policy, Rule, VerbSet};
+        Policy::new("test").with_rule(Rule::allow(VerbSet::from_verbs(verbs), DriverGlob::any()))
+    }
+
+    impl McpEngine for CommitStub {
+        fn describe(&self, path: &str) -> Result<Value, EngineError> {
+            Ok(json!({ "path": path }))
+        }
+        fn build_plan(&self, statement: &str) -> Result<qfs_core::Plan, EngineError> {
+            if statement.contains("BOOM") {
+                return Err(EngineError::new("parse", "unexpected token"));
+            }
+            Ok(self.plan.clone().unwrap_or_else(qfs_core::Plan::pure))
+        }
+        fn commit_policy(&self) -> qfs_mcp::Policy {
+            self.policy
+                .clone()
+                .unwrap_or_else(qfs_mcp::default_deny_policy)
+        }
+        fn apply(&self, _plan: &qfs_core::Plan) -> Result<(), EngineError> {
+            *self.applied.lock().unwrap() = true;
+            Ok(())
+        }
+        fn connections(&self) -> Result<Vec<ConnectionInfo>, EngineError> {
+            panic!("the dashboard commit bridge must NEVER list connections to the browser");
+        }
+    }
+
+    fn commit_resp(engine: &CommitStub, body: Value) -> (HttpResponse, Value) {
+        let resp = serve_dashboard(engine, &post("/api/commit", body)).expect("/api/commit owned");
+        let v: Value = serde_json::from_slice(&resp.body).unwrap();
+        (resp, v)
+    }
+
+    #[test]
+    fn commit_applies_a_reversible_in_policy_plan() {
+        let engine = CommitStub {
+            plan: Some(insert_plan()),
+            policy: Some(allow_policy(&[qfs_mcp::Verb::Insert])),
+            ..Default::default()
+        };
+        let (resp, v) = commit_resp(&engine, json!({ "statement": "INSERT INTO /mail/drafts" }));
+        assert_eq!(resp.status, 200);
+        assert_eq!(v["applied"], json!(true));
+        assert_eq!(v["committed"], json!(true));
+        assert!(
+            v.get("preview").is_some(),
+            "carries the committed summary: {v}"
+        );
+        assert!(*engine.applied.lock().unwrap(), "the applier was reached");
+    }
+
+    #[test]
+    fn commit_refuses_an_out_of_policy_plan_with_the_decision() {
+        // Default-deny policy ⇒ an INSERT is refused; the apply must NOT be reached (zero effects).
+        let engine = CommitStub {
+            plan: Some(insert_plan()),
+            ..Default::default()
+        };
+        let (resp, v) = commit_resp(&engine, json!({ "statement": "INSERT INTO /mail/drafts" }));
+        assert_eq!(resp.status, 403);
+        assert_eq!(v["applied"], json!(false));
+        assert_eq!(v["refused"], "policy_denied");
+        assert!(
+            !v["reason"].as_str().unwrap().is_empty(),
+            "carries the decision: {v}"
+        );
+        assert!(
+            !*engine.applied.lock().unwrap(),
+            "an out-of-policy plan applies nothing"
+        );
+    }
+
+    #[test]
+    fn commit_refuses_an_irreversible_plan_without_ack() {
+        // In-policy REMOVE, but no ack ⇒ held by the IrreversibleGuard (needs the card's confirm).
+        let engine = CommitStub {
+            plan: Some(remove_plan()),
+            policy: Some(allow_policy(&[qfs_mcp::Verb::Remove])),
+            ..Default::default()
+        };
+        let (resp, v) = commit_resp(&engine, json!({ "statement": "REMOVE FROM /local/x" }));
+        assert_eq!(resp.status, 200);
+        assert_eq!(v["applied"], json!(false));
+        assert_eq!(v["refused"], "needs_human_approval");
+        assert_eq!(v["needs_ack"], json!(true));
+        assert!(
+            !*engine.applied.lock().unwrap(),
+            "an unacked irreversible plan applies nothing"
+        );
+    }
+
+    #[test]
+    fn commit_applies_an_irreversible_plan_with_ack() {
+        // The approval card's explicit second confirm (`ack=true`) flows through the SAME guard the
+        // CLI's `--commit-irreversible` drives — so the acked irreversible plan applies.
+        let engine = CommitStub {
+            plan: Some(remove_plan()),
+            policy: Some(allow_policy(&[qfs_mcp::Verb::Remove])),
+            ..Default::default()
+        };
+        let (resp, v) = commit_resp(
+            &engine,
+            json!({ "statement": "REMOVE FROM /local/x", "ack": true }),
+        );
+        assert_eq!(resp.status, 200);
+        assert_eq!(v["applied"], json!(true));
+        assert_eq!(v["committed"], json!(true));
+        assert!(
+            *engine.applied.lock().unwrap(),
+            "the acked apply was reached"
+        );
+    }
+
+    #[test]
+    fn commit_response_is_secret_free() {
+        // The card payload carries only the dry-run summary + per-effect `<VERB> <driver>:<path>`
+        // labels — never a row payload, credential, or token.
+        let engine = CommitStub {
+            plan: Some(remove_plan()),
+            policy: Some(allow_policy(&[qfs_mcp::Verb::Remove])),
+            ..Default::default()
+        };
+        let (_resp, v) = commit_resp(&engine, json!({ "statement": "REMOVE FROM /local/x" }));
+        let effects = v["effects"].as_array().expect("effects array");
+        assert!(
+            effects
+                .iter()
+                .all(|e| e.as_str().unwrap() == "REMOVE local:/local/x"),
+            "effects are driver+path labels only: {v}"
+        );
+    }
+
+    #[test]
+    fn commit_propagates_an_engine_error_secret_free() {
+        let engine = CommitStub::default();
+        let (resp, v) = commit_resp(&engine, json!({ "statement": "BOOM" }));
+        assert_eq!(resp.status, 422);
+        assert_eq!(v["error"]["code"], "parse");
+    }
+
+    #[test]
+    fn commit_malformed_body_is_a_400() {
+        let mut req = HttpRequest::new(Method::Post, "/api/commit");
+        req.body = b"not json at all {{".to_vec();
+        let resp = serve_dashboard(&CommitStub::default(), &req).expect("owned");
+        assert_eq!(resp.status, 400);
+        let v: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(v["error"]["code"], "bad_request");
+        assert!(
+            !resp.body_text().contains("not json at all"),
+            "input not echoed"
+        );
     }
 }

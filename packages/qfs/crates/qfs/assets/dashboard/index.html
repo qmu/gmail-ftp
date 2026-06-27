@@ -3,10 +3,13 @@
   qfs dashboard — the embedded SPA SHELL (ticket t51).
 
   This page is one of the "three faces" of the one qfs engine: it composes a qfs statement in
-  the browser and drives it through the SAME describe -> preview engine path the CLI and the MCP
-  face already use (POST /api/describe, POST /api/run). It serves describe + preview (read/dry-run)
-  ONLY — the preview/commit approval cards (t52) are a later ticket — so there is no commit button
-  here by design: the one-engine rule forbids the dashboard exposing a capability the CLI/MCP lack.
+  the browser and drives it through the SAME describe -> preview -> commit engine path the CLI and
+  the MCP face already use (POST /api/describe, POST /api/run, POST /api/commit). t52 adds the
+  preview->commit approval cards: a preview renders the plan's effects as a card; Approve commits
+  through the SAME default-deny policy gate + irreversible-effect guard the CLI/MCP use. A reversible
+  in-policy plan applies; an out-of-policy plan is refused with the decision; an IRREVERSIBLE plan
+  is never auto-applied — it raises a distinct one-time confirmation (the explicit ack the CLI's
+  --commit-irreversible drives). The dashboard exposes NO capability the CLI/MCP lack.
 
   t53 adds the FIRST thin admin views: the admin panel below is just describe/preview quick-links
   over the deployment's own /sys/* paths (/sys/users, /sys/projects, /sys/audit, /sys/connections,
@@ -28,8 +31,9 @@
     <header class="topbar">
       <h1>qfs <span class="muted">dashboard</span></h1>
       <p class="muted">
-        the second face of one engine — describe and preview run through the same
-        <code>qfs_exec</code> path the CLI and MCP use. preview-only shell (commit is t52).
+        the second face of one engine — describe, preview, and commit run through the same
+        <code>qfs_exec</code> path (and the same policy gate + irreversible guard) the CLI and MCP
+        use. preview raises an approval card; irreversible effects need an explicit confirm.
       </p>
     </header>
 
@@ -53,8 +57,11 @@
       </section>
 
       <section class="panel">
-        <h2>preview</h2>
-        <p class="muted">dry-run a statement: builds the plan, applies ZERO effects.</p>
+        <h2>preview &rarr; commit</h2>
+        <p class="muted">
+          dry-run a statement (builds the plan, applies ZERO effects), then approve the card to
+          commit it through the policy gate + irreversible guard. nothing applies without Approve.
+        </p>
         <form id="run-form">
           <label for="run-statement">statement</label>
           <textarea
@@ -67,6 +74,9 @@
           <button type="submit">preview</button>
         </form>
         <pre id="run-out" class="output" aria-live="polite"></pre>
+        <!-- t52: the approval card (effects + Approve/Cancel; irreversible gets a second confirm). -->
+        <div id="approval-card" class="approval-card" aria-live="polite"></div>
+        <pre id="commit-out" class="output" aria-live="polite"></pre>
       </section>
 
       <section class="panel" id="admin-panel">

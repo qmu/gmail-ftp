@@ -57,8 +57,8 @@ pub use binding::{
 pub use jsonrpc::{ErrorObject, Request, Response};
 pub use protocol::{handle_request, initialize_result, tools_list_result, PROTOCOL_VERSION};
 pub use tools::{
-    call_tool, default_deny_policy, tool_descriptors, ConnectionInfo, EngineError, McpEngine,
-    ToolDescriptor,
+    call_tool, commit_plan, default_deny_policy, tool_descriptors, CommitOutcome, ConnectionInfo,
+    EngineError, McpEngine, ToolDescriptor,
 };
 
 // Re-export the pure HTTP exchange DTOs (qfs-http-core) and the policy type (qfs-server) the
@@ -66,4 +66,8 @@ pub use tools::{
 // listener onto them WITHOUT a direct dependency on either crate (its thin-entrypoint guard pins
 // the binary off the lower spine; qfs-mcp is the leaf that legitimately binds both).
 pub use qfs_http_core::{HttpMethod, HttpRequest, HttpResponse};
-pub use qfs_server::Policy;
+// The policy type the binding + the `McpEngine::commit_policy` contract speak, plus the policy-rule
+// vocabulary an implementor needs to CONSTRUCT one (the binary returns `default_deny_policy()` in
+// production, but composing a real `Policy` is part of the trait's contract) — re-exported so the
+// `qfs` binary uses them WITHOUT a forbidden direct `qfs-server` edge.
+pub use qfs_server::{DriverGlob, Policy, Rule, Verb, VerbSet};

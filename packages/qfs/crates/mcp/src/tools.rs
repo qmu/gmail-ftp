@@ -322,17 +322,53 @@ pub fn call_tool(
     }
 }
 
-/// The `commit` tool body: build the plan, then route it through the SAME gate + guard the CLI
-/// uses. The order is load-bearing (defence in depth):
+/// The structured verdict of routing a statement through the commit gate + guard (the ONE commit
+/// path). Both faces that commit — the MCP `commit` tool here AND the t52 dashboard approval card —
+/// call [`commit_plan`] and render THIS verdict (the MCP face as an in-band `isError` tool result,
+/// the dashboard as JSON), so neither re-implements the policy/irreversibility decision. Every
+/// variant is secret-free by construction: the [`qfs_exec::PlanPreview`] is a dry-run summary, the
+/// reason strings are stable sentences, and the effect summaries are `"<VERB> <driver>:<path>"`.
+#[derive(Debug, Clone)]
+pub enum CommitOutcome {
+    /// The plan passed the policy gate + the irreversible-ack guard and the injected applier ran;
+    /// carries the committed-apply summary (`committed: true`).
+    Applied(qfs_exec::PlanPreview),
+    /// The default-deny policy gate REFUSED the plan (out of policy); carries the secret-free deny
+    /// reason + the per-effect summaries. NOTHING was applied (the apply is never reached).
+    PolicyDenied {
+        /// The stable, secret-free policy-denial reason.
+        reason: String,
+        /// The secret-free per-effect summaries (`"<VERB> <driver>:<path>"`).
+        effects: Vec<String>,
+    },
+    /// The irreversible-effect guard REFUSED the plan: it carries an irreversible effect (REMOVE /
+    /// CALL) and no explicit `ack` was supplied. This is the legible "needs human approval" signal
+    /// the dashboard maps to its one-time approval card. NOTHING was applied.
+    NeedsApproval {
+        /// The stable, secret-free needs-approval reason.
+        reason: String,
+        /// The secret-free per-effect summaries (`"<VERB> <driver>:<path>"`).
+        effects: Vec<String>,
+    },
+    /// An engine error (the plan failed to build, or a leg failed to apply); secret-free.
+    Failed(EngineError),
+}
+
+/// Route a statement through the commit gate + guard — the SINGLE commit path both the MCP `commit`
+/// tool and the t52 dashboard approval card share (no second applier, no privileged shortcut). The
+/// order is load-bearing (defence in depth):
 ///   1. **policy gate** ([`qfs_server::gate_plan`], default-deny) — an out-of-policy plan is
 ///      refused with the decision; the apply is NEVER reached (zero effects).
 ///   2. **irreversible-ack guard** ([`qfs_core::IrreversibleGuard`], `RunMode::Server`) — an
 ///      irreversible plan without `ack` is refused ("needs human approval"); never auto-applied.
+///      `RunMode::Server` IS the roadmap §2.4 *Autonomous-in-policy* default: a reversible in-policy
+///      plan auto-commits, an irreversible one is held for the explicit ack (the card's confirm).
 ///   3. **apply** — only an in-policy, acked (or reversible) plan reaches the injected applier.
-fn commit(engine: &dyn McpEngine, statement: &str, ack: bool) -> Value {
+#[must_use]
+pub fn commit_plan(engine: &dyn McpEngine, statement: &str, ack: bool) -> CommitOutcome {
     let plan = match engine.build_plan(statement) {
         Ok(p) => p,
-        Err(e) => return err_result(&e),
+        Err(e) => return CommitOutcome::Failed(e),
     };
 
     // 1. The default-deny policy gate — the SAME enforcement the cron/watchtower committers use.
@@ -342,12 +378,15 @@ fn commit(engine: &dyn McpEngine, statement: &str, ack: bool) -> Value {
         let reason = gate
             .deny_reason()
             .unwrap_or_else(|| "blocked by policy (default-deny)".to_string());
-        return refused_result("policy_denied", &reason, &gate.effects);
+        return CommitOutcome::PolicyDenied {
+            reason,
+            effects: gate.effects,
+        };
     }
 
-    // 2. The irreversible-effect guard. An MCP tool call is unattended (Server mode): an
+    // 2. The irreversible-effect guard. The unattended-commit posture (Server mode): an
     //    irreversible plan WITHOUT an explicit ack is blocked — a legible "needs human approval"
-    //    result, never silently applied (t59 selectable-safety is a later ticket).
+    //    verdict, never silently applied (t59 selectable-safety is a later ticket).
     let ack = if ack {
         qfs_core::Ack::Granted
     } else {
@@ -356,19 +395,38 @@ fn commit(engine: &dyn McpEngine, statement: &str, ack: bool) -> Value {
     if let Err(needs) =
         qfs_core::IrreversibleGuard::require_ack(&plan, qfs_core::RunMode::Server, ack)
     {
-        return refused_result("needs_human_approval", needs.reason(), &gate.effects);
+        return CommitOutcome::NeedsApproval {
+            reason: needs.reason().to_string(),
+            effects: gate.effects,
+        };
     }
 
     // 3. Apply (through the injected runtime-backed commit). Only reachable for an in-policy,
     //    acked-or-reversible plan.
     match engine.apply(&plan) {
         Ok(()) => {
-            let committed = qfs_exec::PlanPreview::committed(qfs_core::preview(&plan));
-            match serde_json::to_value(&committed) {
-                Ok(v) => ok_json(&v),
-                Err(e) => err_result(&EngineError::internal(e.to_string())),
-            }
+            CommitOutcome::Applied(qfs_exec::PlanPreview::committed(qfs_core::preview(&plan)))
         }
-        Err(e) => err_result(&e),
+        Err(e) => CommitOutcome::Failed(e),
+    }
+}
+
+/// The `commit` tool body: route the statement through the shared [`commit_plan`] path and render
+/// its [`CommitOutcome`] as the MCP tool result (a success payload, or an in-band `isError` for a
+/// refusal / engine error). The decision itself lives in `commit_plan` so the dashboard face reuses
+/// it verbatim.
+fn commit(engine: &dyn McpEngine, statement: &str, ack: bool) -> Value {
+    match commit_plan(engine, statement, ack) {
+        CommitOutcome::Applied(committed) => match serde_json::to_value(&committed) {
+            Ok(v) => ok_json(&v),
+            Err(e) => err_result(&EngineError::internal(e.to_string())),
+        },
+        CommitOutcome::PolicyDenied { reason, effects } => {
+            refused_result("policy_denied", &reason, &effects)
+        }
+        CommitOutcome::NeedsApproval { reason, effects } => {
+            refused_result("needs_human_approval", &reason, &effects)
+        }
+        CommitOutcome::Failed(e) => err_result(&e),
     }
 }
