@@ -193,6 +193,8 @@ fn rewrite_expr(e: &mut Expr, boundary: Instant) {
             rewrite_expr(expr, boundary);
             rewrite_expr(pattern, boundary);
         }
+        // A lambda body (M6, t61) is walked so a nested `LAST_RUN()` is still substituted.
+        Expr::Lambda { body, .. } => rewrite_expr(body, boundary),
         Expr::Lit(_) | Expr::Path(_) | Expr::Col(_) => {}
     }
 }
@@ -356,6 +358,8 @@ fn detect_expr(e: &Expr, found: &mut bool) {
             detect_expr(expr, found);
             detect_expr(pattern, found);
         }
+        // A lambda body (M6, t61) is walked so a nested `LAST_RUN()` is still detected.
+        Expr::Lambda { body, .. } => detect_expr(body, found),
         Expr::Lit(_) | Expr::Path(_) | Expr::Col(_) => {}
     }
 }

@@ -223,6 +223,24 @@ pub enum EvalError {
         /// The offending effect's stable label (e.g. `REMOVE`, `CALL`).
         effect: String,
     },
+    /// A lambda (M6, ticket t61) was applied with the wrong number of arguments — e.g. a
+    /// `(x) => …` one-param lambda called with two arguments, or a `reduce` lambda that does
+    /// not take `(acc, element)`. A *typed*, AI-consumable error, never a panic. Carries the
+    /// declared parameter count and the count supplied.
+    LambdaArity {
+        /// The number of parameters the lambda declares.
+        expected: usize,
+        /// The number of arguments supplied at application.
+        found: usize,
+    },
+    /// A value used in **function position** (the lambda argument of `map`/`filter`/`reduce`,
+    /// or the callee of an application) was not a function/lambda (M6, ticket t61) — e.g.
+    /// `map(coll, 3)`. Carries a secret-free description of the offending value's shape so the
+    /// author can supply a lambda instead.
+    NotAFunction {
+        /// A machine-facing description of the non-function value's shape.
+        detail: String,
+    },
 }
 
 impl EvalError {
@@ -237,6 +255,8 @@ impl EvalError {
             EvalError::NonLiteralValues { .. } => "non_literal_values",
             EvalError::DriverWrite { .. } => "driver_write",
             EvalError::IrreversibleInTransaction { .. } => "irreversible_in_transaction",
+            EvalError::LambdaArity { .. } => "lambda_arity",
+            EvalError::NotAFunction { .. } => "not_a_function",
         }
     }
 }

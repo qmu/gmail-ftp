@@ -61,6 +61,11 @@ pub enum Token {
     Semicolon,
     /// `,`
     Comma,
+    /// `:` — the type-annotation separator in a lambda parameter list
+    /// (`(addr: string) => …`, M6 ticket t61). Structural punctuation only — NOT a
+    /// frozen operator/keyword (the closed-core freeze is untouched), so it adds zero
+    /// vocabulary; the parser consumes it solely inside a lambda's parameter list.
+    Colon,
     /// `.`
     Dot,
     /// `*` — star (projection / glob in expression position).

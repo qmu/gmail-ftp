@@ -32,7 +32,10 @@ const HEADER_PREFIX: &str = "# qfs-cookbook:";
 const MIN_RECIPES: usize = 250;
 /// Ratchet floor: the number of recipes that parse with today's grammar may only INCREASE. Bump
 /// this (never lower it) after running the retag test when new grammar lands and coverage grows.
-const BASELINE_CORE: usize = 147;
+/// M6 ticket t61 (lambdas as values + `map`/`filter`/`reduce`, `LET`-bound lambda/scalar values)
+/// raised it 147 → 153: six previously-`extended` M6 recipes (lambda dedup, the `map`/`filter`
+/// transforms, a scalar `LET` threshold, the reusable-lambda forms) now parse.
+const BASELINE_CORE: usize = 153;
 
 struct Recipe {
     ordinal: usize,

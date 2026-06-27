@@ -30,6 +30,7 @@
 
 mod aggregate;
 mod context;
+mod higher_order;
 mod registry;
 mod scalar;
 mod tablevalued;
@@ -41,6 +42,9 @@ pub use aggregate::{AggregateFactory, AggregateKind, AggregateState};
 pub use context::{EnvSource, MapEnv, NoEnv};
 pub use registry::{AliasDecl, Prelude, PreludeError, ResolvedAlias, StdlibRegistry};
 pub use tablevalued::{PlanNode, PlanNodeKind};
+
+// `BuiltinFn`/`BuiltinEval`/`FnSig`/`FnError` are re-exported by the crate root; the
+// higher-order kind rides alongside them for the lambda evaluator (M6, ticket t61).
 
 use qfs_types::{ColumnType, Value};
 
@@ -244,6 +248,29 @@ pub enum BuiltinEval {
     /// deferred [`PlanNode`] (gated by [`EvalCtx::capabilities_enabled`]) but performs
     /// **no** network/file I/O during evaluation.
     TableValued(fn(&[Value], &EvalCtx) -> Result<PlanNode, FnError>),
+    /// A **higher-order** built-in (`map`/`filter`/`reduce`, M6 ticket t61): it takes a
+    /// **function-typed** argument (a lambda) plus a collection, so it cannot be expressed as
+    /// a `Value → Value` [`BuiltinEval::Scalar`] (a lambda is not a [`Value`]). The actual
+    /// closure-application semantics live in the pure lambda evaluator
+    /// ([`crate::lambda`]); this variant exists so the function registry **knows** the name
+    /// (arity + return type for the typing pass) and the lambda evaluator can dispatch on
+    /// [`HigherOrderKind`]. Pure — it constructs values over an in-memory collection, never
+    /// any I/O (RFD §3 purity), so it stays in the read/transform half.
+    HigherOrder(HigherOrderKind),
+}
+
+/// Which higher-order built-in a [`BuiltinEval::HigherOrder`] is (M6, ticket t61). The pure
+/// lambda evaluator ([`crate::lambda`]) dispatches on this to apply the supplied lambda over
+/// the collection: `map` transforms each element, `filter` keeps the elements whose lambda
+/// result is truthy, `reduce` folds them through the lambda from an initial accumulator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HigherOrderKind {
+    /// `map(collection, fn)` — apply `fn` to each element, yielding a same-length collection.
+    Map,
+    /// `filter(collection, fn)` — keep the elements for which `fn` returns a truthy value.
+    Filter,
+    /// `reduce(collection, fn, init)` — left-fold the elements through `fn(acc, element)`.
+    Reduce,
 }
 
 /// A single registered built-in (RFD §3). Name + signature + the evaluation strategy.
@@ -285,6 +312,25 @@ impl BuiltinFn {
             name: name.to_string(),
             sig,
             eval: BuiltinEval::TableValued(f),
+        }
+    }
+
+    /// Construct a higher-order built-in (`map`/`filter`/`reduce`, M6 ticket t61).
+    fn higher_order(name: &str, sig: FnSig, kind: HigherOrderKind) -> Self {
+        Self {
+            name: name.to_string(),
+            sig,
+            eval: BuiltinEval::HigherOrder(kind),
+        }
+    }
+
+    /// The higher-order kind of this built-in (`map`/`filter`/`reduce`), or `None` for a
+    /// scalar/aggregate/table-valued built-in. Used by the lambda evaluator's dispatch.
+    #[must_use]
+    pub fn higher_order_kind(&self) -> Option<HigherOrderKind> {
+        match self.eval {
+            BuiltinEval::HigherOrder(kind) => Some(kind),
+            _ => None,
         }
     }
 

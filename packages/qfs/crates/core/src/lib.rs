@@ -27,6 +27,7 @@
 pub mod ddl;
 mod describe;
 mod eval;
+mod lambda;
 mod plan;
 mod registry;
 mod resolve;
@@ -42,14 +43,17 @@ pub use ddl::server::{
 };
 pub use describe::{archetype_hint, DescribeReport, PushdownSummary};
 pub use eval::{call_proc_id, effect_kind_for, EvalError, EvalValue, Evaluator, PlanSource};
+pub use lambda::{
+    apply as apply_lambda, eval_expr as eval_lambda_expr, Closure, LambdaValue, ValueEnv,
+};
 pub use plan::{plan_pipeline, plan_query, source_registry, PushdownError};
 pub use registry::{CodecRegistry, MountRegistry, ProcRegistry};
 pub use resolve::{capability_verb_for, write_verb_for, ResolveError, ResolvedCall, Resolver};
 pub use security::{Ack, IrreversibleGuard, NeedsPreview, RunMode};
 pub use stdlib::{
     AggregateFactory, AggregateKind, AggregateState, AliasDecl, BuiltinEval, BuiltinFn, EnvSource,
-    EvalCtx, FnError, FnSig, MapEnv, NoEnv, PlanNode, PlanNodeKind, Prelude, PreludeError,
-    ResolvedAlias, StdlibRegistry,
+    EvalCtx, FnError, FnSig, HigherOrderKind, MapEnv, NoEnv, PlanNode, PlanNodeKind, Prelude,
+    PreludeError, ResolvedAlias, StdlibRegistry,
 };
 
 // Re-export the trait seams and shared types so consumers depend on `qfs-core` only.

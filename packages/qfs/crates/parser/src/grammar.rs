@@ -32,8 +32,8 @@ use winnow::{ModalResult, Parser};
 
 use crate::ast::{
     Assignment, CallRef, Codec, DdlKind, EffectBody, EffectStmt, EffectVerb, Expr, FnRef, Ident,
-    JoinOp, Literal, NamedArg, Op, OrderKey, PathExpr, PathRef, PathSegment, PipeOp, Pipeline,
-    PlanWrap, PolicyRuleAst, Projection, ServerDdl, Source, Statement, Values,
+    JoinOp, Literal, NamedArg, Op, OrderKey, Param, PathExpr, PathRef, PathSegment, PipeOp,
+    Pipeline, PlanWrap, PolicyRuleAst, Projection, ServerDdl, Source, Statement, TypeAnn, Values,
 };
 use crate::error::{ParseError, ParseErrorCode};
 
@@ -181,6 +181,7 @@ fn describe(tok: &Token) -> String {
         Token::LParen => "`(`".to_string(),
         Token::RParen => "`)`".to_string(),
         Token::Comma => "`,`".to_string(),
+        Token::Colon => "`:`".to_string(),
         Token::Dot => "`.`".to_string(),
         Token::Star => "`*`".to_string(),
         Token::Arrow => "`=>`".to_string(),
@@ -433,10 +434,62 @@ fn paren_expr_list(input: &mut Stream<'_>) -> ModalResult<Vec<Expr>> {
     Ok(items)
 }
 
-/// A primary expression: literal, parenthesised expr, `*`, function call, dotted
-/// path / column.
+/// A primary expression: literal, lambda, parenthesised expr, `*`, function call,
+/// dotted path / column.
+///
+/// `lambda` is tried **before** `paren_expr`: both start with `(`, but only a lambda has
+/// the trailing `=> <body>` after the parameter list. The lambda parser backtracks
+/// cleanly when the `( … )` is not followed by `=>`, so a plain parenthesised expression
+/// `(a == b)` still parses as `paren_expr`.
 fn primary(input: &mut Stream<'_>) -> ModalResult<Expr> {
-    alt((literal.map(Expr::Lit), paren_expr, fn_call, dotted_path)).parse_next(input)
+    alt((
+        literal.map(Expr::Lit),
+        lambda,
+        paren_expr,
+        fn_call,
+        dotted_path,
+    ))
+    .parse_next(input)
+}
+
+/// A lambda literal `( params ) => <expr>` — a first-class value (M6 ticket t61,
+/// decision H "functions are values"). **No keyword is added**: the form rides the
+/// expression grammar and reuses the existing `=>` arrow token (also used by named call
+/// args); the parenthesised parameter list is what distinguishes a lambda from a
+/// named-arg pair or a parenthesised sub-expression.
+///
+/// The whole production is backtrackable up to the `=>`: if a `( … )` group is **not**
+/// followed by `=>` it is not a lambda, so `opt` lets the enclosing `alt` fall through to
+/// `paren_expr`. Once `=>` is seen the body is parsed as a full expression (a lambda body
+/// is expression-only — a lambda is a pure transformation, it can name no effect, RFD §3).
+fn lambda(input: &mut Stream<'_>) -> ModalResult<Expr> {
+    let _ = punct(Token::LParen).parse_next(input)?;
+    let params: Vec<Param> = separated(0.., lambda_param, punct(Token::Comma)).parse_next(input)?;
+    let _ = punct(Token::RParen).parse_next(input)?;
+    // The arrow is the commit point: only here do we know this `( … )` is a lambda and
+    // not a parenthesised expression. `opt` (no `cut_err`) lets a non-lambda backtrack.
+    let _ = punct(Token::Arrow).parse_next(input)?;
+    let body = expr(input)?;
+    Ok(Expr::Lambda {
+        params,
+        body: Box::new(body),
+    })
+}
+
+/// One lambda parameter: a bare name with an optional `: <type>` annotation. The
+/// annotation is parsed-and-retained (`Option<TypeAnn>`); the type name is any bare
+/// identifier (the canonical surface is a lowercase primitive `string`/`bool`/`i64`, but
+/// the grammar accepts any ident so the annotation round-trips into the later type-system
+/// ticket, t75).
+fn lambda_param(input: &mut Stream<'_>) -> ModalResult<Param> {
+    let name = ident(input)?;
+    let ty = opt(preceded(punct(Token::Colon), ident))
+        .parse_next(input)?
+        .map(|t| TypeAnn { name: t.node });
+    Ok(Param {
+        name: name.node,
+        ty,
+    })
 }
 
 fn paren_expr(input: &mut Stream<'_>) -> ModalResult<Expr> {
@@ -1370,12 +1423,56 @@ fn let_binding(input: &mut Stream<'_>) -> ModalResult<Statement> {
     let _ = kw(Keyword::Let).parse_next(input)?;
     let name = cut_err(ident).parse_next(input)?;
     let _ = cut_err(punct(Token::Eq)).parse_next(input)?;
-    let value = cut_err(pipeline).parse_next(input)?;
+    let value = cut_err(let_value).parse_next(input)?;
     let body = cut_err(program_seq).parse_next(input)?;
     Ok(Statement::Let {
         name: name.node,
-        value: Box::new(Statement::Query(value)),
+        value: Box::new(value),
         body: Box::new(body),
+    })
+}
+
+/// The bound value of a `LET` (M6, ticket t60 + t61): a **relation** (a pipeline) OR a
+/// first-class **value** (a lambda or a scalar expression — t61, decision H "functions are
+/// values"). A *named function* is just a `LET`-bound lambda (`LET f = (x) => …`), so no
+/// `DEF` keyword is needed.
+///
+/// The alternatives are ordered so each shape wins unambiguously:
+/// 1. `lambda` first — a `( params ) => body` value; tried before `pipeline` because a
+///    bare `(x)` would otherwise be read as a parenthesised sub-pipeline source.
+/// 2. `pipeline` — the t60 relation binding (`/path |> …`, a bound name, `VALUES`, a
+///    subquery). Unchanged, so every existing relation `LET` parses exactly as before.
+/// 3. `expr` — a scalar value binding (`LET cutoff = '2026-03-27'`), reached only when the
+///    value is neither a lambda nor a pipeline source.
+///
+/// A value binding (lambda/scalar) is retained as a single-cell `VALUES` relation so the
+/// `Statement::Let { value: Box<Statement> }` shape — and its governance variant lock — is
+/// **untouched** (no new `Statement` variant): the bound expression rides in the relation's
+/// one row, available verbatim to a later type-checker / value runtime.
+fn let_value(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    alt((
+        lambda.map(wrap_value_binding),
+        pipeline.map(Statement::Query),
+        // A scalar value binding (`LET cutoff = '2026-03-27'`). Restricted to a *literal* so
+        // it cannot collide with the `pipeline` source forms above: a bare identifier stays a
+        // `LET`-bound relation name (`LET b = a`, t60), and a fn-call (`map(…)`) belongs in a
+        // pipeline stage, not as a bare `LET` value — keeping every existing relation binding
+        // parsing exactly as before.
+        literal.map(|lit| wrap_value_binding(Expr::Lit(lit))),
+    ))
+    .parse_next(input)
+}
+
+/// Wrap a `LET`-bound value expression (a lambda or scalar) into the single-cell `VALUES`
+/// relation that carries it, so a value binding reuses the existing relation-valued
+/// `Statement::Let` shape without adding a `Statement` variant (see [`let_value`]).
+fn wrap_value_binding(value: Expr) -> Statement {
+    Statement::Query(Pipeline {
+        source: Source::Values(Values {
+            columns: None,
+            rows: vec![vec![value]],
+        }),
+        ops: vec![],
     })
 }
 

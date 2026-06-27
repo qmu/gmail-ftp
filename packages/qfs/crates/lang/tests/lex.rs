@@ -162,6 +162,27 @@ fn golden_eq_eqeq_arrow_disambiguate() {
 }
 
 #[test]
+fn lambda_param_list_lexes_colon_as_its_own_token() {
+    // `(addr: string) => …` — the type-annotation `:` is structural punctuation (M6 t61),
+    // lexed as a standalone `Token::Colon` adjacent to the surrounding idents/parens.
+    let src = "(addr: string) => x";
+    let toks = lex(src).expect("valid");
+    assert_spans_round_trip(src, &toks);
+    assert_eq!(
+        nodes(src),
+        vec![
+            Token::LParen,
+            Token::Ident("addr".into()),
+            Token::Colon,
+            Token::Ident("string".into()),
+            Token::RParen,
+            Token::Arrow,
+            Token::Ident("x".into()),
+        ]
+    );
+}
+
+#[test]
 fn golden_named_proc_arg_arrow() {
     let src = "CALL github.merge(method=>'squash')";
     let toks = lex(src).expect("valid");

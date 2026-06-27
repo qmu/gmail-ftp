@@ -781,6 +781,123 @@ fn two_bare_statements_without_a_binding_are_rejected() {
     assert!(!err.expected.is_empty());
 }
 
+// ---- lambdas as values + higher-order fns (M6, ticket t61) ----------------
+
+/// Pull the single `WHERE` predicate expression out of a one-stage query (the full
+/// expression grammar — including lambdas — is reachable there).
+fn where_expr(src: &str) -> Expr {
+    let Statement::Query(p) = parse_ok(src) else {
+        panic!("expected a query")
+    };
+    let PipeOp::Where(e) = p.ops.into_iter().next().expect("a WHERE op") else {
+        panic!("expected a WHERE op")
+    };
+    e
+}
+
+#[test]
+fn lambda_literal_with_type_annotation_parses() {
+    // The roadmap §1.2 canonical lambda: `(addr: string) => lower(trim(addr))`. NO keyword is
+    // added — the form rides the expression grammar and reuses the `=>` token.
+    let Expr::Lambda { params, body } =
+        where_expr("/t |> WHERE (addr: string) => lower(trim(addr))")
+    else {
+        panic!("expected a lambda literal")
+    };
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].name, "addr");
+    // The annotation is parsed-and-retained (lowercase primitive per decision S/T).
+    assert_eq!(
+        params[0].ty.as_ref().map(|t| t.name.as_str()),
+        Some("string")
+    );
+    // The body is the nested function call `lower(trim(addr))`.
+    assert!(matches!(*body, Expr::Fn(_)));
+}
+
+#[test]
+fn bare_and_multi_parameter_lambdas_parse() {
+    // A bare parameter (no annotation) retains `ty: None`.
+    let Expr::Lambda { params, .. } = where_expr("/t |> WHERE (x) => x") else {
+        panic!("expected a lambda")
+    };
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].ty, None);
+
+    // Multiple parameters, mixed annotated / bare.
+    let Expr::Lambda { params, .. } = where_expr("/t |> WHERE (acc: i64, item) => acc == item")
+    else {
+        panic!("expected a 2-param lambda")
+    };
+    assert_eq!(params.len(), 2);
+    assert_eq!(params[0].name, "acc");
+    assert_eq!(params[0].ty.as_ref().map(|t| t.name.as_str()), Some("i64"));
+    assert_eq!(params[1].name, "item");
+    assert_eq!(params[1].ty, None);
+}
+
+#[test]
+fn lambda_as_a_function_argument_parses() {
+    // A lambda flows into `map(col, fn)` as just another argument expression — no new call
+    // machinery (the `FnRef` already carries `args: Vec<Expr>`).
+    let Expr::Fn(f) = where_expr("/t |> WHERE map(tags, (t: string) => upper(t))") else {
+        panic!("expected a fn call")
+    };
+    assert_eq!(f.name, "map");
+    assert_eq!(f.args.len(), 2);
+    assert!(matches!(f.args[0], Expr::Col(_)));
+    assert!(matches!(f.args[1], Expr::Lambda { .. }));
+}
+
+#[test]
+fn parenthesised_expression_is_not_a_lambda() {
+    // The lambda parser backtracks cleanly when a `( … )` group is not followed by `=>`, so a
+    // plain parenthesised sub-expression still parses as itself.
+    let e = where_expr("/t |> WHERE (a == b)");
+    assert!(matches!(e, Expr::Binary { op: Op::Eq, .. }));
+}
+
+#[test]
+fn let_binds_a_lambda_value_no_def_keyword() {
+    // A named function is just a `LET`-bound lambda (no `DEF`): `LET normalize = (addr) => …`.
+    // The value binding is retained as a single-cell `VALUES` relation, so `Statement::Let`'s
+    // shape (and its governance variant lock) is untouched — no new `Statement` variant.
+    let Statement::Let { name, value, .. } = parse_ok(
+        "LET normalize = (addr: string) => lower(trim(addr))\n\
+         /t |> EXTEND k = normalize(email)",
+    ) else {
+        panic!("expected a LET binding")
+    };
+    assert_eq!(name, "normalize");
+    let Statement::Query(Pipeline {
+        source: Source::Values(v),
+        ..
+    }) = *value
+    else {
+        panic!("expected the lambda retained in a VALUES cell")
+    };
+    assert!(matches!(v.rows[0][0], Expr::Lambda { .. }));
+}
+
+#[test]
+fn let_binds_a_scalar_value() {
+    // A scalar value binding (`LET cutoff = '2026-03-27'`) — also retained as a one-cell VALUES.
+    let Statement::Let { name, value, .. } =
+        parse_ok("LET cutoff = '2026-03-27'\n/t |> WHERE created_at >= cutoff")
+    else {
+        panic!("expected a LET binding")
+    };
+    assert_eq!(name, "cutoff");
+    let Statement::Query(Pipeline {
+        source: Source::Values(v),
+        ..
+    }) = *value
+    else {
+        panic!("expected a one-cell VALUES value binding")
+    };
+    assert!(matches!(v.rows[0][0], Expr::Lit(Literal::Str(_))));
+}
+
 // ---- TRANSACTION block (M6, ticket t62) -----------------------------------
 
 #[test]

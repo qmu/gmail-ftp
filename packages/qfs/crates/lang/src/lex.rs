@@ -478,6 +478,7 @@ impl Lexer {
                 '}' => Token::RBrace,
                 ';' => Token::Semicolon,
                 ',' => Token::Comma,
+                ':' => Token::Colon,
                 '.' => Token::Dot,
                 '*' => Token::Star,
                 other => {

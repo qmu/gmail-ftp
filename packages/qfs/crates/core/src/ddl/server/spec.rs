@@ -293,5 +293,8 @@ fn normalize_expr(e: &mut Expr) {
             normalize_expr(expr);
             normalize_expr(pattern);
         }
+        // A lambda body (M6, t61) is normalized like any sub-expression; its parameter
+        // list carries no span-bearing nodes to canonicalize.
+        Expr::Lambda { body, .. } => normalize_expr(body),
     }
 }

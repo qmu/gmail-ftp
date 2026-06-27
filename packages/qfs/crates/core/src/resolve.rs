@@ -424,6 +424,10 @@ impl<'r> Resolver<'r> {
                 self.resolve_expr_fns(expr, receiver, out)?;
                 self.resolve_expr_fns(pattern, receiver, out)
             }
+            // A lambda body (M6, t61) is walked for nested prelude-alias `fn`s like any
+            // sub-expression; its parameters introduce no callable to resolve here (a lambda
+            // is a pure value, never an effect — RFD §3 purity).
+            Expr::Lambda { body, .. } => self.resolve_expr_fns(body, receiver, out),
             Expr::Lit(_) | Expr::Col(_) | Expr::Path(_) => Ok(()),
         }
     }

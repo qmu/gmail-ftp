@@ -52,7 +52,10 @@ pub const fn grammar_ebnf() -> &'static str {
 (* A program is zero or more LET bindings (M6 functional core, ticket t60) in       *)
 (* scope for the statements that follow them — one statement per line, no `;`.       *)
 program       = { binding } , statement ;
-binding       = \"LET\" , name , \"=\" , pipeline ;
+(* A LET binds a relation (a pipeline) OR a first-class VALUE — a lambda or a scalar     *)
+(* (M6, ticket t61, decision H \"functions are values\"). A named function is just a        *)
+(* LET-bound lambda — there is NO `DEF` keyword.                                          *)
+binding       = \"LET\" , name , \"=\" , ( pipeline | lambda | literal ) ;
 
 (* A statement is a pipeline (which may terminate in a write stage, decision Q), the      *)
 (* source-less verb-leading literal write, or a TRANSACTION block (M6, ticket t62); an     *)
@@ -126,7 +129,17 @@ predicate     = expr , { ( \"AND\" | \"OR\" ) , expr } | \"NOT\" , predicate ;
 expr          = operand , [ comparison , operand ] ;
 comparison    = \"==\" | \"<>\" | \"<\" | \">\" | \"<=\" | \">=\"
               | \"LIKE\" | \"~\" | \"IN\" | \"ANY\" | \"BETWEEN\" ;
-operand       = column | literal ;
+operand       = column | literal | call | lambda ;
+
+(* ---- lambdas as values + higher-order fns (M6, ticket t61, decision H) ---- *)
+(* Functions are values: a lambda rides the EXPRESSION grammar and reuses the `=>`   *)
+(* token — it adds ZERO keywords and ZERO operators (the closed core is untouched).   *)
+(* The parenthesised parameter list distinguishes it from a named arg / sub-expr.     *)
+lambda        = \"(\" , [ param , { \",\" , param } ] , \")\" , \"=>\" , expr ;
+param         = name , [ \":\" , type ] ;   (* `: type` is parsed-and-retained *)
+(* `map` / `filter` / `reduce` are ordinary stdlib functions (a `call`), NOT keywords: *)
+(*   map(collection, lambda) | filter(collection, lambda) | reduce(collection, lambda, init) *)
+call          = name , \"(\" , [ expr , { \",\" , expr } ] , \")\" ;
 
 (* ---- server DDL (sugar over the write surface, RFD §8) ---- *)
 ddl           = \"CREATE\" , ( endpoint | trigger | job | view | webhook | policy ) ;

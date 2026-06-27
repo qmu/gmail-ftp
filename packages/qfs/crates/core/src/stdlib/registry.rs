@@ -23,6 +23,7 @@ use qfs_types::DriverId;
 
 use super::aggregate::aggregate_builtins;
 use super::context::context_builtins;
+use super::higher_order::higher_order_builtins;
 use super::scalar::scalar_builtins;
 use super::tablevalued::table_valued_builtins;
 use super::BuiltinFn;
@@ -307,6 +308,7 @@ fn core_builtins() -> Vec<BuiltinFn> {
     all.extend(context_builtins());
     all.extend(aggregate_builtins());
     all.extend(table_valued_builtins());
+    all.extend(higher_order_builtins());
     all
 }
 

@@ -441,6 +441,54 @@ pub enum Expr {
         /// The candidate set.
         set: Vec<Expr>,
     },
+    /// A lambda literal `(p, …) => <expr>` — a first-class **value** (M6 ticket t61,
+    /// roadmap §1.2, decision H "functions are values").
+    ///
+    /// **No keyword added.** A lambda rides the *expression* grammar — it is a new
+    /// [`Expr`] variant, not a new [`Statement`]/[`PipeOp`] form and not a new reserved
+    /// word — so the frozen closed core (the `qfs-lang` keyword/operator freeze) is
+    /// **untouched**. It reuses the existing `=>` arrow token (already used by named call
+    /// args); the parenthesised parameter list is what distinguishes a lambda from a
+    /// named-arg or a parenthesised sub-expression. A *named* function is just a
+    /// `LET`-bound lambda (no `DEF`): `LET normalize = (addr) => …`.
+    ///
+    /// The body is a single sub-expression evaluated under the params bound — a lambda is
+    /// a **pure** transformation over values/rows (RFD §3 purity), it performs no I/O and
+    /// constructs no effect node, so a `LET`-bound lambda or a `map`/`filter`/`reduce`
+    /// over a relation stays in the read/transform half (the safety floor is untouched).
+    Lambda {
+        /// The parameter list (possibly empty), each with an optional type annotation.
+        params: Vec<Param>,
+        /// The body expression, evaluated with the params in scope.
+        body: Box<Expr>,
+    },
+}
+
+/// One lambda parameter: a name with an optional type annotation (`addr: string`).
+///
+/// The annotation is **parsed-and-retained** (`Option<TypeAnn>`) but not yet enforced —
+/// the plan-time static type checker is its own later slice (roadmap decision T, ticket
+/// t75), which builds on this retained annotation so adding inference is non-breaking. A
+/// bare `(addr) => …` parameter carries `ty: None`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Param {
+    /// The parameter name, bound in the lambda body.
+    pub name: Ident,
+    /// The optional type annotation (`: string`), retained for a later type checker.
+    pub ty: Option<TypeAnn>,
+}
+
+/// A retained lambda parameter type annotation (`string`, `bool`, `i64`, `Row`, …).
+///
+/// Stored as the raw annotation text (parse-and-retain, roadmap decision S/T): the
+/// canonical surface uses lowercase primitive names (`string`/`bool`/`i64`), but the
+/// grammar accepts any bare identifier here so the annotation round-trips losslessly into
+/// the later static-type-system ticket (t75) without this slice having to commit to a
+/// type lattice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeAnn {
+    /// The raw type name as written (e.g. `string`, `Row`).
+    pub name: Ident,
 }
 
 /// The frozen operator set (RFD §3). No operator can be added without editing this

@@ -420,5 +420,8 @@ fn describe_expr(expr: &Expr) -> String {
         Expr::Between { .. } => "BETWEEN".into(),
         Expr::Like { .. } => "LIKE".into(),
         Expr::AnyOp { .. } => "ANY".into(),
+        // A lambda is a value, never a backend-pushable predicate (M6 t61) — it surfaces
+        // here only as the secret-free label of an unsupported predicate shape.
+        Expr::Lambda { .. } => "lambda".into(),
     }
 }

@@ -1775,7 +1775,7 @@ LET active =
 **Normalize email addresses with a lambda before deduping a mailing list.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M6; features=LET,=>,EXTEND,DISTINCT
+# qfs-cookbook: grammar=core; milestone=M6; features=LET,=>,EXTEND,DISTINCT
 LET canon = (addr: String) => lower(trim(addr))
 /sql/pg/contacts
 |> EXTEND key = canon(email)
@@ -1798,7 +1798,7 @@ LET margin = (price: Float, cost: Float) => (price - cost) / price
 **Split a comma-separated tags column into a normalized list per row.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M6; features=LET,=>,map,EXTEND
+# qfs-cookbook: grammar=core; milestone=M6; features=LET,=>,map,EXTEND
 LET clean = (t: String) => lower(trim(t))
 /sql/pg/articles
 |> EXTEND tags = map(split(raw_tags, ','), clean)
@@ -1808,7 +1808,7 @@ LET clean = (t: String) => lower(trim(t))
 **Keep only the high-value line items inside each invoice.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M6; features==>,filter,EXTEND
+# qfs-cookbook: grammar=core; milestone=M6; features==>,filter,EXTEND
 /sql/pg/invoices
 |> EXTEND big_lines = filter(line_items, (li: Row) => li.amount > 1000)
 |> WHERE size(big_lines) > 0
@@ -1828,7 +1828,7 @@ LET clean = (t: String) => lower(trim(t))
 **Bind a date threshold once and reuse it across two filters.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M6; features=LET,WHERE,EXTEND
+# qfs-cookbook: grammar=core; milestone=M6; features=LET,WHERE,EXTEND
 # cutoff is a scalar value, referenced in both the predicate and a derived flag.
 LET cutoff = '2026-03-27'
 /sql/pg/orders
@@ -1853,7 +1853,7 @@ LET org_avg =
 **Score Slack messages with a reusable urgency lambda.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M6; features=LET,=>,EXTEND,ORDER BY
+# qfs-cookbook: grammar=core; milestone=M6; features=LET,=>,EXTEND,ORDER BY
 LET urgency = (text: String) =>
   (text ~ '(?i)urgent') OR (text ~ '(?i)asap') OR (text LIKE '%blocker%')
 /slack/acme/incidents/messages
@@ -1947,7 +1947,7 @@ LET cust_avg =
 **Reduce daily metric rows into a running max per service.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M6; features==>,reduce,EXTEND
+# qfs-cookbook: grammar=core; milestone=M6; features==>,reduce,EXTEND
 /sql/pg/metrics
 |> EXTEND peak = reduce(samples, (m: Float, s: Row) => max(m, s.value), 0.0)
 |> SELECT service, peak
