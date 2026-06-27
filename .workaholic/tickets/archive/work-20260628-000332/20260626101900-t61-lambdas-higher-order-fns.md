@@ -3,9 +3,9 @@ created_at: 2026-06-26T10:00:00+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [Domain]
-effort:
-commit_hash:
-category:
+effort: L
+commit_hash: 5e56686
+category: Added
 depends_on: [20260626101800-t60-let-binding.md]
 ---
 
