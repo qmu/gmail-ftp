@@ -53,7 +53,7 @@ use crate::stdlib::{BuiltinEval, FnError, StdlibRegistry};
 /// names only — never a driver SDK struct (RFD §9).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanSource {
-    /// `FROM /driver/...` — a logical scan of a path (a description, not a read).
+    /// `/driver/...` — a logical scan of a path (a description, not a read).
     Scan {
         /// The driver this relation reads from.
         driver: DriverId,

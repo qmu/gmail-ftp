@@ -149,7 +149,7 @@ fn all_five_frozen_forms_desugar_to_one_server_insert() {
     // ENDPOINT: method+route ride the ON '<method> /route' operand (the frozen t04 surface —
     // NO `AT`, NO bare method-route token; the Architect ruled AT out of scope).
     assert_single_server_insert(
-        &binding("CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail |> LIMIT 10"),
+        &binding("CREATE ENDPOINT recent ON 'GET /recent' AS /mail |> LIMIT 10"),
         ServerNode::Endpoints,
     );
     // TRIGGER: ON <event> DO <plan>.
@@ -164,11 +164,11 @@ fn all_five_frozen_forms_desugar_to_one_server_insert() {
     );
     // VIEW + MATERIALIZED VIEW: both /server/views.
     assert_single_server_insert(
-        &binding("CREATE VIEW recent AS FROM /mail |> LIMIT 5"),
+        &binding("CREATE VIEW recent AS /mail |> LIMIT 5"),
         ServerNode::Views,
     );
     assert_single_server_insert(
-        &binding("CREATE MATERIALIZED VIEW cached AS FROM /mail |> LIMIT 5"),
+        &binding("CREATE MATERIALIZED VIEW cached AS /mail |> LIMIT 5"),
         ServerNode::Views,
     );
     // WEBHOOK: route rides the ON '<route>' operand (frozen `ON`, not a new `AT` keyword).
@@ -182,8 +182,8 @@ fn all_five_frozen_forms_desugar_to_one_server_insert() {
 fn materialized_flag_distinguishes_view_forms_in_the_stored_row() {
     // Observe the COMMITTED effect: a MATERIALIZED VIEW stores materialized=true, a plain VIEW
     // materialized=false. This is the externally observable form of the flag.
-    let plain = apply_one("CREATE VIEW recent_view AS FROM /mail |> LIMIT 5");
-    let mat = apply_one("CREATE MATERIALIZED VIEW cached_view AS FROM /mail |> LIMIT 5");
+    let plain = apply_one("CREATE VIEW recent_view AS /mail |> LIMIT 5");
+    let mat = apply_one("CREATE MATERIALIZED VIEW cached_view AS /mail |> LIMIT 5");
     assert!(
         !plain
             .views
@@ -209,7 +209,7 @@ fn materialized_flag_distinguishes_view_forms_in_the_stored_row() {
 fn preview_reports_one_row_into_each_server_kind_and_does_no_io() {
     let cases = [
         (
-            "CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail |> LIMIT 10",
+            "CREATE ENDPOINT recent ON 'GET /recent' AS /mail |> LIMIT 10",
             "/server/endpoints",
         ),
         (
@@ -220,7 +220,7 @@ fn preview_reports_one_row_into_each_server_kind_and_does_no_io() {
             "CREATE JOB nightly EVERY '1h' DO REMOVE /tmp WHERE age > 7",
             "/server/jobs",
         ),
-        ("CREATE VIEW v AS FROM /mail |> LIMIT 5", "/server/views"),
+        ("CREATE VIEW v AS /mail |> LIMIT 5", "/server/views"),
         ("CREATE WEBHOOK gh ON '/hooks/gh'", "/server/webhooks"),
     ];
     for (src, expect_path) in cases {
@@ -304,7 +304,7 @@ fn body_bearing_create_equals_insert_twin_with_a_multistage_pipe() {
     // A multi-stage `|>` pipe body (WHERE then SELECT then LIMIT) — stresses the parse-to-
     // canonical convergence across a richer AST than a single effect.
     let (create_body, insert_body) =
-        stored_job_plan_bodies("FROM /mail |> WHERE age > 7 |> SELECT id, subject |> LIMIT 3");
+        stored_job_plan_bodies("/mail |> WHERE age > 7 |> SELECT id, subject |> LIMIT 3");
     assert_eq!(
         create_body, insert_body,
         "body-bearing CREATE ≡ INSERT (multi-stage pipe): both store ONE canonical spec"
@@ -425,7 +425,7 @@ fn plan_spec_round_trips_through_serde_and_rehydrates_without_reparse() {
     );
 
     // A StatementSpec (AS-query body) likewise.
-    let v = binding("CREATE VIEW recent AS FROM /mail |> WHERE age > 7 |> LIMIT 5");
+    let v = binding("CREATE VIEW recent AS /mail |> WHERE age > 7 |> LIMIT 5");
     let ServerBindingDdl::View(vd) = &v else {
         panic!("expected a View");
     };

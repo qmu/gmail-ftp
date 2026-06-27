@@ -35,9 +35,9 @@ impl Span {
     ///
     /// ```
     /// use qfs_lang::span::Span;
-    /// let src = "FROM /mail";
-    /// let sp = Span::new(0, 4);
-    /// assert_eq!(&src[sp.range()], "FROM");
+    /// let src = "/mail/inbox";
+    /// let sp = Span::new(0, 5);
+    /// assert_eq!(&src[sp.range()], "/mail");
     /// ```
     #[must_use]
     pub const fn range(self) -> Range<usize> {

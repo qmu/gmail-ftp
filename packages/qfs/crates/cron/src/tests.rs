@@ -18,7 +18,7 @@ use qfs_core::{
     Schema,
 };
 
-// --- a minimal in-memory fake `/mock` source so a DO body with a `FROM /mock/src` resolves to a
+// --- a minimal in-memory fake `/mock` source so a DO body with a `/mock/src` resolves to a
 // real Plan in the PREVIEW path (no live creds). build_plan needs only the Driver (mount +
 // describe + capabilities + applier), not a ReadDriver — plan construction is pure. ---
 
@@ -111,7 +111,7 @@ fn allowing_committer(engine: Engine) -> RecordingCommitter {
 
 const DO_INSERT: &str = "UPSERT INTO /mock/sink VALUES (1)";
 
-const DO_LAST_RUN: &str = "INSERT INTO /mock/sink FROM /mock/src |> WHERE ts > LAST_RUN()";
+const DO_LAST_RUN: &str = "INSERT INTO /mock/sink /mock/src |> WHERE ts > LAST_RUN()";
 
 // --- next_after goldens ---
 

@@ -1,4 +1,4 @@
-//! The Slack **read path** (RFD-0001 §5): turn a `SELECT … FROM /slack/...` into a pure,
+//! The Slack **read path** (RFD-0001 §5): turn a `SELECT … /slack/...` into a pure,
 //! self-documenting [`ReadPlan`] and decode a list response's JSON into owned DTO [`Row`]s.
 //!
 //! ## Cursor pagination as a pure bounded fan-out

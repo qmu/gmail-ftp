@@ -65,13 +65,13 @@ A read query previews as the query itself (reads change nothing). Longer queries
 each `|>` pipe on its own line:
 
 ```qfs
-FROM /mail/inbox
+/mail/inbox
 |> WHERE subject LIKE '%invoice%'
 |> SELECT date, from, subject
 ```
 
 ```sh
-qfs run "FROM /mail/inbox |> WHERE subject LIKE '%invoice%' |> SELECT date, from, subject"
+qfs run "/mail/inbox |> WHERE subject LIKE '%invoice%' |> SELECT date, from, subject"
 ```
 
 ## 4. Commit
@@ -89,7 +89,7 @@ a one-shot command, requires an explicit extra acknowledgement so you can never 
 
 ```sh
 # Sending is irreversible — --commit alone is refused:
-qfs run "FROM /mail/drafts |> CALL mail.send" --commit --commit-irreversible
+qfs run "/mail/drafts |> CALL mail.send" --commit --commit-irreversible
 ```
 
 If you forget the extra flag on an irreversible plan, qfs **fails safely** and tells you why.

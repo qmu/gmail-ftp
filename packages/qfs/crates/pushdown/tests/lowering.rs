@@ -40,7 +40,7 @@ fn pipeline_of(src: &str) -> qfs_parser::Pipeline {
 #[test]
 fn where_predicate_is_sourced_from_the_ast_and_pushed() {
     // The AST WHERE survives lowering into a typed Predicate and is pushed (O-t07-3).
-    let pipe = pipeline_of("FROM /db/users |> WHERE age > 30 |> SELECT id, name");
+    let pipe = pipeline_of("/db/users |> WHERE age > 30 |> SELECT id, name");
     let plan = lower_query(&pipe, &source_of, &schema_of).unwrap();
 
     // The lowered Filter carries a real predicate (not a dropped AST).
@@ -62,7 +62,7 @@ fn where_predicate_is_sourced_from_the_ast_and_pushed() {
 
 #[test]
 fn lower_predicate_maps_and_or_not_and_comparisons() {
-    let pipe = pipeline_of("FROM /db/t |> WHERE age >= 18 AND name == 'a'");
+    let pipe = pipeline_of("/db/t |> WHERE age >= 18 AND name == 'a'");
     let plan = lower_query(&pipe, &source_of, &schema_of).unwrap();
     let LogicalPlan::Filter { predicate, .. } = &plan else {
         panic!("expected a Filter");
@@ -73,7 +73,7 @@ fn lower_predicate_maps_and_or_not_and_comparisons() {
 #[test]
 fn cross_source_join_lowered_from_dsl_federates() {
     // A JOIN whose two sides resolve to different sources federates locally.
-    let pipe = pipeline_of("FROM /pg/orders |> JOIN /git/commits ON id == id");
+    let pipe = pipeline_of("/pg/orders |> JOIN /git/commits ON id == id");
     let plan = lower_query(&pipe, &source_of, &schema_of).unwrap();
     let reg = SourceRegistry::new()
         .with(SourceId::new("pg"), PushdownProfile::Full)
@@ -87,7 +87,7 @@ fn cross_source_join_lowered_from_dsl_federates() {
 fn lower_predicate_rejects_non_predicate_expression() {
     // A bare column is not a comparison predicate — a structured error, never silently
     // dropped (so the planner never loses a filter).
-    let pipe = pipeline_of("FROM /db/t |> WHERE id");
+    let pipe = pipeline_of("/db/t |> WHERE id");
     let err = lower_query(&pipe, &source_of, &schema_of).unwrap_err();
     assert_eq!(err.code(), "unsupported_predicate");
 }
@@ -97,16 +97,16 @@ fn lower_predicate_handles_like_and_in_and_between() {
     use qfs_parser::Expr;
     // Drive lower_predicate directly over parsed expressions through the pipeline.
     for (src, ok) in [
-        ("FROM /db/t |> WHERE name LIKE 'a%'", true),
-        ("FROM /db/t |> WHERE age IN (1, 2, 3)", true),
-        ("FROM /db/t |> WHERE age BETWEEN 1 AND 9", true),
+        ("/db/t |> WHERE name LIKE 'a%'", true),
+        ("/db/t |> WHERE age IN (1, 2, 3)", true),
+        ("/db/t |> WHERE age BETWEEN 1 AND 9", true),
     ] {
         let pipe = pipeline_of(src);
         let plan = lower_query(&pipe, &source_of, &schema_of);
         assert_eq!(plan.is_ok(), ok, "{src}");
     }
     // And lower_predicate is exposed for direct use over an AST Expr.
-    let pipe = pipeline_of("FROM /db/t |> WHERE age == 5");
+    let pipe = pipeline_of("/db/t |> WHERE age == 5");
     if let qfs_parser::PipeOp::Where(e) = &pipe.ops[0] {
         let p = lower_predicate(e).unwrap();
         assert!(matches!(p, Predicate::Cmp(_, _, _)));

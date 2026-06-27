@@ -128,7 +128,7 @@ fn allowing_committer(engine: Engine) -> RecordingCommitter {
 }
 
 const DO_INSERT: &str = "UPSERT INTO /mock/sink VALUES (1)";
-const DO_LAST_RUN: &str = "INSERT INTO /mock/sink FROM /mock/src |> WHERE ts > LAST_RUN()";
+const DO_LAST_RUN: &str = "INSERT INTO /mock/sink /mock/src |> WHERE ts > LAST_RUN()";
 
 // =====================================================================================
 // Scenario 1 — Schedule::next_after goldens (EVERY + 5-field cron) + invalid-cron error

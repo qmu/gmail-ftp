@@ -106,7 +106,7 @@ fn s1_upsert_remove_and_read_plan_shapes() {
         other => panic!("expected Delete, got {other:?}"),
     }
 
-    // FROM /s3/b/... → an effect-free read/List node carrying no irreversible flag.
+    // /s3/b/... → an effect-free read/List node carrying no irreversible flag.
     let read = EffectNode::new(
         NodeId(2),
         EffectKind::List,

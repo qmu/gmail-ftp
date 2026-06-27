@@ -78,7 +78,7 @@ update, and where to read more). The [Quickstart](#quickstart-the-loop) below is
 qfs describe /mail/drafts
 
 # 2. write + 3. PREVIEW (default — shows the plan, touches nothing):
-qfs run "FROM /mail/inbox |> WHERE subject LIKE '%invoice%' |> SELECT subject, from"
+qfs run "/mail/inbox |> WHERE subject LIKE '%invoice%' |> SELECT subject, from"
 
 # create a draft (PREVIEW first, then COMMIT to apply):
 qfs run "INSERT INTO /mail/drafts VALUES (...)"            # PREVIEW

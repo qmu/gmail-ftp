@@ -1,4 +1,4 @@
-//! The GitHub **read path** (RFD-0001 §5): turn a `SELECT … FROM /github/.../<ns>` into a pure,
+//! The GitHub **read path** (RFD-0001 §5): turn a `SELECT … /github/.../<ns>` into a pure,
 //! self-documenting [`ReadPlan`] and decode a list response's JSON into owned DTO [`Row`]s.
 //!
 //! ## Pagination as a pure bounded fan-out (the genuinely-hard-part note)

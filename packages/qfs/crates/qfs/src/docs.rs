@@ -261,7 +261,7 @@ pub fn render_server() -> String {
     let _ = writeln!(
         s,
         "```qfs\n\
-         CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5\n\
+         CREATE ENDPOINT recent ON 'GET /recent' AS /mail/inbox |> LIMIT 5\n\
          CREATE TRIGGER notify ON /mail/inbox DO INSERT INTO /slack/acme/general/messages VALUES (NEW.subject)\n\
          CREATE JOB nightly EVERY '1h' DO REMOVE /tmp/scratch WHERE age > 7\n\
          CREATE POLICY api ALLOW SELECT DENY INSERT, UPDATE, REMOVE, CALL\n\

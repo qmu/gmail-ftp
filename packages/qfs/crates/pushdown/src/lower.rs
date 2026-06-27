@@ -118,7 +118,7 @@ pub fn lower_predicate(expr: &Expr) -> Result<Predicate, LowerError> {
 }
 
 /// Lower a whole read [`Pipeline`] into a [`LogicalPlan`], threading the source schema.
-/// `source_of` maps a `FROM /driver/...` path to its [`SourceId`]; `schema_of` supplies
+/// `source_of` maps a `/driver/...` path to its [`SourceId`]; `schema_of` supplies
 /// the leaf schema (the driver's pure `describe`, supplied by the caller so this crate
 /// stays I/O-free). This is the AST → planner-IR bridge the pushdown pass runs over.
 ///

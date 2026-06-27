@@ -89,7 +89,7 @@ network, no live creds**.
 2. **Statement** — create the draft, then send it (the `SEND` alias desugars to `CALL mail.send`):
    ```text
    INSERT INTO /mail/drafts VALUES ('alice@example.com', 'Hi', 'Body text')
-   FROM /mail/drafts |> CALL mail.send
+   /mail/drafts |> CALL mail.send
    ```
 3. **PREVIEW** — the draft `INSERT` is reversible (affected 1); the `CALL mail.send` is an
    **irreversible** node. PREVIEW shows `irreversible: true` on the send.
@@ -117,7 +117,7 @@ network, no live creds**.
    "object_graph_workflow"`, a `merge` procedure with `irreversible: true`.
 2. **Statement** — squash-merge a PR (an object-graph state transition):
    ```text
-   FROM /github/acme/web/pulls/42 |> CALL github.merge(method => 'squash')
+   /github/acme/web/pulls/42 |> CALL github.merge(method => 'squash')
    ```
 3. **PREVIEW** — one **irreversible** `CALL` node. Affected: 1 PR.
 4. **COMMIT** — needs `--commit --commit-irreversible`. A merge cannot be undone — treat it as a gate.
@@ -136,13 +136,13 @@ network, no live creds**.
 4. **COMMIT** — `--commit` posts it. An append log only supports `SELECT(tail)` + `INSERT(append)`
    — DESCRIBE will not show `UPDATE`/`REMOVE`, so don't reach for them.
 
-### sql — relational_table, pushdown (`FROM /sql/pg/orders |> WHERE total > 100 |> SELECT id,total`)
+### sql — relational_table, pushdown (`/sql/pg/orders |> WHERE total > 100 |> SELECT id,total`)
 
 1. **DESCRIBE** `qfs describe /sql/pg/orders -json` → `"archetype": "relational_table"`,
    `pushdown.where: true`, `pushdown.project: true`. This is a **pure read** — no COMMIT at all.
 2. **Statement** — a filtered, projected read (the predicate + projection push **down** to Postgres):
    ```text
-   FROM /sql/pg/orders |> WHERE total > 100 |> SELECT id, total
+   /sql/pg/orders |> WHERE total > 100 |> SELECT id, total
    ```
 3. **PREVIEW** — a read has no effect plan; PREVIEW is the query itself. The pushdown summary tells
    you `WHERE total > 100` runs in the database, not locally.
@@ -155,7 +155,7 @@ network, no live creds**.
 2. **Statement** — record a commit, and read a file as-of a ref (the `@<ref>` temporal coordinate):
    ```text
    INSERT INTO /git/myrepo/commits VALUES ('add feature', 'main')
-   FROM /git/myrepo@v1.0/README.md
+   /git/myrepo@v1.0/README.md
    ```
 3. **PREVIEW** — the commit `INSERT` is one reversible node (a new commit; history is append-only).
    The `@v1.0` read is pure.

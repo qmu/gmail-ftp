@@ -1,3 +1,3 @@
 -- sql (relational_table, pushdown). DESCRIBE /sql/pg/orders -> pushdown where+project.
 -- Step 2: a pure read; WHERE + projection push down to Postgres. No COMMIT.
-FROM /sql/pg/orders |> WHERE total > 100 |> SELECT id, total
+/sql/pg/orders |> WHERE total > 100 |> SELECT id, total

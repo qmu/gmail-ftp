@@ -24,7 +24,7 @@ fn only_effect(plan: &qfs_plan::Plan) -> &qfs_plan::EffectNode {
 
 #[test]
 fn endpoint_desugars_to_one_endpoints_insert() {
-    let b = binding("CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail |> LIMIT 10");
+    let b = binding("CREATE ENDPOINT recent ON 'GET /recent' AS /mail |> LIMIT 10");
     assert_eq!(b.node(), ServerNode::Endpoints);
     let plan = b.desugar().expect("desugar");
     let node = only_effect(&plan);
@@ -65,8 +65,8 @@ fn job_desugars_to_one_jobs_insert() {
 
 #[test]
 fn view_and_materialized_view_set_the_flag() {
-    let plain = binding("CREATE VIEW recent AS FROM /mail |> LIMIT 5");
-    let mat = binding("CREATE MATERIALIZED VIEW recent AS FROM /mail |> LIMIT 5");
+    let plain = binding("CREATE VIEW recent AS /mail |> LIMIT 5");
+    let mat = binding("CREATE MATERIALIZED VIEW recent AS /mail |> LIMIT 5");
     match (&plain, &mat) {
         (ServerBindingDdl::View(p), ServerBindingDdl::View(m)) => {
             assert!(!p.materialized, "plain VIEW => materialized=false");
@@ -146,8 +146,8 @@ fn trigger_where_guard_round_trips_into_the_predicate_spec() {
 fn statement_spec_is_span_normalised_so_parse_origin_does_not_matter() {
     // The same body parsed standalone vs from a CREATE wrapper must produce an identical
     // canonical spec (spans differ by origin; the spec zeroes them).
-    let standalone = parse_statement("FROM /mail |> LIMIT 10").expect("parse");
-    let from_create = binding("CREATE VIEW v AS FROM /mail |> LIMIT 10");
+    let standalone = parse_statement("/mail |> LIMIT 10").expect("parse");
+    let from_create = binding("CREATE VIEW v AS /mail |> LIMIT 10");
     let ServerBindingDdl::View(d) = &from_create else {
         panic!("expected a view");
     };

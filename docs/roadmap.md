@@ -90,7 +90,7 @@ One small, SQL-like language addresses every service as a tree of **paths**. A q
 followed by **stages** joined by `|>` (a pipe). Read it top to bottom.
 
 ```qfs
-FROM /mail/inbox
+/mail/inbox
 |> WHERE subject LIKE '%invoice%'
 |> SELECT date, from, subject
 |> ORDER BY date DESC
@@ -111,7 +111,7 @@ Paths are always absolute and name a node on any backend:
 
 The **read/transform stages**: `WHERE`, `SELECT … AS …`, `EXTEND col = expr`, `JOIN <path> ON …`
 (**even across services**), `AGGREGATE fn AS name`, `GROUP BY`, `ORDER BY … DESC`, `LIMIT`,
-`DISTINCT`, and the set operations `UNION` / `EXCEPT` / `INTERSECT FROM <path>`.
+`DISTINCT`, and the set operations `UNION` / `EXCEPT` / `INTERSECT <path>`.
 
 The **write effects**: `INSERT INTO`, `UPSERT INTO` (retry-safe), `UPDATE`, `REMOVE`, and
 `CALL <service>.<action>(…)`. **Codecs** turn bytes into rows and back: `DECODE json`, `ENCODE csv`
@@ -124,7 +124,7 @@ The **write effects**: `INSERT INTO`, `UPSERT INTO` (retry-safe), `UPDATE`, `REM
 Federation — one query, many services — is the point:
 
 ```qfs
-FROM /sql/pg/orders
+/sql/pg/orders
 |> JOIN /github/acme/web/issues ON id == issue_id
 |> SELECT id, title
 ```
@@ -632,7 +632,7 @@ dashboard rendering the same engine over the same grammar; a super-admin can do 
 action as a qfs statement too, preserving the one-engine-three-faces constraint.
 
 The **first slice is shipped ✅ (t53):** the `/sys/*` paths are real — a `qfs-driver-sys` driver backs
-them on the System DB, every face can read them (`FROM /sys/audit |> WHERE …`), `/sys/connections`
+them on the System DB, every face can read them (`/sys/audit |> WHERE …`), `/sys/connections`
 projects names + metadata only (never secrets), `/sys/audit` is append-only and every `/sys` mutation
 appends to it, and a gated `INSERT INTO /sys/policies` (default-deny policy gate, transactional +
 audited) is the one write. The dashboard renders the first thin admin views over those paths through

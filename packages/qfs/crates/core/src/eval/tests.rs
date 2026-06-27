@@ -144,7 +144,7 @@ fn eval(src: &str) -> Result<EvalValue, EvalError> {
 
 #[test]
 fn query_pipeline_folds_to_relation_with_threaded_schema() {
-    let v = eval("FROM /db/users |> WHERE active == true |> SELECT id, name").unwrap();
+    let v = eval("/db/users |> WHERE active == true |> SELECT id, name").unwrap();
     let rel = v.as_relation().expect("a query yields a relation");
     // The fold produced a Project at the top, threading the source schema down.
     assert!(matches!(rel, PlanSource::Project { .. }));
@@ -160,7 +160,7 @@ fn query_pipeline_folds_to_relation_with_threaded_schema() {
 
 #[test]
 fn select_star_preserves_full_schema() {
-    let v = eval("FROM /db/users |> SELECT *").unwrap();
+    let v = eval("/db/users |> SELECT *").unwrap();
     let schema = v.as_relation().unwrap().schema();
     assert_eq!(
         schema.columns.len(),
@@ -171,7 +171,7 @@ fn select_star_preserves_full_schema() {
 
 #[test]
 fn extend_adds_a_column_to_the_threaded_schema() {
-    let v = eval("FROM /db/users |> EXTEND label = name").unwrap();
+    let v = eval("/db/users |> EXTEND label = name").unwrap();
     let schema = v.as_relation().unwrap().schema();
     assert!(schema.column("label").is_some(), "EXTEND added the column");
     assert_eq!(schema.columns.len(), 4);
@@ -222,9 +222,9 @@ fn upsert_and_update_evaluate_to_their_kinds() {
 
 #[test]
 fn insert_from_query_emits_a_read_dependency() {
-    // `INSERT INTO /db/users FROM /mail/inbox |> SELECT id, subject` should build a Read
+    // `INSERT INTO /db/users /mail/inbox |> SELECT id, subject` should build a Read
     // node (the sub-pipeline) the Insert depends on — the plan DAG with a dependency edge.
-    let plan = eval("INSERT INTO /db/users FROM /mail/inbox |> SELECT id, subject")
+    let plan = eval("INSERT INTO /db/users /mail/inbox |> SELECT id, subject")
         .unwrap()
         .as_plan()
         .cloned()
@@ -309,7 +309,7 @@ fn preview_of_evaluated_plan_is_secret_free_and_ordered() {
 fn preview_of_pure_query_has_no_effects() {
     // PREVIEW of a pure read evaluates to a relation; there is no plan to apply, so a
     // caller building a plan for it (the empty plan) previews as pure.
-    let v = eval("PREVIEW FROM /db/users |> SELECT id").unwrap();
+    let v = eval("PREVIEW /db/users |> SELECT id").unwrap();
     // A PREVIEW wrapper over a query is transparent: still a relation.
     assert!(v.as_relation().is_some());
 }
@@ -318,7 +318,7 @@ fn preview_of_pure_query_has_no_effects() {
 
 #[test]
 fn unknown_column_in_projection_is_structured() {
-    let err = eval("FROM /db/users |> SELECT nope").unwrap_err();
+    let err = eval("/db/users |> SELECT nope").unwrap_err();
     assert_eq!(err.code(), "unknown_column");
     assert!(matches!(
         err,
@@ -340,7 +340,7 @@ fn capability_denied_verb_never_reaches_a_plan() {
 
 #[test]
 fn unknown_procedure_is_structured() {
-    let err = eval("FROM /mail/inbox |> CALL mail.nuke()").unwrap_err();
+    let err = eval("/mail/inbox |> CALL mail.nuke()").unwrap_err();
     assert_eq!(err.code(), "unknown_procedure");
     assert!(matches!(
         err,
@@ -370,7 +370,7 @@ fn ambiguous_alias_is_structured() {
             .with_caps(Capabilities::none().select()),
     ))
     .unwrap();
-    let stmt = parse_statement("FROM /git/repo |> WHERE SEND()").unwrap();
+    let stmt = parse_statement("/git/repo |> WHERE SEND()").unwrap();
     let err = Evaluator::new(&reg).eval(&stmt).unwrap_err();
     assert_eq!(err.code(), "ambiguous_alias");
 }
@@ -379,11 +379,11 @@ fn ambiguous_alias_is_structured() {
 
 #[test]
 fn send_alias_desugars_to_call_mail_send() {
-    // `FROM /mail/inbox |> WHERE SEND()` resolves (the receiver ships SEND); the relation
+    // `/mail/inbox |> WHERE SEND()` resolves (the receiver ships SEND); the relation
     // it folds to is equivalent to the explicit `CALL mail.send` pipeline — both schema-
     // preserving relations over the same scan. Resolution proves the desugaring.
-    let aliased = eval("FROM /mail/inbox |> WHERE SEND()").unwrap();
-    let explicit = eval("FROM /mail/inbox |> CALL mail.send(to => 'a@b.c')").unwrap();
+    let aliased = eval("/mail/inbox |> WHERE SEND()").unwrap();
+    let explicit = eval("/mail/inbox |> CALL mail.send(to => 'a@b.c')").unwrap();
     assert_eq!(
         aliased.as_relation().unwrap().schema().column_names(),
         explicit.as_relation().unwrap().schema().column_names(),
@@ -442,8 +442,7 @@ fn eval_with_stdlib(src: &str) -> Result<EvalValue, EvalError> {
 /// not the late-bound `Unknown` of t07 — `UPPER` → `Text`, `LENGTH` → `Int`.
 #[test]
 fn select_over_builtin_carries_the_functions_return_type() {
-    let v =
-        eval_with_stdlib("FROM /db/users |> SELECT UPPER(name) AS u, LENGTH(name) AS n").unwrap();
+    let v = eval_with_stdlib("/db/users |> SELECT UPPER(name) AS u, LENGTH(name) AS n").unwrap();
     let schema = v.as_relation().unwrap().schema();
     assert_eq!(schema.column("u").unwrap().ty, ColumnType::Text);
     assert_eq!(schema.column("n").unwrap().ty, ColumnType::Int);
@@ -453,7 +452,7 @@ fn select_over_builtin_carries_the_functions_return_type() {
 /// `Unknown` column) once the registry is wired.
 #[test]
 fn select_over_unknown_function_is_a_structured_error() {
-    let err = eval_with_stdlib("FROM /db/users |> SELECT NOPE(name) AS x").unwrap_err();
+    let err = eval_with_stdlib("/db/users |> SELECT NOPE(name) AS x").unwrap_err();
     assert_eq!(err.code(), "unknown_function");
 }
 
@@ -462,10 +461,10 @@ fn select_over_unknown_function_is_a_structured_error() {
 #[test]
 fn aggregate_dispatch_is_context_sensitive() {
     // SUM in a SELECT → aggregate-outside-aggregate, a typed error.
-    let err = eval_with_stdlib("FROM /db/users |> SELECT SUM(id) AS s").unwrap_err();
+    let err = eval_with_stdlib("/db/users |> SELECT SUM(id) AS s").unwrap_err();
     assert_eq!(err.code(), "aggregate_outside_aggregate");
     // SUM under AGGREGATE → typed to Float, no error.
-    let v = eval_with_stdlib("FROM /db/users |> AGGREGATE SUM(id) AS s").unwrap();
+    let v = eval_with_stdlib("/db/users |> AGGREGATE SUM(id) AS s").unwrap();
     let schema = v.as_relation().unwrap().schema();
     assert_eq!(schema.column("s").unwrap().ty, ColumnType::Float);
 }
@@ -474,7 +473,7 @@ fn aggregate_dispatch_is_context_sensitive() {
 /// t07 behaviour is preserved for `Evaluator::new`.
 #[test]
 fn unwired_evaluator_keeps_functions_late_bound() {
-    let v = eval("FROM /db/users |> SELECT UPPER(name) AS u").unwrap();
+    let v = eval("/db/users |> SELECT UPPER(name) AS u").unwrap();
     let schema = v.as_relation().unwrap().schema();
     assert_eq!(schema.column("u").unwrap().ty, ColumnType::Unknown);
 }
@@ -487,8 +486,8 @@ fn unwired_evaluator_keeps_functions_late_bound() {
 #[test]
 fn let_substitutes_bound_relation_with_its_schema() {
     let v = eval(
-        "LET u = FROM /db/users\n\
-         FROM u |> SELECT id, name",
+        "LET u = /db/users\n\
+         u |> SELECT id, name",
     )
     .unwrap();
     let rel = v
@@ -512,8 +511,8 @@ fn let_substitutes_bound_relation_with_its_schema() {
 #[test]
 fn let_bound_relation_is_reusable() {
     let v = eval(
-        "LET u = FROM /db/users\n\
-         FROM u |> UNION FROM u",
+        "LET u = /db/users\n\
+         u |> UNION u",
     )
     .unwrap();
     assert!(matches!(v.as_relation().unwrap(), PlanSource::SetOp { .. }));
@@ -523,7 +522,7 @@ fn let_bound_relation_is_reusable() {
 /// resolve error (resolution runs first) — never a silent empty relation.
 #[test]
 fn unbound_name_fails_evaluation() {
-    let err = eval("FROM ghost |> SELECT id").unwrap_err();
+    let err = eval("ghost |> SELECT id").unwrap_err();
     assert_eq!(err.code(), "unknown_binding");
 }
 
@@ -532,9 +531,9 @@ fn unbound_name_fails_evaluation() {
 #[test]
 fn shadowing_uses_the_innermost_binding() {
     let v = eval(
-        "LET x = FROM /mail/inbox\n\
-         LET x = FROM /db/users\n\
-         FROM x |> SELECT *",
+        "LET x = /mail/inbox\n\
+         LET x = /db/users\n\
+         x |> SELECT *",
     )
     .unwrap();
     let schema = v.as_relation().unwrap().schema();

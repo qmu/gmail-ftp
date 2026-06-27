@@ -8,13 +8,13 @@ as of a tag, branch, or commit.
 **Read a file as it was at a tag:**
 
 ```qfs
-FROM /git/myrepo@v1.2/src/main.rs
+/git/myrepo@v1.2/src/main.rs
 ```
 
 **List a directory at a specific commit:**
 
 ```qfs
-FROM /git/myrepo@9f2c1a/src
+/git/myrepo@9f2c1a/src
 |> SELECT path
 ```
 
@@ -32,7 +32,7 @@ GitHub is an **object graph**: things (PRs, issues) with actions you `CALL`.
 **List open pull requests, newest first:**
 
 ```qfs
-FROM /github/acme/web/pulls
+/github/acme/web/pulls
 |> WHERE state == 'open'
 |> SELECT number, title
 |> ORDER BY number DESC
@@ -42,7 +42,7 @@ FROM /github/acme/web/pulls
 **Squash-merge a pull request** (irreversible — a gate):
 
 ```qfs
-FROM /github/acme/web/pulls/42
+/github/acme/web/pulls/42
 |> CALL github.merge(method => 'squash')
 ```
 
@@ -64,7 +64,7 @@ INSERT INTO /slack/acme/general/messages
 **Read the latest messages in a channel:**
 
 ```qfs
-FROM /slack/acme/general/messages
+/slack/acme/general/messages
 |> SELECT text
 |> LIMIT 20
 ```

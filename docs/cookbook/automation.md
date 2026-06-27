@@ -51,7 +51,7 @@ CREATE JOB nightly
 ```qfs
 CREATE ENDPOINT recent
   ON 'GET /recent'
-  AS FROM /mail/inbox |> LIMIT 5
+  AS /mail/inbox |> LIMIT 5
 ```
 
 ## View — name and cache a query
@@ -60,14 +60,14 @@ CREATE ENDPOINT recent
 
 ```qfs
 CREATE VIEW recent_mail
-  AS FROM /mail/inbox |> LIMIT 50
+  AS /mail/inbox |> LIMIT 50
 ```
 
 **A materialized view** (cached result):
 
 ```qfs
 CREATE MATERIALIZED VIEW cached
-  AS FROM /mail/inbox |> LIMIT 50
+  AS /mail/inbox |> LIMIT 50
 ```
 
 ## Policy — least privilege

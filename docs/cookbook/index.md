@@ -9,7 +9,7 @@ Each recipe is a short statement. Multi-stage queries are written one stage per 
 pipe leading each line — read it top to bottom like a series of steps:
 
 ```qfs
-FROM /mail/inbox
+/mail/inbox
 |> WHERE subject LIKE '%invoice%'
 |> SELECT date, from, subject
 |> ORDER BY date DESC

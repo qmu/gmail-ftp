@@ -65,7 +65,7 @@ fn main() {
         // driver registry (local-fs today). qfs-cmd/qfs-exec stay off qfs-runtime; this is the leaf.
         &commit::apply_plan,
         // The run context for `qfs run`: the Engine (local-FS driver in its mounts so a `FROM …`
-        // resolves + plans) + the ReadRegistry (the scan facet), so `FROM /local/<p>` scans the
+        // resolves + plans) + the ReadRegistry (the scan facet), so `/local/<p>` scans the
         // host `/<p>`. The binary owns the runtime-coupled adapter.
         &shell::run_engine_and_reads,
     );

@@ -21,7 +21,7 @@
 //! bare identifier matching a declared route param, and that identifier **must be distinct
 //! from any column name** the query references (so the rewrite cannot ambiguously substitute a
 //! column). The natural authoring form:
-//! `CREATE ENDPOINT GET /items/:p_id AS (FROM /mock/items |> WHERE id = p_id)` — the route
+//! `CREATE ENDPOINT GET /items/:p_id AS (/mock/items |> WHERE id = p_id)` — the route
 //! param `:p_id` is distinct from the `id` column, so the LHS `id` stays a column and the RHS
 //! `p_id` is the param slot bound from the path segment. EVERY [`Expr::Col`] whose identifier
 //! is a declared param is substituted; a param name colliding with a column name would

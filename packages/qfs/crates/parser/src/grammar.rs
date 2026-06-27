@@ -159,7 +159,7 @@ fn is_keyword_word(s: &str) -> bool {
 /// structured-error contract, RFD §5).
 fn expected_set() -> Vec<String> {
     vec![
-        Keyword::From.text().to_string(),
+        "a source path".to_string(),
         Keyword::InsertInto.text().to_string(),
         Keyword::Create.text().to_string(),
         Keyword::Preview.text().to_string(),
@@ -609,8 +609,12 @@ fn value_column_list(input: &mut Stream<'_>) -> ModalResult<Vec<Ident>> {
 // ---- pipe operations ------------------------------------------------------
 
 fn pipeline(input: &mut Stream<'_>) -> ModalResult<Pipeline> {
-    let _ = kw(Keyword::From).parse_next(input)?;
-    let source = cut_err(source).parse_next(input)?;
+    // Decision R (t73): the source position needs no `FROM`. A leading `/path`, a `(subquery)`,
+    // a `VALUES …` literal, or a `LET`-bound name *is* the source. The leading `/` is unambiguous
+    // by position (an expression-start `/` is a path; the lexer never emits a division `/`), so
+    // this composes with future infix arithmetic. The source is parsed backtrackably so a non-
+    // pipeline statement (an effect/DDL/plan wrapper) can still win in the enclosing `alt`.
+    let source = source(input)?;
     // Once a `|>` is consumed we are committed to a pipe op: `cut_err` turns an
     // inner failure into a non-backtracking error so the diagnostic points *inside*
     // the op (a dangling `WHERE`, a lowercase keyword) instead of back at the `|>`.

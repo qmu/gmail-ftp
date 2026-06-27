@@ -18,7 +18,9 @@
 #[non_exhaustive]
 pub enum Keyword {
     // -- Query / transform (RFD §3) --
-    From,
+    // NOTE: `FROM` was REMOVED in M6 (ticket t73, decision R): a leading `/path` (or a
+    // `LET`-bound name) *is* the source, so the source position needs no `FROM` keyword. This is
+    // a deliberate vocabulary *removal* — the freeze count below drops by one to mark it.
     Where,
     Select,
     Extend,
@@ -82,7 +84,6 @@ impl Keyword {
     #[must_use]
     pub fn from_word(word: &str) -> Option<Self> {
         Some(match word {
-            "FROM" => Self::From,
             "WHERE" => Self::Where,
             "SELECT" => Self::Select,
             "EXTEND" => Self::Extend,
@@ -124,7 +125,6 @@ impl Keyword {
     #[must_use]
     pub const fn text(self) -> &'static str {
         match self {
-            Self::From => "FROM",
             Self::Where => "WHERE",
             Self::Select => "SELECT",
             Self::Extend => "EXTEND",
@@ -175,7 +175,7 @@ impl Keyword {
 /// updating the test that locks it — by design (closed-core enforcement).
 pub const KEYWORDS: &[&str] = &[
     // Query / transform
-    "FROM",
+    // (`FROM` removed in M6, ticket t73 / decision R — the leading `/path` is the source.)
     "WHERE",
     "SELECT",
     "EXTEND",
@@ -254,15 +254,17 @@ mod tests {
     }
 
     /// Locks the exact frozen count. RFD §3 froze 38 reserved keywords; ticket t60
-    /// deliberately adds `LET` (decision H, the M6 functional core), taking the count to
-    /// 39. A diff to this number is the tripwire that a keyword was smuggled in or removed
-    /// — bumping it here is the *intended* change-control event for the `LET` addition.
+    /// deliberately added `LET` (decision H, the M6 functional core), taking the count to 39;
+    /// ticket t73 (decision R) then deliberately *removed* `FROM` (the source position needs no
+    /// keyword — a leading `/path` is the source), taking it back to 38. A diff to this number is
+    /// the tripwire that a keyword was smuggled in or removed — editing it here is the *intended*
+    /// change-control event for the `FROM` removal.
     #[test]
     fn keyword_count_is_frozen() {
         assert_eq!(
             KEYWORDS.len(),
-            39,
-            "the closed-core keyword set is frozen at 39 entries (RFD §3 + the t60 `LET` addition)"
+            38,
+            "the closed-core keyword set is frozen at 38 entries (RFD §3 + t60 `LET` − t73 `FROM`)"
         );
         // No duplicates in the fixture.
         let mut seen = std::collections::BTreeSet::new();
@@ -320,9 +322,15 @@ mod tests {
         }
         // Non-keywords are not recognized.
         assert_eq!(
-            Keyword::from_word("from"),
+            Keyword::from_word("where"),
             None,
             "case-sensitive: lowercase"
+        );
+        // `FROM` was removed from the closed core (t73): it is no longer a keyword in any case.
+        assert_eq!(
+            Keyword::from_word("FROM"),
+            None,
+            "the keyword was removed in t73"
         );
         assert_eq!(Keyword::from_word("GROUP"), None, "lead word of GROUP BY");
         assert_eq!(Keyword::from_word("BANANA"), None);
@@ -330,7 +338,6 @@ mod tests {
 
     /// The exhaustive list of every `Keyword` variant, used by the golden test.
     const ALL_KEYWORDS: &[Keyword] = &[
-        Keyword::From,
         Keyword::Where,
         Keyword::Select,
         Keyword::Extend,

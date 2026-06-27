@@ -10,7 +10,7 @@ the familiar `ls`/`cp`/`mv`/`rm` — those are just shorthand for these same ver
 **List a folder, biggest files first:**
 
 ```qfs
-FROM /s3/my-bucket/logs
+/s3/my-bucket/logs
 |> WHERE size > 1000000
 |> SELECT name, size
 |> ORDER BY size DESC
@@ -19,7 +19,7 @@ FROM /s3/my-bucket/logs
 **List a local directory with details:**
 
 ```qfs
-FROM /local/docs
+/local/docs
 |> SELECT name, size, is_dir, modified
 ```
 
@@ -57,7 +57,7 @@ REMOVE /s3/my-bucket/tmp/old.log
 **JSON → YAML:**
 
 ```qfs
-FROM /local/config.json
+/local/config.json
 |> DECODE json
 |> ENCODE yaml
 ```
@@ -65,7 +65,7 @@ FROM /local/config.json
 **Read a JSON file, keep the errors, write a CSV:**
 
 ```qfs
-FROM /local/events.json
+/local/events.json
 |> DECODE json
 |> WHERE level == 'error'
 |> ENCODE csv
@@ -74,7 +74,7 @@ FROM /local/events.json
 **Export a database table to JSONL:**
 
 ```qfs
-FROM /sql/pg/orders
+/sql/pg/orders
 |> SELECT id, total, status
 |> ENCODE jsonl
 ```

@@ -54,7 +54,7 @@ fn partial_where_project() -> PushdownProfile {
 
 #[test]
 fn full_profile_pushes_entire_chain_to_one_scan() {
-    // FROM /db |> WHERE age > 30 |> SELECT id, name |> LIMIT 5
+    // /db |> WHERE age > 30 |> SELECT id, name |> LIMIT 5
     let plan = LogicalPlan::Limit {
         input: Box::new(LogicalPlan::Project {
             input: Box::new(LogicalPlan::Filter {
@@ -117,7 +117,7 @@ fn none_profile_pushes_nothing_all_residual_local() {
 #[test]
 fn partial_profile_splits_pushable_from_residual() {
     // WHERE + SELECT are pushable; LIMIT + DISTINCT are not → they stay local above.
-    // FROM /db |> WHERE age>30 |> SELECT id,name |> DISTINCT |> LIMIT 3
+    // /db |> WHERE age>30 |> SELECT id,name |> DISTINCT |> LIMIT 3
     let plan = LogicalPlan::Limit {
         input: Box::new(LogicalPlan::Distinct {
             input: Box::new(LogicalPlan::Project {
@@ -164,7 +164,7 @@ fn partial_stops_pushing_after_first_local_op() {
         distinct: false,
         group_by: false,
     };
-    // FROM /db |> WHERE age>30 |> SELECT id |> WHERE id>0
+    // /db |> WHERE age>30 |> SELECT id |> WHERE id>0
     let plan = LogicalPlan::Filter {
         input: Box::new(LogicalPlan::Project {
             input: Box::new(LogicalPlan::Filter {
@@ -191,7 +191,7 @@ fn partial_stops_pushing_after_first_local_op() {
 
 #[test]
 fn cross_source_join_federates_locally_over_two_scans() {
-    // FROM /pg JOIN /git ON pg.id = git.id — two different sources → a local HashJoin
+    // /pg JOIN /git ON pg.id = git.id — two different sources → a local HashJoin
     // over each side's pushed-down scan.
     let plan = LogicalPlan::Join {
         kind: qfs_pushdown::JoinKind::Inner,

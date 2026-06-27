@@ -137,7 +137,7 @@ fn local_engine_and_reads(root: PathBuf) -> (Engine, ReadRegistry) {
 
 /// The `(Engine, ReadRegistry)` for the one-shot `qfs run` path (injected into qfs-cmd as the
 /// run-context provider). Registers the local-FS driver — its introspective + pushdown facet in
-/// the engine's mounts (so `FROM /local/<p>` resolves + plans) and its read facet in the registry
+/// the engine's mounts (so `/local/<p>` resolves + plans) and its read facet in the registry
 /// (so the scan executes) — rooted at `/`, mirroring the commit driver's mapping. qfs-cmd stays
 /// off qfs-driver-local; the binary (the leaf) owns this adapter, like the shell + commit
 /// composition. Other drivers join here as their read facets land.
@@ -172,7 +172,7 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry) {
         let _ = engine.mounts.register(Arc::new(crate::git::git_driver()));
     }
     // Sys (t53): register the `/sys/*` administration mount (its PURE describe/capabilities/pushdown
-    // facet, so `FROM /sys/users |> …` and `INSERT INTO /sys/policies …` resolve + plan + gate) plus
+    // facet, so `/sys/users |> …` and `INSERT INTO /sys/policies …` resolve + plan + gate) plus
     // the live read facet (so a `/sys` scan returns real rows). The read source is the binary's
     // injected System-DB backend; when no System DB resolves the mount still plans (describe is
     // cred-free) but a scan over an unwired `/sys` surfaces a structured read error.
@@ -467,7 +467,7 @@ mod tests {
     fn raw_statement_runs_through_same_pipeline() {
         let (_d, engine, reads) = fixture();
         // A raw qfs read typed at the prompt produces a listing, same as the one-shot path.
-        let t = run_script(&engine, &reads, "FROM /local |> SELECT name\n");
+        let t = run_script(&engine, &reads, "/local |> SELECT name\n");
         assert!(t.contains("a.md"), "raw statement listing:\n{t}");
     }
 

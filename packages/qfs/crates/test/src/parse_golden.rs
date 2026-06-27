@@ -112,14 +112,15 @@ mod tests {
 
     #[test]
     fn golden_parse_returns_the_owned_ast() {
-        let snap = golden_parse("FROM /mail/inbox |> LIMIT 5");
+        let snap = golden_parse("/mail/inbox |> LIMIT 5");
         assert!(matches!(snap.ast, Statement::Query(_)));
     }
 
     #[test]
     fn error_snapshot_captures_a_stable_structured_message() {
         // A lowercase keyword is not in the frozen closed-core set — a stable recovery message.
-        let snap = error_snapshot("from /mail/inbox");
+        // (`from` is no longer a keyword post-t73; a lowercase *stage* keyword still trips it.)
+        let snap = error_snapshot("/mail/inbox |> where id > 5");
         assert!(
             !snap.expected.is_empty(),
             "expected-set is non-empty (RFD §5)"

@@ -124,7 +124,7 @@ fn resolve(src: &str) -> Result<Vec<ResolvedCall>, ResolveError> {
 
 #[test]
 fn call_resolves_declared_procedure() {
-    let calls = resolve("FROM /mail/inbox |> CALL mail.send(to => 'a@b.c')").unwrap();
+    let calls = resolve("/mail/inbox |> CALL mail.send(to => 'a@b.c')").unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].qualified, "mail.send");
     assert_eq!(calls[0].driver, DriverId::new("mail"));
@@ -134,8 +134,8 @@ fn call_resolves_declared_procedure() {
 /// Namespace isolation: `git.merge` and `github.merge` resolve to DISTINCT refs.
 #[test]
 fn call_namespaces_are_isolated() {
-    let git = resolve("FROM /git/repo |> CALL git.merge(method => 'squash')").unwrap();
-    let github = resolve("FROM /github/repo |> CALL github.merge(method => 'squash')").unwrap();
+    let git = resolve("/git/repo |> CALL git.merge(method => 'squash')").unwrap();
+    let github = resolve("/github/repo |> CALL github.merge(method => 'squash')").unwrap();
     assert_eq!(git[0].qualified, "git.merge");
     assert_eq!(github[0].qualified, "github.merge");
     assert_ne!(git[0].driver, github[0].driver);
@@ -144,14 +144,14 @@ fn call_namespaces_are_isolated() {
 
 #[test]
 fn call_unknown_driver_is_structured() {
-    let err = resolve("FROM /mail/inbox |> CALL drive.merge()").unwrap_err();
+    let err = resolve("/mail/inbox |> CALL drive.merge()").unwrap_err();
     assert_eq!(err.code(), "unknown_driver");
     assert!(matches!(err, ResolveError::UnknownDriver { driver } if driver == "drive"));
 }
 
 #[test]
 fn call_unknown_procedure_lists_available() {
-    let err = resolve("FROM /mail/inbox |> CALL mail.nuke()").unwrap_err();
+    let err = resolve("/mail/inbox |> CALL mail.nuke()").unwrap_err();
     assert_eq!(err.code(), "unknown_procedure");
     match err {
         ResolveError::UnknownProcedure {
@@ -170,7 +170,7 @@ fn call_unknown_procedure_lists_available() {
 #[test]
 fn call_arity_mismatch_is_structured() {
     // mail.send declares ONE param; supplying two positional args overflows.
-    let err = resolve("FROM /mail/inbox |> CALL mail.send('a', 'b')").unwrap_err();
+    let err = resolve("/mail/inbox |> CALL mail.send('a', 'b')").unwrap_err();
     assert_eq!(err.code(), "arity_mismatch");
     match err {
         ResolveError::ArityMismatch {
@@ -188,7 +188,7 @@ fn call_arity_mismatch_is_structured() {
 
 #[test]
 fn call_unknown_named_arg_lists_params() {
-    let err = resolve("FROM /mail/inbox |> CALL mail.send(bcc => 'x')").unwrap_err();
+    let err = resolve("/mail/inbox |> CALL mail.send(bcc => 'x')").unwrap_err();
     assert_eq!(err.code(), "unknown_arg");
     match err {
         ResolveError::UnknownArg {
@@ -210,7 +210,7 @@ fn call_unknown_named_arg_lists_params() {
 /// the /mail driver, which ships SEND).
 #[test]
 fn alias_resolves_against_receiver_and_desugars() {
-    let calls = resolve("FROM /mail/inbox |> WHERE SEND()").unwrap();
+    let calls = resolve("/mail/inbox |> WHERE SEND()").unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(
         calls[0].qualified, "mail.send",
@@ -224,7 +224,7 @@ fn alias_resolves_against_receiver_and_desugars() {
 #[test]
 fn alias_not_provided_by_receiver() {
     // MERGE is shipped only by /git; the receiver here is /mail.
-    let err = resolve("FROM /mail/inbox |> WHERE MERGE()").unwrap_err();
+    let err = resolve("/mail/inbox |> WHERE MERGE()").unwrap_err();
     assert_eq!(err.code(), "alias_not_provided");
     assert!(
         matches!(err, ResolveError::AliasNotProvided { name, driver }
@@ -256,7 +256,7 @@ fn alias_ambiguous_across_drivers() {
     ))
     .unwrap();
 
-    let stmt = parse_statement("FROM /git/repo |> WHERE SEND()").unwrap();
+    let stmt = parse_statement("/git/repo |> WHERE SEND()").unwrap();
     let err = Resolver::new(&reg).resolve_statement(&stmt).unwrap_err();
     assert_eq!(err.code(), "ambiguous_alias");
     match err {
@@ -272,7 +272,7 @@ fn alias_ambiguous_across_drivers() {
 /// UnknownReceiver rather than guessing.
 #[test]
 fn alias_over_valueless_receiver_fails_closed() {
-    let err = resolve("FROM VALUES (1) |> WHERE SEND()").unwrap_err();
+    let err = resolve("VALUES (1) |> WHERE SEND()").unwrap_err();
     assert_eq!(err.code(), "unknown_receiver");
     assert!(matches!(err, ResolveError::UnknownReceiver { name } if name == "SEND"));
 }
@@ -281,7 +281,7 @@ fn alias_over_valueless_receiver_fails_closed() {
 /// ticket): resolution simply produces no binding for it and does not error.
 #[test]
 fn non_alias_function_is_ignored() {
-    let calls = resolve("FROM /mail/inbox |> WHERE upper(subject) == 'X'").unwrap();
+    let calls = resolve("/mail/inbox |> WHERE upper(subject) == 'X'").unwrap();
     assert!(
         calls.is_empty(),
         "a non-prelude function is left for the function-registry ticket"
@@ -387,7 +387,7 @@ fn error_codes_are_distinct_and_stable() {
 /// PREVIEW/COMMIT wrappers are transparent to resolution (the inner statement resolves).
 #[test]
 fn plan_wrapper_resolves_inner() {
-    let calls = resolve("PREVIEW FROM /mail/inbox |> CALL mail.send(to => 'a@b.c')").unwrap();
+    let calls = resolve("PREVIEW /mail/inbox |> CALL mail.send(to => 'a@b.c')").unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].qualified, "mail.send");
 }
@@ -399,8 +399,8 @@ fn plan_wrapper_resolves_inner() {
 #[test]
 fn let_bound_name_resolves_in_body() {
     let calls = resolve(
-        "LET inbox = FROM /mail/inbox\n\
-         FROM inbox |> CALL mail.send(to => 'a@b.c')",
+        "LET inbox = /mail/inbox\n\
+         inbox |> CALL mail.send(to => 'a@b.c')",
     )
     .unwrap();
     assert_eq!(calls.len(), 1);
@@ -411,7 +411,7 @@ fn let_bound_name_resolves_in_body() {
 /// error — a typo'd name is never a silent empty relation (RFD §5).
 #[test]
 fn unbound_name_is_structured_error() {
-    let err = resolve("FROM ghost |> LIMIT 1").unwrap_err();
+    let err = resolve("ghost |> LIMIT 1").unwrap_err();
     assert_eq!(err.code(), "unknown_binding");
     assert!(matches!(err, ResolveError::UnknownBinding { name } if name == "ghost"));
 }
@@ -420,9 +420,9 @@ fn unbound_name_is_structured_error() {
 #[test]
 fn shadowing_is_allowed() {
     resolve(
-        "LET x = FROM /mail/inbox\n\
-         LET x = FROM /git/repo\n\
-         FROM x |> LIMIT 1",
+        "LET x = /mail/inbox\n\
+         LET x = /git/repo\n\
+         x |> LIMIT 1",
     )
     .expect("a re-bound name resolves");
 }
@@ -432,9 +432,9 @@ fn shadowing_is_allowed() {
 #[test]
 fn binding_value_has_no_forward_reference() {
     let err = resolve(
-        "LET a = FROM b |> LIMIT 1\n\
-         LET b = FROM /mail/inbox\n\
-         FROM a",
+        "LET a = b |> LIMIT 1\n\
+         LET b = /mail/inbox\n\
+         a",
     )
     .unwrap_err();
     assert!(matches!(err, ResolveError::UnknownBinding { name } if name == "b"));

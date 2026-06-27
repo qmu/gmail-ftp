@@ -3,7 +3,7 @@
 
 use qfs_types::{Column, ColumnType, Row, Schema, Value};
 
-/// One entry in a directory/glob listing — the row a `FROM /local/dir` scan yields.
+/// One entry in a directory/glob listing — the row a `/local/dir` scan yields.
 /// Fields mirror `lstat`/`metadata`; `mode` is the Unix permission bits (0 on platforms
 /// without them). Owned, vendor-free.
 #[derive(Debug, Clone, PartialEq, Eq)]

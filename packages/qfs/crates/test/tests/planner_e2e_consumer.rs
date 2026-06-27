@@ -146,16 +146,17 @@ fn canonical_render_of_upsert(stmt: &str) -> String {
 
 #[test]
 fn s3_parser_goldens_over_closed_core() {
-    golden_parse("FROM /mail/inbox |> WHERE id > 5 |> LIMIT 10").snapshot("ast_query_pipe");
-    golden_parse("FROM /s3/data |> DECODE json |> CALL git.merge()").snapshot("ast_decode_call");
-    golden_parse("CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5")
+    golden_parse("/mail/inbox |> WHERE id > 5 |> LIMIT 10").snapshot("ast_query_pipe");
+    golden_parse("/s3/data |> DECODE json |> CALL git.merge()").snapshot("ast_decode_call");
+    golden_parse("CREATE ENDPOINT recent ON 'GET /recent' AS /mail/inbox |> LIMIT 5")
         .snapshot("ast_create_endpoint");
 }
 
 #[test]
 fn s3_parse_error_recovery_is_stable_and_structured() {
     // A lowercase keyword is outside the frozen closed-core set: a stable structured message.
-    let snap = error_snapshot("from /mail/inbox");
+    // (`from` is no longer a keyword post-t73; a lowercase *stage* keyword still trips the check.)
+    let snap = error_snapshot("/mail/inbox |> where id > 5");
     assert!(!snap.code.is_empty(), "machine code present (RFD §5)");
     assert!(!snap.expected.is_empty(), "expected-set non-empty (RFD §5)");
     // The structured error never carries a literal value (secret hygiene) — only a kind.
@@ -189,7 +190,7 @@ fn s4_codec_roundtrip_identity_all_formats() {
 
 #[test]
 fn s5_preview_handler_endpoint_and_job_no_socket() {
-    let ep = preview_handler("CREATE ENDPOINT hello ON 'GET /hello' AS FROM /mail/inbox");
+    let ep = preview_handler("CREATE ENDPOINT hello ON 'GET /hello' AS /mail/inbox");
     assert_eq!(
         ep.nodes().len(),
         1,
@@ -227,7 +228,7 @@ fn s6_no_creds_serves_no_token() {
 #[test]
 fn s6_clean_golden_passes_scrub() {
     // A real owned-DTO render (a parsed AST) carries no credential shape — the scrub passes.
-    let rendered = golden::canonical_json(&golden_parse("FROM /mail/inbox |> LIMIT 5"));
+    let rendered = golden::canonical_json(&golden_parse("/mail/inbox |> LIMIT 5"));
     golden::assert_no_credential_shape(&rendered);
 }
 

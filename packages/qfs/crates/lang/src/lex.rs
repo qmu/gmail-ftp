@@ -51,7 +51,7 @@ use crate::token::{literal_word, LitType, PathSeg, SizeUnit, Token};
 /// ```
 /// use qfs_lang::lex::lex;
 /// use qfs_lang::token::Token;
-/// let toks = lex("FROM mail").expect("valid");
+/// let toks = lex("WHERE mail").expect("valid");
 /// assert_eq!(toks.len(), 2);
 /// assert!(matches!(toks[1].node, Token::Ident(ref s) if s == "mail"));
 /// ```

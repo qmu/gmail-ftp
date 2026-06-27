@@ -24,8 +24,8 @@
                 }
               ],
               "span": [
-                48,
-                59
+                43,
+                54
               ]
             }
           }
@@ -46,5 +46,5 @@
       "where_pred": null
     }
   },
-  "source": "CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5"
+  "source": "CREATE ENDPOINT recent ON 'GET /recent' AS /mail/inbox |> LIMIT 5"
 }

@@ -38,7 +38,7 @@ mod tests {
     #[test]
     fn create_endpoint_previews_a_single_server_config_write() {
         // No socket is opened — the binding's plan is asserted directly.
-        let plan = preview_handler("CREATE ENDPOINT hello ON 'GET /hello' AS FROM /mail/inbox");
+        let plan = preview_handler("CREATE ENDPOINT hello ON 'GET /hello' AS /mail/inbox");
         assert_eq!(
             plan.nodes().len(),
             1,

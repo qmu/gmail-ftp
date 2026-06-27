@@ -1,8 +1,8 @@
 {
-  "at": 0,
+  "at": 15,
   "code": "UNKNOWN_KEYWORD",
   "expected": [
-    "FROM",
+    "a source path",
     "INSERT INTO",
     "CREATE",
     "PREVIEW",
@@ -12,5 +12,5 @@
   ],
   "found": "an identifier",
   "message": "closed-core keywords are UPPERCASE (RFD §3)",
-  "source": "from /mail/inbox"
+  "source": "/mail/inbox |> where id > 5"
 }

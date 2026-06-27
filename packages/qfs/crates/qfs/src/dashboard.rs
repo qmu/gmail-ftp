@@ -474,7 +474,7 @@ mod tests {
             &StubEngine,
             &post(
                 "/api/run",
-                json!({ "statement": "REMOVE FROM /x", "mode": "commit" }),
+                json!({ "statement": "REMOVE /x", "mode": "commit" }),
             ),
         )
         .expect("owned");
@@ -656,7 +656,7 @@ mod tests {
             policy: Some(allow_policy(&[qfs_mcp::Verb::Remove])),
             ..Default::default()
         };
-        let (resp, v) = commit_resp(&engine, json!({ "statement": "REMOVE FROM /local/x" }));
+        let (resp, v) = commit_resp(&engine, json!({ "statement": "REMOVE /local/x" }));
         assert_eq!(resp.status, 200);
         assert_eq!(v["applied"], json!(false));
         assert_eq!(v["refused"], "needs_human_approval");
@@ -678,7 +678,7 @@ mod tests {
         };
         let (resp, v) = commit_resp(
             &engine,
-            json!({ "statement": "REMOVE FROM /local/x", "ack": true }),
+            json!({ "statement": "REMOVE /local/x", "ack": true }),
         );
         assert_eq!(resp.status, 200);
         assert_eq!(v["applied"], json!(true));
@@ -698,7 +698,7 @@ mod tests {
             policy: Some(allow_policy(&[qfs_mcp::Verb::Remove])),
             ..Default::default()
         };
-        let (_resp, v) = commit_resp(&engine, json!({ "statement": "REMOVE FROM /local/x" }));
+        let (_resp, v) = commit_resp(&engine, json!({ "statement": "REMOVE /local/x" }));
         let effects = v["effects"].as_array().expect("effects array");
         assert!(
             effects

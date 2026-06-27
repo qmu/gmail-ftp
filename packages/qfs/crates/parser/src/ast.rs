@@ -129,7 +129,7 @@ pub struct Pipeline {
 /// `VALUES` block, or a parenthesised sub-pipeline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Source {
-    /// `FROM /driver/seg/seg` (the open path registry).
+    /// `/driver/seg/seg` (the open path registry).
     Path(PathExpr),
     /// `FROM VALUES (..),(..)` — an inline literal relation.
     Values(Values),

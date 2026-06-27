@@ -103,11 +103,11 @@ fn reads_with_mail() -> ReadRegistry {
 
 #[test]
 fn headline_read_returns_rows_through_real_executor() {
-    // `FROM /mail/inbox |> LIMIT 1` returns {"rows":[…]} end-to-end: parse -> resolve -> plan
+    // `/mail/inbox |> LIMIT 1` returns {"rows":[…]} end-to-end: parse -> resolve -> plan
     // -> scan -> residual -> rows. The fake over-returns 3 rows; LIMIT 1 trims to 1.
     let engine = engine_with_mail();
     let reads = reads_with_mail();
-    let stmt = parse("FROM /mail/inbox |> LIMIT 1").unwrap();
+    let stmt = parse("/mail/inbox |> LIMIT 1").unwrap();
     let rows = block_on_read(&stmt, &engine.mounts, &reads).unwrap();
     assert_eq!(
         rows.len(),
@@ -123,7 +123,7 @@ fn residual_where_refilters_over_returned_rows() {
     // WHERE id > 1 re-filters to ids 2 and 3.
     let engine = engine_with_mail();
     let reads = reads_with_mail();
-    let stmt = parse("FROM /mail/inbox |> WHERE id > 1").unwrap();
+    let stmt = parse("/mail/inbox |> WHERE id > 1").unwrap();
     let rows = block_on_read(&stmt, &engine.mounts, &reads).unwrap();
     assert_eq!(rows.len(), 2);
     let ids: Vec<i64> = rows
@@ -142,7 +142,7 @@ fn headline_json_envelope_is_rows_object() {
     // The stable JSON contract: {"rows":[{id,subject}, …]}.
     let engine = engine_with_mail();
     let reads = reads_with_mail();
-    let stmt = parse("FROM /mail/inbox |> LIMIT 1").unwrap();
+    let stmt = parse("/mail/inbox |> LIMIT 1").unwrap();
     let rows = block_on_read(&stmt, &engine.mounts, &reads).unwrap();
     let json = serde_json::to_value(&rows).unwrap();
     assert!(json["rows"].is_array());
@@ -189,7 +189,7 @@ fn run_with_ack(
 
 #[test]
 fn oneshot_read_json_exit_zero_with_rows() {
-    let (code, out, err) = run("FROM /mail/inbox |> LIMIT 1", OutputFormat::Json, false);
+    let (code, out, err) = run("/mail/inbox |> LIMIT 1", OutputFormat::Json, false);
     assert_eq!(code, 0);
     assert!(err.is_empty(), "data goes to stdout, not stderr");
     let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
@@ -198,7 +198,7 @@ fn oneshot_read_json_exit_zero_with_rows() {
 
 #[test]
 fn oneshot_read_table_renders_columns() {
-    let (code, out, _err) = run("FROM /mail/inbox", OutputFormat::Table, false);
+    let (code, out, _err) = run("/mail/inbox", OutputFormat::Table, false);
     assert_eq!(code, 0);
     assert!(out.contains("id"));
     assert!(out.contains("subject"));
@@ -216,7 +216,7 @@ fn oneshot_parse_error_exit_two_with_kind_parse() {
 
 #[test]
 fn oneshot_relative_path_usage_exit_two() {
-    let (code, _out, err) = run("FROM mail/inbox |> LIMIT 1", OutputFormat::Json, false);
+    let (code, _out, err) = run("mail/inbox |> LIMIT 1", OutputFormat::Json, false);
     assert_eq!(code, 2);
     let v: serde_json::Value = serde_json::from_str(err.trim()).unwrap();
     assert_eq!(v["error"]["kind"], "usage");
@@ -226,7 +226,7 @@ fn oneshot_relative_path_usage_exit_two() {
 #[test]
 fn oneshot_unknown_source_capability_exit_three() {
     // /nope has no mounted driver → planner rejects with unknown_source → exit 3.
-    let (code, _out, err) = run("FROM /nope/x |> LIMIT 1", OutputFormat::Json, false);
+    let (code, _out, err) = run("/nope/x |> LIMIT 1", OutputFormat::Json, false);
     assert_eq!(code, 3);
     let v: serde_json::Value = serde_json::from_str(err.trim()).unwrap();
     assert_eq!(v["error"]["kind"], "capability");

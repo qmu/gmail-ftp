@@ -23,7 +23,7 @@ in. You address a single item the same way you'd point at a file.
 Some paths take a **coordinate**. Git, for example, lets you read a file as of a tag or commit:
 
 ```qfs
-FROM /git/myrepo@v1.2/src/main.rs
+/git/myrepo@v1.2/src/main.rs
 |> SELECT path
 ```
 
@@ -54,8 +54,8 @@ folder of files:
 | Shell shorthand | is just | the real verb |
 | --- | --- | --- |
 | `ls <dir>` | listing a folder | `SELECT` over the directory |
-| `cat <file>` | reading a file | `FROM <file>` |
-| `cp <a> <b>` | copying | `UPSERT INTO <b> FROM <a>` |
+| `cat <file>` | reading a file | `<file>` |
+| `cp <a> <b>` | copying | `UPSERT INTO <b> <a>` |
 | `mv <a> <b>` | moving | copy, then `REMOVE <a>` |
 | `rm <file>` | deleting | `REMOVE <file>` |
 
@@ -69,7 +69,7 @@ You query and change paths with one small SQL-like language. A query is a **sour
 **stages** joined by `|>` (a pipe):
 
 ```qfs
-FROM /sql/pg/orders
+/sql/pg/orders
 |> WHERE total > 100
 |> SELECT id, total
 |> ORDER BY total DESC
@@ -89,7 +89,7 @@ The read/transform stages you'll use most:
 | `AGGREGATE <fn> AS <name>` | Summarize (`AGGREGATE count(id) AS n`) |
 | `GROUP BY <cols>` | Group for aggregation |
 | `ORDER BY <col> [DESC]`, `LIMIT <n>`, `DISTINCT` | Sort, cap, dedupe |
-| `UNION` / `EXCEPT` / `INTERSECT` `FROM <path>` | Set operations across sources |
+| `UNION` / `EXCEPT` / `INTERSECT` `<path>` | Set operations across sources |
 
 The write stages (effects):
 
@@ -123,7 +123,7 @@ pushes the parts a service can do natively (a `WHERE`, a `LIMIT`) *down* to that
 the rest — joins, extra filtering, sorting — locally:
 
 ```qfs
-FROM /sql/pg/orders
+/sql/pg/orders
 |> JOIN /github/acme/web/issues ON id == issue_id
 |> SELECT id, title
 ```
@@ -137,7 +137,7 @@ A blob of bytes becomes rows with `DECODE`, and rows become bytes with `ENCODE`.
 `json`, `jsonl`, `yaml`, `toml`, `csv`, `md`. So converting a file's format is one line:
 
 ```qfs
-FROM /local/config.json
+/local/config.json
 |> DECODE json
 |> ENCODE yaml
 ```

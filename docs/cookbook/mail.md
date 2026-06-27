@@ -10,7 +10,7 @@ Run `qfs describe /mail/inbox` to see the full schema for your mailbox.
 **Find invoices, newest first:**
 
 ```qfs
-FROM /mail/inbox
+/mail/inbox
 |> WHERE subject LIKE '%invoice%'
 |> SELECT date, from, subject
 |> ORDER BY date DESC
@@ -20,7 +20,7 @@ FROM /mail/inbox
 **Everything from one sender:**
 
 ```qfs
-FROM /mail/inbox
+/mail/inbox
 |> WHERE from == 'billing@stripe.com'
 |> SELECT date, subject
 ```
@@ -28,7 +28,7 @@ FROM /mail/inbox
 **Mail with attachments in a date range:**
 
 ```qfs
-FROM /mail/inbox
+/mail/inbox
 |> WHERE date BETWEEN '2026-01-01' AND '2026-03-31'
 |> SELECT date, from, subject, attachments
 ```
@@ -36,7 +36,7 @@ FROM /mail/inbox
 **Read a single message by id:**
 
 ```qfs
-FROM id:18f1a2b3c4
+id:18f1a2b3c4
 ```
 
 ## Summarize
@@ -44,7 +44,7 @@ FROM id:18f1a2b3c4
 **Who emails you most?**
 
 ```qfs
-FROM /mail/inbox
+/mail/inbox
 |> GROUP BY from
 |> AGGREGATE count(id) AS messages
 |> ORDER BY messages DESC
@@ -66,7 +66,7 @@ INSERT INTO /mail/drafts
 INSERT INTO /mail/drafts
   VALUES ('alice@example.com', 'Q3 report', 'See attached.')
 
-FROM /mail/drafts
+/mail/drafts
 |> CALL mail.send
 ```
 

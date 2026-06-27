@@ -32,7 +32,7 @@ const HEADER_PREFIX: &str = "# qfs-cookbook:";
 const MIN_RECIPES: usize = 250;
 /// Ratchet floor: the number of recipes that parse with today's grammar may only INCREASE. Bump
 /// this (never lower it) after running the retag test when new grammar lands and coverage grows.
-const BASELINE_CORE: usize = 112;
+const BASELINE_CORE: usize = 113;
 
 struct Recipe {
     ordinal: usize,

@@ -9,7 +9,7 @@ and limits **down** into the database and does the rest locally.
 **Filter, project, sort, limit** — the `WHERE` and `LIMIT` run inside the database:
 
 ```qfs
-FROM /sql/pg/orders
+/sql/pg/orders
 |> WHERE total > 100
 |> SELECT id, total, status
 |> ORDER BY total DESC
@@ -19,13 +19,13 @@ FROM /sql/pg/orders
 **Ranges and sets read naturally:**
 
 ```qfs
-FROM /sql/pg/orders
+/sql/pg/orders
 |> WHERE total BETWEEN 50 AND 100
 |> SELECT id, total
 ```
 
 ```qfs
-FROM /sql/pg/orders
+/sql/pg/orders
 |> WHERE status IN ('open', 'pending')
 |> SELECT id, status
 ```
@@ -33,7 +33,7 @@ FROM /sql/pg/orders
 **Multiple conditions:**
 
 ```qfs
-FROM /sql/pg/users
+/sql/pg/users
 |> WHERE age >= 18 AND country == 'JP'
 |> SELECT id, name, age
 ```
@@ -43,7 +43,7 @@ FROM /sql/pg/users
 **Count rows per group:**
 
 ```qfs
-FROM /sql/pg/orders
+/sql/pg/orders
 |> GROUP BY status
 |> AGGREGATE count(id) AS n
 |> ORDER BY n DESC
@@ -52,7 +52,7 @@ FROM /sql/pg/orders
 **Sum a column:**
 
 ```qfs
-FROM /sql/pg/orders
+/sql/pg/orders
 |> AGGREGATE SUM(total) AS revenue
 ```
 
@@ -61,7 +61,7 @@ FROM /sql/pg/orders
 `EXTEND` adds a derived column without dropping the rest:
 
 ```qfs
-FROM /sql/pg/orders
+/sql/pg/orders
 |> EXTEND high_value = total
 |> SELECT id, total, high_value
 ```
@@ -96,13 +96,13 @@ UPSERT INTO /sql/pg/settings
 Set operations stitch two sources together:
 
 ```qfs
-FROM /sql/pg/users
-|> UNION FROM /sql/mysql/users
+/sql/pg/users
+|> UNION /sql/mysql/users
 ```
 
 ```qfs
-FROM /sql/pg/active_users
-|> EXCEPT FROM /sql/pg/banned_users
+/sql/pg/active_users
+|> EXCEPT /sql/pg/banned_users
 ```
 
 ::: tip Want to join a database to another *service*?

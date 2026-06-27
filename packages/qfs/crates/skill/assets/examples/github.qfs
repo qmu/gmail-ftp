@@ -1,3 +1,3 @@
 -- github (object_graph_workflow). DESCRIBE /github/acme/web/pulls -> CALL github.merge (irreversible).
 -- Step 2: squash-merge a PR (one irreversible CALL node).
-FROM /github/acme/web/pulls |> CALL github.merge(method => 'squash')
+/github/acme/web/pulls |> CALL github.merge(method => 'squash')

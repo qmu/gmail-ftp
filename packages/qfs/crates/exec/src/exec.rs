@@ -35,7 +35,7 @@ use crate::error::{ErrorKind, ExecError};
 use crate::read::ReadRegistry;
 
 /// Execute a pure read [`Statement`] end-to-end against the live registries, returning the
-/// owned [`RowSet`]. This is the headline t29 path: `FROM /<src>/… |> WHERE … |> LIMIT n`
+/// owned [`RowSet`]. This is the headline t29 path: `/<src>/… |> WHERE … |> LIMIT n`
 /// returns rows through the REAL pipeline (parse already done by the caller; resolve → plan →
 /// scan → residual → rows here).
 ///
@@ -104,7 +104,7 @@ fn map_pushdown_error(err: qfs_core::PushdownError) -> ExecError {
     // The inner LowerError/PlanError implement Display (clean, secret-free messages);
     // PushdownError itself does not, so we render the inner error.
     let message = match &err {
-        PushdownError::NotAQuery => "expected a read query (FROM … |> …)".to_string(),
+        PushdownError::NotAQuery => "expected a read query (/path |> …)".to_string(),
         PushdownError::Lower(l) => l.to_string(),
         PushdownError::Plan(p) => p.to_string(),
         other => format!("{other:?}"),

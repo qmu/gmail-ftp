@@ -4,7 +4,7 @@
 //! state — `/sys/users`, `/sys/projects`, `/sys/audit`, `/sys/connections`, `/sys/policies`,
 //! `/sys/metrics` — as
 //! ordinary qfs relations backed by the System DB (t42), so a super-admin does every
-//! administrative action as a qfs statement (`FROM /sys/audit |> WHERE …`, gated
+//! administrative action as a qfs statement (`/sys/audit |> WHERE …`, gated
 //! `INSERT INTO /sys/policies VALUES (…)`) from the CLI, MCP, or dashboard — **one engine, three
 //! faces**.
 //!

@@ -18,7 +18,7 @@ features:
   - title: Everything is a path
     details: "/mail/inbox, /sql/pg/orders, /github/acme/web/pulls, /drive/Reports, /s3/bucket/key — every service is a tree of paths you can list, read, and write."
   - title: One language, every backend
-    details: A pipe-SQL grammar — FROM … |> WHERE … |> SELECT … |> JOIN. Filter mail, join a database to GitHub, transcode JSON→CSV — the same way, everywhere.
+    details: A pipe-SQL grammar — /path |> WHERE … |> SELECT … |> JOIN. Filter mail, join a database to GitHub, transcode JSON→CSV — the same way, everywhere.
   - title: Preview before you commit
     details: Every command shows exactly what it will do first. Nothing touches the real world until you add --commit. Irreversible actions (sending mail, merging a PR) need an explicit extra OK.
   - title: Safe for AI agents
@@ -30,7 +30,7 @@ features:
 Find unread invoices in your inbox:
 
 ```qfs
-FROM /mail/inbox
+/mail/inbox
 |> WHERE subject LIKE '%invoice%'
 |> SELECT date, from, subject
 |> ORDER BY date DESC
@@ -39,7 +39,7 @@ FROM /mail/inbox
 Join a database table to your GitHub issues — across two completely different services:
 
 ```qfs
-FROM /sql/pg/orders
+/sql/pg/orders
 |> JOIN /github/acme/web/issues ON id == issue_id
 |> SELECT id, title
 ```
@@ -47,7 +47,7 @@ FROM /sql/pg/orders
 Turn a JSON file into a YAML file:
 
 ```qfs
-FROM /local/config.json
+/local/config.json
 |> DECODE json
 |> ENCODE yaml
 ```

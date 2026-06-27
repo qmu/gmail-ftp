@@ -9,49 +9,48 @@ The grammar is **fixed and small** — adding a new service never adds new keywo
 
 ## Reserved keywords
 
-These 39 words make up the whole language. Because the set is fixed, anything you learn here keeps working as new services are added.
+These 38 words make up the whole language. Because the set is fixed, anything you learn here keeps working as new services are added.
 
 | # | keyword |
 |---|---------|
-| 1 | `FROM` |
-| 2 | `WHERE` |
-| 3 | `SELECT` |
-| 4 | `EXTEND` |
-| 5 | `SET` |
-| 6 | `AGGREGATE` |
-| 7 | `GROUP BY` |
-| 8 | `ORDER BY` |
-| 9 | `LIMIT` |
-| 10 | `DISTINCT` |
-| 11 | `JOIN` |
-| 12 | `UNION` |
-| 13 | `EXCEPT` |
-| 14 | `INTERSECT` |
-| 15 | `AS` |
-| 16 | `EXPAND` |
-| 17 | `LET` |
-| 18 | `INSERT INTO` |
-| 19 | `UPSERT INTO` |
-| 20 | `UPDATE` |
-| 21 | `REMOVE` |
-| 22 | `VALUES` |
-| 23 | `RETURNING` |
-| 24 | `CALL` |
-| 25 | `DECODE` |
-| 26 | `ENCODE` |
-| 27 | `PREVIEW` |
-| 28 | `COMMIT` |
-| 29 | `CREATE` |
-| 30 | `ENDPOINT` |
-| 31 | `TRIGGER` |
-| 32 | `JOB` |
-| 33 | `VIEW` |
-| 34 | `MATERIALIZED VIEW` |
-| 35 | `WEBHOOK` |
-| 36 | `POLICY` |
-| 37 | `DO` |
-| 38 | `EVERY` |
-| 39 | `ON` |
+| 1 | `WHERE` |
+| 2 | `SELECT` |
+| 3 | `EXTEND` |
+| 4 | `SET` |
+| 5 | `AGGREGATE` |
+| 6 | `GROUP BY` |
+| 7 | `ORDER BY` |
+| 8 | `LIMIT` |
+| 9 | `DISTINCT` |
+| 10 | `JOIN` |
+| 11 | `UNION` |
+| 12 | `EXCEPT` |
+| 13 | `INTERSECT` |
+| 14 | `AS` |
+| 15 | `EXPAND` |
+| 16 | `LET` |
+| 17 | `INSERT INTO` |
+| 18 | `UPSERT INTO` |
+| 19 | `UPDATE` |
+| 20 | `REMOVE` |
+| 21 | `VALUES` |
+| 22 | `RETURNING` |
+| 23 | `CALL` |
+| 24 | `DECODE` |
+| 25 | `ENCODE` |
+| 26 | `PREVIEW` |
+| 27 | `COMMIT` |
+| 28 | `CREATE` |
+| 29 | `ENDPOINT` |
+| 30 | `TRIGGER` |
+| 31 | `JOB` |
+| 32 | `VIEW` |
+| 33 | `MATERIALIZED VIEW` |
+| 34 | `WEBHOOK` |
+| 35 | `POLICY` |
+| 36 | `DO` |
+| 37 | `EVERY` |
+| 38 | `ON` |
 
 ## Grammar (EBNF)
 
@@ -69,8 +68,9 @@ binding       = "LET" , name , "=" , pipeline ;
 
 statement     = pipeline , [ plan_op ] ;
 
-(* A pipeline is a source threaded through |> stages. *)
-pipeline      = [ "FROM" ] , source , { "|>" , stage } ;
+(* A pipeline is a source threaded through |> stages. Decision R (t73): the source     *)
+(* position needs no `FROM` — a leading `/path` (or a LET-bound name) IS the source.   *)
+pipeline      = source , { "|>" , stage } ;
 
 source        = path | id_ref | name ;   (* name = a LET-bound relation *)
 path          = "/" , segment , { "/" , segment } ;   (* absolute only, no cwd *)

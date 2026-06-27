@@ -16,7 +16,7 @@ fn parse_err(src: &str) -> ParseError {
 
 #[test]
 fn from_only_query() {
-    let stmt = parse_ok("FROM /mail/inbox");
+    let stmt = parse_ok("/mail/inbox");
     let Statement::Query(p) = stmt else {
         panic!("expected Query")
     };
@@ -32,7 +32,7 @@ fn from_only_query() {
 #[test]
 fn multi_op_pipeline_covers_where_select_join_aggregate_order_limit() {
     let stmt = parse_ok(
-        "FROM /mail/inbox \
+        "/mail/inbox \
          |> WHERE subject LIKE 'invoice' AND size > 1000 \
          |> SELECT id, subject AS title \
          |> JOIN /contacts ON id == contact_id \
@@ -59,7 +59,7 @@ fn multi_op_pipeline_covers_where_select_join_aggregate_order_limit() {
 
 #[test]
 fn extend_and_set_ops() {
-    let stmt = parse_ok("FROM /t |> EXTEND total = price |> SET flag = TRUE");
+    let stmt = parse_ok("/t |> EXTEND total = price |> SET flag = TRUE");
     let Statement::Query(p) = stmt else { panic!() };
     assert!(matches!(p.ops[0], PipeOp::Extend(_)));
     assert!(matches!(p.ops[1], PipeOp::Set(_)));
@@ -67,14 +67,14 @@ fn extend_and_set_ops() {
 
 #[test]
 fn distinct_op() {
-    let stmt = parse_ok("FROM /t |> DISTINCT");
+    let stmt = parse_ok("/t |> DISTINCT");
     let Statement::Query(p) = stmt else { panic!() };
     assert_eq!(p.ops, vec![PipeOp::Distinct]);
 }
 
 #[test]
 fn expand_op_struct_path() {
-    let stmt = parse_ok("FROM /mail/inbox |> EXPAND attachments");
+    let stmt = parse_ok("/mail/inbox |> EXPAND attachments");
     let Statement::Query(p) = stmt else { panic!() };
     assert_eq!(p.ops, vec![PipeOp::Expand(vec!["attachments".to_string()])]);
 }
@@ -82,9 +82,9 @@ fn expand_op_struct_path() {
 #[test]
 fn union_except_intersect_ops() {
     for (src, want) in [
-        ("FROM /a |> UNION FROM /b", "union"),
-        ("FROM /a |> EXCEPT FROM /b", "except"),
-        ("FROM /a |> INTERSECT FROM /b", "intersect"),
+        ("/a |> UNION /b", "union"),
+        ("/a |> EXCEPT /b", "except"),
+        ("/a |> INTERSECT /b", "intersect"),
     ] {
         let stmt = parse_ok(src);
         let Statement::Query(p) = stmt else { panic!() };
@@ -100,7 +100,7 @@ fn union_except_intersect_ops() {
 
 #[test]
 fn as_op_names_relation() {
-    let stmt = parse_ok("FROM /t |> AS recent");
+    let stmt = parse_ok("/t |> AS recent");
     let Statement::Query(p) = stmt else { panic!() };
     assert_eq!(p.ops, vec![PipeOp::As("recent".to_string())]);
 }
@@ -109,7 +109,7 @@ fn as_op_names_relation() {
 
 #[test]
 fn decode_and_encode_codecs() {
-    let stmt = parse_ok("FROM /fs/data.json |> DECODE json |> ENCODE yaml");
+    let stmt = parse_ok("/fs/data.json |> DECODE json |> ENCODE yaml");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Decode(ref d) = p.ops[0] else {
         panic!("expected Decode")
@@ -125,9 +125,8 @@ fn decode_and_encode_codecs() {
 
 #[test]
 fn call_proc_with_named_and_positional_args() {
-    let stmt = parse_ok(
-        "FROM /mail/drafts |> CALL mail.send |> CALL github.merge(method => 'squash', 42)",
-    );
+    let stmt =
+        parse_ok("/mail/drafts |> CALL mail.send |> CALL github.merge(method => 'squash', 42)");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Call(ref c0) = p.ops[0] else {
         panic!("expected Call")
@@ -149,7 +148,7 @@ fn call_proc_with_named_and_positional_args() {
 
 #[test]
 fn registry_fn_in_expression() {
-    let stmt = parse_ok("FROM /t |> SELECT upper(name)");
+    let stmt = parse_ok("/t |> SELECT upper(name)");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Select(ref projs) = p.ops[0] else {
         panic!()
@@ -168,7 +167,7 @@ fn registry_fn_in_expression() {
 
 #[test]
 fn path_at_version_is_preserved() {
-    let stmt = parse_ok("FROM /git/repo@main/src");
+    let stmt = parse_ok("/git/repo@main/src");
     let Statement::Query(p) = stmt else { panic!() };
     let Source::Path(path) = p.source else {
         panic!()
@@ -179,7 +178,7 @@ fn path_at_version_is_preserved() {
 
 #[test]
 fn path_as_of_temporal() {
-    let stmt = parse_ok("FROM /sql/pg/orders AS OF '2026-01-01'");
+    let stmt = parse_ok("/sql/pg/orders AS OF '2026-01-01'");
     let Statement::Query(p) = stmt else { panic!() };
     let Source::Path(path) = p.source else {
         panic!()
@@ -189,7 +188,7 @@ fn path_as_of_temporal() {
 
 #[test]
 fn struct_path_access_a_b_c() {
-    let stmt = parse_ok("FROM /t |> WHERE a.b.c == 1");
+    let stmt = parse_ok("/t |> WHERE a.b.c == 1");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Where(Expr::Binary { lhs, .. }) = &p.ops[0] else {
         panic!()
@@ -204,9 +203,8 @@ fn struct_path_access_a_b_c() {
 
 #[test]
 fn in_between_anyop_predicates() {
-    let stmt = parse_ok(
-        "FROM /t |> WHERE id IN (1, 2, 3) AND price BETWEEN 10 AND 20 AND x == ANY (4, 5)",
-    );
+    let stmt =
+        parse_ok("/t |> WHERE id IN (1, 2, 3) AND price BETWEEN 10 AND 20 AND x == ANY (4, 5)");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Where(e) = &p.ops[0] else {
         panic!()
@@ -223,7 +221,7 @@ fn in_between_anyop_predicates() {
 
 #[test]
 fn not_and_or_precedence() {
-    let stmt = parse_ok("FROM /t |> WHERE NOT a == 1 OR b == 2");
+    let stmt = parse_ok("/t |> WHERE NOT a == 1 OR b == 2");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Where(e) = &p.ops[0] else {
         panic!()
@@ -262,7 +260,7 @@ fn upsert_distinct_from_insert() {
 
 #[test]
 fn insert_from_subpipeline() {
-    let stmt = parse_ok("INSERT INTO /archive FROM /mail/inbox |> WHERE flag == TRUE");
+    let stmt = parse_ok("INSERT INTO /archive /mail/inbox |> WHERE flag == TRUE");
     let Statement::Effect(e) = stmt else { panic!() };
     assert!(matches!(e.body, EffectBody::Pipeline(_)));
 }
@@ -290,7 +288,7 @@ fn remove_where() {
 
 #[test]
 fn ddl_endpoint_as_query() {
-    let stmt = parse_ok("CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5");
+    let stmt = parse_ok("CREATE ENDPOINT recent ON 'GET /recent' AS /mail/inbox |> LIMIT 5");
     let Statement::Ddl(d) = stmt else {
         panic!("expected Ddl")
     };
@@ -346,11 +344,11 @@ fn ddl_job_every() {
 
 #[test]
 fn ddl_view_and_materialized_view() {
-    let v = parse_ok("CREATE VIEW recent AS FROM /mail/inbox");
+    let v = parse_ok("CREATE VIEW recent AS /mail/inbox");
     let Statement::Ddl(d) = v else { panic!() };
     assert_eq!(d.kind, DdlKind::View);
 
-    let mv = parse_ok("CREATE MATERIALIZED VIEW cached AS FROM /mail/inbox");
+    let mv = parse_ok("CREATE MATERIALIZED VIEW cached AS /mail/inbox");
     let Statement::Ddl(d) = mv else { panic!() };
     assert_eq!(d.kind, DdlKind::MaterializedView);
     assert_eq!(d.target, vec!["server", "materialized_views", "cached"]);
@@ -566,8 +564,8 @@ fn closed_core_variant_counts_are_locked() {
 fn let_binding_binds_a_relation_and_threads_body() {
     // A single LET binding followed by the statement that uses it (one per line, `;`-free).
     let stmt = parse_ok(
-        "LET active = FROM /sql/pg/customers |> WHERE status == 'active'\n\
-         FROM active |> SELECT id",
+        "LET active = /sql/pg/customers |> WHERE status == 'active'\n\
+         active |> SELECT id",
     );
     let Statement::Let { name, value, body } = stmt else {
         panic!("expected a LET binding, got {stmt:?}")
@@ -592,9 +590,9 @@ fn let_binding_binds_a_relation_and_threads_body() {
 fn multiple_let_bindings_nest_left_to_right() {
     // Two `;`-free LET lines stay in scope for the final statement (lexical, nested).
     let stmt = parse_ok(
-        "LET a = FROM /sql/pg/x\n\
-         LET b = FROM /sql/pg/y\n\
-         FROM a |> UNION FROM b",
+        "LET a = /sql/pg/x\n\
+         LET b = /sql/pg/y\n\
+         a |> UNION b",
     );
     let Statement::Let { name, body, .. } = stmt else {
         panic!("expected outer LET a")
@@ -617,8 +615,9 @@ fn multiple_let_bindings_nest_left_to_right() {
 
 #[test]
 fn bare_identifier_is_a_valid_source() {
-    // `FROM products` (no leading slash) is a bound-name source — shape-only at parse time.
-    let stmt = parse_ok("FROM products |> LIMIT 5");
+    // `products` (a bare name, no leading slash, no `FROM`) is a bound-name source — shape-only
+    // at parse time (decision R, t73: the source leads).
+    let stmt = parse_ok("products |> LIMIT 5");
     let Statement::Query(p) = stmt else {
         panic!("expected Query")
     };
@@ -629,14 +628,16 @@ fn bare_identifier_is_a_valid_source() {
 fn let_value_may_not_be_an_effect() {
     // A LET binds a relation only; an effect value is a crisp parse error (`cut_err` after
     // the `=`), never a smuggled write into a pure context.
-    let err = parse_err("LET x = INSERT INTO /sql/pg/t VALUES (1)\nFROM x");
+    let err = parse_err("LET x = INSERT INTO /sql/pg/t VALUES (1)\nx");
     assert!(!err.expected.is_empty());
 }
 
 #[test]
 fn lowercase_let_is_rejected_as_unknown_keyword() {
-    // `LET` is now a frozen keyword: the lowercase form is flagged, like every other keyword.
-    let err = parse_err("let x = FROM /sql/pg/t\nFROM x");
+    // `LET` is a frozen keyword: the lowercase form is flagged, like every other keyword. Post-t73
+    // a leading bare word is a valid source, so the miscased `let` is exercised in trailing
+    // position (after a valid terminal statement), where it surfaces as the offending token.
+    let err = parse_err("/sql/pg/t\nlet x = /a");
     assert_eq!(err.code, ParseErrorCode::UnknownKeyword);
 }
 
@@ -644,7 +645,7 @@ fn lowercase_let_is_rejected_as_unknown_keyword() {
 fn two_bare_statements_without_a_binding_are_rejected() {
     // The program model is `LET* <final-statement>`; two non-binding statements in a row is
     // trailing input, not a silent split.
-    let err = parse_err("FROM /sql/pg/a\nFROM /sql/pg/b");
+    let err = parse_err("/sql/pg/a\n/sql/pg/b");
     assert!(!err.expected.is_empty());
 }
 
@@ -652,7 +653,7 @@ fn two_bare_statements_without_a_binding_are_rejected() {
 
 #[test]
 fn lowercase_keyword_rejected_as_unknown_keyword() {
-    let err = parse_err("FROM /mail |> where id = 1");
+    let err = parse_err("/mail |> where id = 1");
     assert_eq!(err.code, ParseErrorCode::UnknownKeyword);
     // The error points at the offending lowercase `where`.
     assert!(err.span.start > 0);
@@ -663,7 +664,7 @@ fn lowercase_keyword_rejected_as_unknown_keyword() {
 fn reserved_word_as_identifier_is_rejected() {
     // `SELECT` (a reserved keyword) cannot stand where an identifier (a column) is
     // required.
-    let err = parse_err("FROM /t |> SELECT SELECT");
+    let err = parse_err("/t |> SELECT SELECT");
     assert!(
         matches!(
             err.code,
@@ -676,14 +677,14 @@ fn reserved_word_as_identifier_is_rejected() {
 
 #[test]
 fn missing_pipe_is_rejected() {
-    let err = parse_err("FROM /mail WHERE id = 1");
+    let err = parse_err("/mail WHERE id = 1");
     // No `|>` before WHERE: trailing input is unexpected.
     assert!(!err.expected.is_empty());
 }
 
 #[test]
 fn dangling_where_is_eof() {
-    let err = parse_err("FROM /mail |> WHERE");
+    let err = parse_err("/mail |> WHERE");
     assert_eq!(err.code, ParseErrorCode::UnexpectedEof);
 }
 
@@ -692,7 +693,7 @@ fn dangling_where_is_eof() {
 /// author (human or AI) to `==` for equivalence (RFD §5 actionable-error contract).
 #[test]
 fn equals_as_comparison_is_rejected_steering_to_eqeq() {
-    let err = parse_err("FROM /t |> WHERE a = 1");
+    let err = parse_err("/t |> WHERE a = 1");
     assert_eq!(err.code, ParseErrorCode::UnexpectedToken);
     assert!(
         err.message.contains("=="),
@@ -700,7 +701,7 @@ fn equals_as_comparison_is_rejected_steering_to_eqeq() {
         err.message
     );
     // The diagnostic points at the offending `=` (and never echoes any literal).
-    let src = "FROM /t |> WHERE a = 1";
+    let src = "/t |> WHERE a = 1";
     assert_eq!(&src[err.span.range()], "=");
 }
 
@@ -709,7 +710,7 @@ fn equals_as_comparison_is_rejected_steering_to_eqeq() {
 /// (decision O, t70).
 #[test]
 fn eqeq_compares_while_eq_still_binds() {
-    let stmt = parse_ok("FROM /t |> WHERE x == 5");
+    let stmt = parse_ok("/t |> WHERE x == 5");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Where(Expr::Binary { op: Op::Eq, .. }) = &p.ops[0] else {
         panic!(
@@ -718,7 +719,7 @@ fn eqeq_compares_while_eq_still_binds() {
         )
     };
     // `=` is still the assignment/binding token in EXTEND and SET.
-    let stmt = parse_ok("FROM /t |> EXTEND y = x |> SET z = 1");
+    let stmt = parse_ok("/t |> EXTEND y = x |> SET z = 1");
     let Statement::Query(p) = stmt else { panic!() };
     assert!(matches!(p.ops[0], PipeOp::Extend(_)));
     assert!(matches!(p.ops[1], PipeOp::Set(_)));
@@ -735,13 +736,13 @@ fn empty_input_is_eof() {
 
 #[test]
 fn error_carries_span_and_nonempty_expected() {
-    let err = parse_err("FROM /mail |> BANANA");
+    let err = parse_err("/mail |> BANANA");
     assert!(
         !err.expected.is_empty(),
         "expected-set must be non-empty (RFD §5)"
     );
     // The span round-trips into the source region of the offending token.
-    let src = "FROM /mail |> BANANA";
+    let src = "/mail |> BANANA";
     let slice = &src[err.span.range()];
     assert!(!slice.is_empty());
 }
@@ -749,7 +750,7 @@ fn error_carries_span_and_nonempty_expected() {
 #[test]
 fn error_display_does_not_echo_string_literal_value() {
     // RFD §10: a diagnostic must not echo a literal's contents (secret hygiene).
-    let err = parse_err("FROM /mail |> WHERE secret = 'p@ssw0rd' BANANA");
+    let err = parse_err("/mail |> WHERE secret = 'p@ssw0rd' BANANA");
     let shown = format!("{err}");
     assert!(
         !shown.contains("p@ssw0rd"),
@@ -772,6 +773,9 @@ fn no_vendor_type_in_public_api() {
 
 #[test]
 fn sees_frozen_keyword_set() {
-    assert!(KEYWORDS.contains(&"FROM"));
+    // `FROM` was removed from the closed core in t73 (decision R): the source position needs no
+    // keyword. `WHERE` (and the rest of the frozen set) is unaffected.
+    assert!(!KEYWORDS.contains(&"FROM"));
+    assert!(KEYWORDS.contains(&"WHERE"));
     assert_eq!(Keyword::Where.text(), "WHERE");
 }

@@ -56,8 +56,9 @@ binding       = \"LET\" , name , \"=\" , pipeline ;
 
 statement     = pipeline , [ plan_op ] ;
 
-(* A pipeline is a source threaded through |> stages. *)
-pipeline      = [ \"FROM\" ] , source , { \"|>\" , stage } ;
+(* A pipeline is a source threaded through |> stages. Decision R (t73): the source     *)
+(* position needs no `FROM` — a leading `/path` (or a LET-bound name) IS the source.   *)
+pipeline      = source , { \"|>\" , stage } ;
 
 source        = path | id_ref | name ;   (* name = a LET-bound relation *)
 path          = \"/\" , segment , { \"/\" , segment } ;   (* absolute only, no cwd *)
@@ -144,8 +145,8 @@ mod tests {
         // keyword smuggled in anywhere fails here too).
         assert_eq!(
             RESERVED_KEYWORDS.len(),
-            39,
-            "the closed-core reserved-word set is frozen at 39 entries (RFD §3 + the t60 `LET` addition)"
+            38,
+            "the closed-core reserved-word set is frozen at 38 entries (RFD §3 + t60 `LET` − t73 `FROM`)"
         );
     }
 

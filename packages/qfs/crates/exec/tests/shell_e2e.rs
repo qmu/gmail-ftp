@@ -191,7 +191,7 @@ fn cross_mount_mv_lowers_to_copy_then_delete() {
 }
 
 /// Builtin ≡ typed equivalence at the PLAN level: the builtin `cp a.md /other/dst/x` and the raw
-/// `UPSERT INTO /other/dst/x FROM /local/a.md` typed at the prompt produce the SAME effect
+/// `UPSERT INTO /other/dst/x /local/a.md` typed at the prompt produce the SAME effect
 /// preview (same targets, verbs, irreversibility) — the shell adds no new semantics.
 #[test]
 fn builtin_cp_matches_typed_upsert_plan() {
@@ -203,7 +203,7 @@ fn builtin_cp_matches_typed_upsert_plan() {
     };
     let typed = {
         let mut s = Session::new(VfsPath::root("local"), &engine, &reads);
-        s.eval_line("UPSERT INTO /other/dst/x FROM /local/a.md", false)
+        s.eval_line("UPSERT INTO /other/dst/x /local/a.md", false)
             .unwrap()
     };
 
@@ -232,7 +232,7 @@ fn builtin_ls_matches_typed_select_rows() {
     };
     let by_typed = {
         let mut s = Session::new(VfsPath::root("local"), &engine, &reads);
-        s.eval_line("FROM /local |> SELECT name, size, is_dir, modified", false)
+        s.eval_line("/local |> SELECT name, size, is_dir, modified", false)
             .unwrap()
     };
     let (Outcome::Listing(a), Outcome::Listing(b)) = (&by_builtin, &by_typed) else {

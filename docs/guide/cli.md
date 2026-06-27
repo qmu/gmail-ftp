@@ -44,7 +44,7 @@ qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')"
 qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')" --commit
 
 # Irreversible needs the extra ack:
-qfs run "FROM /mail/drafts |> CALL mail.send" --commit --commit-irreversible
+qfs run "/mail/drafts |> CALL mail.send" --commit --commit-irreversible
 ```
 
 ## `qfs describe` — inspect a path

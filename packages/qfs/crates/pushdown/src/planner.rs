@@ -2,7 +2,7 @@
 //!
 //! Post-order walk of the [`LogicalPlan`]:
 //!
-//! - A **linear unary chain over a single scan** (the common `FROM /x |> WHERE |> SELECT
+//! - A **linear unary chain over a single scan** (the common `/x |> WHERE |> SELECT
 //!   |> LIMIT` shape) is a pushdown candidate: the planner offers each stage to the
 //!   source's [`PushdownProfile`](qfs_driver::PushdownProfile) (queried by intent via the
 //!   `supports_*` accessors, t13), pushing what it accepts into a [`PushedQuery`] and

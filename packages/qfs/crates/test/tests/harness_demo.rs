@@ -121,24 +121,25 @@ fn upsert_plan_golden_snapshot() {
 
 #[test]
 fn parser_golden_query_pipe() {
-    golden_parse("FROM /mail/inbox |> WHERE id > 5 |> LIMIT 10").snapshot("ast_query_pipe");
+    golden_parse("/mail/inbox |> WHERE id > 5 |> LIMIT 10").snapshot("ast_query_pipe");
 }
 
 #[test]
 fn parser_golden_decode_call() {
-    golden_parse("FROM /s3/data |> DECODE json |> CALL git.merge()").snapshot("ast_decode_call");
+    golden_parse("/s3/data |> DECODE json |> CALL git.merge()").snapshot("ast_decode_call");
 }
 
 #[test]
 fn parser_golden_create_endpoint() {
-    golden_parse("CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5")
+    golden_parse("CREATE ENDPOINT recent ON 'GET /recent' AS /mail/inbox |> LIMIT 5")
         .snapshot("ast_create_endpoint");
 }
 
 #[test]
 fn parser_golden_error_recovery() {
     // A lowercase keyword is not in the frozen closed-core set — a stable recovery message.
-    error_snapshot("from /mail/inbox").snapshot("ast_error_lowercase_keyword");
+    // (`from` is no longer a keyword post-t73; a lowercase *stage* keyword still trips the check.)
+    error_snapshot("/mail/inbox |> where id > 5").snapshot("ast_error_lowercase_keyword");
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +159,7 @@ fn codec_roundtrip_all_formats() {
 
 #[test]
 fn handler_preview_endpoint_trigger_job() {
-    let ep = preview_handler("CREATE ENDPOINT hello ON 'GET /hello' AS FROM /mail/inbox");
+    let ep = preview_handler("CREATE ENDPOINT hello ON 'GET /hello' AS /mail/inbox");
     assert!(matches!(
         ep.nodes()[0].kind,
         EffectKind::ServerConfigWrite { .. }
@@ -179,7 +180,7 @@ fn handler_preview_endpoint_trigger_job() {
 #[test]
 fn handler_preview_golden() {
     // The plan a fired ENDPOINT binding would COMMIT, snapshotted.
-    let plan = preview_handler("CREATE ENDPOINT hello ON 'GET /hello' AS FROM /mail/inbox");
+    let plan = preview_handler("CREATE ENDPOINT hello ON 'GET /hello' AS /mail/inbox");
     let canon = canonicalize(plan);
     qfs_test::golden::assert_no_credential_shape(&qfs_test::golden::canonical_json(&canon));
     qfs_test::golden::assert_golden("plan_endpoint_hello", &canon);

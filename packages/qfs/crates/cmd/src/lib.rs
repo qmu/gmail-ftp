@@ -104,7 +104,7 @@ pub enum IdentityAction {
 pub type IdentityLauncher<'a> = dyn Fn(&IdentityAction) -> i32 + 'a;
 
 /// The injected **run-context provider**: the binary supplies the `(Engine, ReadRegistry)` for
-/// `qfs run` — the [`Engine`] whose mount registry has the real drivers (so a `FROM …` source
+/// `qfs run` — the [`Engine`] whose mount registry has the real drivers (so a `/path …` source
 /// resolves + plans + pushes down) and the [`qfs_exec::ReadRegistry`] of `ReadDriver` scan facets
 /// that execute the read. Both live in the binary (which owns the runtime-coupled local adapter) —
 /// NOT in qfs-cmd, which stays off qfs-driver-local. Mirrors the describe / shell / commit
@@ -138,7 +138,7 @@ enum Command {
     /// (read the statement from stdin). PREVIEW by default; `--commit` (or a trailing
     /// `COMMIT`) applies an effect plan.
     Run {
-        /// The statement to execute positionally, e.g. `FROM /mail/inbox |> SELECT subject`.
+        /// The statement to execute positionally, e.g. `/mail/inbox |> SELECT subject`.
         /// Use `-` to read the statement from stdin. Mutually exclusive with `-e`.
         stmt: Option<String>,
         /// The statement to execute (the `-e <stmt>` form). Mutually exclusive with the
@@ -470,7 +470,7 @@ fn dispatch_run(opts: RunOpts, apply: &qfs_exec::WorldApply, run_ctx: &RunContex
 
     // The run context: the binary supplies the Engine (mounts with the real drivers, so a `FROM`
     // source resolves + plans + pushes down) and the ReadRegistry (the scan facets). With no
-    // driver for a mount, a `FROM /x` resolves to a structured capability error (exit 3).
+    // driver for a mount, a `/x` resolves to a structured capability error (exit 3).
     let (engine, reads) = run_ctx();
     let ctx = qfs_exec::ExecCtx {
         engine: &engine,
@@ -830,23 +830,24 @@ mod tests {
 
     #[test]
     fn run_bad_syntax_is_parse_error_exit_two() {
-        // `qfs run -e 'anything'` reaches a structured parse error (exit 2), not a panic.
-        let code = run_t(["qfs", "run", "-e", "anything"]);
+        // `qfs run -e '<garbage>'` reaches a structured parse error (exit 2), not a panic. Post-t73
+        // a lone bare word is a valid source name, so use multi-token garbage that cannot parse.
+        let code = run_t(["qfs", "run", "-e", "this is not pipe sql"]);
         assert_eq!(code, 2);
     }
 
     #[test]
     fn run_relative_path_is_usage_error_exit_two() {
         // A relative-path address in one-shot mode is rejected with a usage error (exit 2).
-        let code = run_t(["qfs", "run", "-e", "FROM mail/inbox |> LIMIT 1"]);
+        let code = run_t(["qfs", "run", "-e", "mail/inbox |> LIMIT 1"]);
         assert_eq!(code, 2);
     }
 
     #[test]
     fn run_unknown_source_is_capability_exit_three() {
-        // With no read driver registered, an absolute `FROM /x` resolves to a structured
+        // With no read driver registered, an absolute `/x` resolves to a structured
         // capability error (exit 3) — never a panic.
-        let code = run_t(["qfs", "run", "-e", "FROM /mail/inbox |> LIMIT 1", "--json"]);
+        let code = run_t(["qfs", "run", "-e", "/mail/inbox |> LIMIT 1", "--json"]);
         assert_eq!(code, 3);
     }
 
