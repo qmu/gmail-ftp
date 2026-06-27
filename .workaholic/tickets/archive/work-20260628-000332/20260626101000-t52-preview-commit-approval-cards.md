@@ -3,9 +3,9 @@ created_at: 2026-06-26T10:00:00+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [UX, Infrastructure]
-effort:
-commit_hash:
-category:
+effort: M
+commit_hash: e306caa
+category: Added
 depends_on: [20260626100900-t51-embedded-spa-dashboard-shell.md, 20260626100800-t50-bearer-refresh-token-mcp-auth.md]
 ---
 
