@@ -47,7 +47,10 @@ pub use lambda::{
     apply as apply_lambda, eval_expr as eval_lambda_expr, Closure, LambdaValue, ValueEnv,
 };
 pub use plan::{plan_pipeline, plan_query, source_registry, PushdownError};
-pub use registry::{CodecRegistry, MountRegistry, ProcRegistry};
+pub use registry::{
+    peel_scope, resolve_name, CodecRegistry, MountRegistry, NameRealm, PathScope, PathScopeError,
+    ProcRegistry, Realm, ScopeResolution, RESERVED_REALMS,
+};
 pub use resolve::{capability_verb_for, write_verb_for, ResolveError, ResolvedCall, Resolver};
 pub use security::{Ack, IrreversibleGuard, NeedsPreview, RunMode};
 pub use stdlib::{

@@ -96,6 +96,21 @@ pub enum CfsError {
         supported: Vec<&'static str>,
     },
 
+    /// A driver tried to register under a mount that shadows a reserved **scope realm**
+    /// (decision P / RFD §1.3) — e.g. `/members`, `/projects`, `/hosts`, `/directories`,
+    /// `/me`. Root is a closed set of realms, and the `(scope, service)` split a path
+    /// resolves through is only decidable if **no** driver mount is named after a realm,
+    /// so registration is rejected up front. The sole driver-backed realm `/sys` is
+    /// exempt (its realm and mount coincide). Carries the offending mount and the realm
+    /// it shadowed so an AI-facing caller can recover without prose-parsing.
+    #[error("mount {mount:?} shadows reserved realm /{realm}")]
+    ReservedRealmMount {
+        /// The mount the driver tried to register under (e.g. `/members`).
+        mount: String,
+        /// The reserved realm name the mount shadowed (e.g. `members`).
+        realm: &'static str,
+    },
+
     /// A server boot / hot-reconfigure failure (E7, `qfs serve`). Carries a stable,
     /// secret-free machine code and a line-located message produced by `qfs-server`;
     /// `qfs-driver` cannot name `qfs_server::ServerError` (that crate is far above it in
@@ -126,6 +141,7 @@ impl CfsError {
             Self::Encode { .. } => "encode_error",
             Self::InvalidPath { .. } => "invalid_path",
             Self::UnsupportedVerb { .. } => "unsupported_verb",
+            Self::ReservedRealmMount { .. } => "reserved_realm_mount",
             // The granular server error code lives in `server_code`; the workspace-level
             // code is the stable family label.
             Self::Server { .. } => "server_config",

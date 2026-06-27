@@ -427,6 +427,31 @@ fn shadowing_is_allowed() {
     .expect("a re-bound name resolves");
 }
 
+// ---- Reserved-name resolution (decision P / t71) --------------------------
+
+/// A reserved realm name used as a bare source resolves to its fixed realm — it is a
+/// legal source with no `LET` binding, never the `UnknownBinding` a non-realm bare name is.
+#[test]
+fn reserved_realm_name_is_a_legal_bare_source() {
+    // `sys` is a reserved realm; it needs no `LET` binding to be a legal source.
+    resolve("sys |> LIMIT 1").expect("a reserved realm name resolves without a binding");
+    // A non-realm bare name with no binding is still the structured `UnknownBinding`.
+    let err = resolve("ghost |> LIMIT 1").unwrap_err();
+    assert_eq!(err.code(), "unknown_binding");
+}
+
+/// A reserved realm name is **not shadowed** by a `LET` binding of the same spelling: even
+/// with `LET sys = …` in scope, `sys` resolves as the fixed realm (the realm ranks above
+/// the lexical realm), so the reference is legal either way — never an unbound error.
+#[test]
+fn reserved_realm_name_is_not_shadowed_by_a_let_binding() {
+    resolve(
+        "LET sys = /mail/inbox\n\
+         sys |> LIMIT 1",
+    )
+    .expect("a reserved realm name resolves regardless of a same-named binding");
+}
+
 /// A binding's value resolves in the OUTER scope — there is no forward/recursive reference,
 /// so a value that names a not-yet-bound sibling is a structured `UnknownBinding` error.
 #[test]

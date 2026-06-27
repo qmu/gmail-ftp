@@ -44,7 +44,7 @@ use qfs_parser::{
 use qfs_plan::WriteVerb;
 use qfs_types::DriverId;
 
-use crate::registry::MountRegistry;
+use crate::registry::{MountRegistry, Realm};
 
 /// A resolved, namespaced callable identity — what a `CALL` or a desugared alias binds
 /// to (RFD §3). `driver` is the plan [`DriverId`] (e.g. `mail`); `proc` is the
@@ -287,9 +287,12 @@ impl<'r> Resolver<'r> {
         out: &mut Vec<ResolvedCall>,
     ) -> Result<(), ResolveError> {
         // A bare-identifier source must name a `LET` binding in scope (t60) — a typo is a
-        // structured error, not a silent empty relation.
+        // structured error, not a silent empty relation. A **reserved realm** name
+        // (decision P / §1.3) is the exception: it resolves to its fixed realm and is
+        // always a legal source, never unbound — and never shadowed by a `LET` binding of
+        // the same spelling (the realm ranks above the lexical realm).
         if let Source::Name(name) = &pipeline.source {
-            if !scope.contains(name) {
+            if Realm::from_segment(name).is_none() && !scope.contains(name) {
                 return Err(ResolveError::UnknownBinding { name: name.clone() });
             }
         }
@@ -324,7 +327,7 @@ impl<'r> Resolver<'r> {
             }
             PipeOp::Join(join) => {
                 if let Source::Name(name) = &join.source {
-                    if !scope.contains(name) {
+                    if Realm::from_segment(name).is_none() && !scope.contains(name) {
                         return Err(ResolveError::UnknownBinding { name: name.clone() });
                     }
                 }
