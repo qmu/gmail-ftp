@@ -3,9 +3,9 @@ created_at: 2026-06-26T10:00:00+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [UX]
-effort:
-commit_hash:
-category:
+effort: M
+commit_hash: 6a03c14
+category: Added
 depends_on: [20260626100500-t47-mcp-server-binding-tools.md]
 ---
 
