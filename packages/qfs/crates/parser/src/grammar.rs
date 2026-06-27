@@ -891,6 +891,159 @@ fn returning_clause(input: &mut Stream<'_>) -> ModalResult<Vec<Projection>> {
     preceded(kw(Keyword::Returning), projection_list).parse_next(input)
 }
 
+// ---- writes as pipeline stages (decision Q, t72) --------------------------
+
+/// The head of a terminal **pipe-stage write** (decision Q, t72): the write verb plus its
+/// *own* operands — a target path for `INSERT INTO`/`UPSERT INTO`, the `SET` assignments for
+/// `UPDATE`, nothing for `REMOVE`. The rows the write CONSUMES are the upstream pipeline (the
+/// relation flowing into the stage), supplied separately by [`build_pipe_effect`]. Kept as a
+/// small enum so the upstream → [`EffectStmt`] lowering is shared with — and byte-for-byte
+/// identical to — the verb-leading [`effect_stmt`] form: two spellings, one plan.
+enum PipeWriteHead {
+    /// `|> INSERT INTO <target>` — the upstream is the inserted relation.
+    Insert(PathExpr),
+    /// `|> UPSERT INTO <target>` — the upstream is the upserted relation.
+    Upsert(PathExpr),
+    /// `|> UPDATE SET <assignments>` — target/filter are lifted from the upstream.
+    Update(Vec<Assignment>),
+    /// `|> REMOVE` — target/filter are lifted from the upstream.
+    Remove,
+}
+
+/// Parse a terminal write stage's head after the `|>` has been consumed. Each arm backtracks
+/// cleanly on its leading verb (so a non-write stage falls through to the ordinary
+/// [`pipe_op`]); once a verb is committed the remainder is `cut_err` so a malformed write is a
+/// crisp error pointing *inside* the stage, not a silent fallthrough.
+fn pipe_write_head(input: &mut Stream<'_>) -> ModalResult<PipeWriteHead> {
+    alt((
+        preceded(insert_into, cut_err(path_expr)).map(PipeWriteHead::Insert),
+        preceded(upsert_into, cut_err(path_expr)).map(PipeWriteHead::Upsert),
+        preceded(
+            kw(Keyword::Update),
+            cut_err(preceded(kw(Keyword::Set), assignment_list)),
+        )
+        .map(PipeWriteHead::Update),
+        kw(Keyword::Remove).map(|_| PipeWriteHead::Remove),
+    ))
+    .parse_next(input)
+}
+
+/// Lower a terminal pipe-stage write into the SAME [`EffectStmt`] the verb-leading
+/// [`effect_stmt`] builds (decision Q: `… |> INSERT INTO /b` and `INSERT INTO /b …` are two
+/// renderings of one effect, so they MUST produce one plan). `source`/`ops` are the upstream
+/// relation the write consumes; an optional trailing `|> RETURNING …` stage (the pipe-stage
+/// spelling of the verb-leading inline `RETURNING`) carries the projection.
+fn build_pipe_effect(
+    input: &mut Stream<'_>,
+    head: PipeWriteHead,
+    source: Source,
+    ops: Vec<PipeOp>,
+) -> ModalResult<EffectStmt> {
+    // `RETURNING` rides as its own trailing `|>` stage in the pipe-stage form (the verb-leading
+    // form takes it inline); both populate the same `EffectStmt.returning`. `opt` checkpoints,
+    // so a missing `|> RETURNING` restores the cursor for the enclosing `eof`/clause.
+    let returning = opt(preceded(
+        punct(Token::Pipe),
+        preceded(kw(Keyword::Returning), projection_list),
+    ))
+    .parse_next(input)?;
+    match head {
+        PipeWriteHead::Insert(target) => Ok(EffectStmt {
+            verb: EffectVerb::Insert,
+            target,
+            body: EffectBody::Pipeline(Box::new(Pipeline { source, ops })),
+            returning,
+        }),
+        PipeWriteHead::Upsert(target) => Ok(EffectStmt {
+            verb: EffectVerb::Upsert,
+            target,
+            body: EffectBody::Pipeline(Box::new(Pipeline { source, ops })),
+            returning,
+        }),
+        PipeWriteHead::Update(set) => {
+            let (target, filter) = lift_target_filter(source, ops)?;
+            Ok(EffectStmt {
+                verb: EffectVerb::Update,
+                target,
+                body: EffectBody::SetWhere { set, filter },
+                returning,
+            })
+        }
+        PipeWriteHead::Remove => {
+            let (target, filter) = lift_target_filter(source, ops)?;
+            Ok(EffectStmt {
+                verb: EffectVerb::Remove,
+                target,
+                body: EffectBody::SetWhere {
+                    set: Vec::new(),
+                    filter,
+                },
+                returning,
+            })
+        }
+    }
+}
+
+/// A pipe-stage `UPDATE`/`REMOVE` rewrites rows *in place* on its upstream mount, so the
+/// upstream must be a bare `/path` optionally narrowed by `WHERE` predicates — precisely what
+/// the verb-leading `UPDATE <path> … WHERE …` / `REMOVE <path> WHERE …` expresses. Lift the
+/// path as the target and AND-fold the `WHERE`s into the one filter, so the two spellings lower
+/// identically. Any other upstream shape (a `SELECT`/`JOIN`/codec stage, a `VALUES`/subquery/
+/// name source) cannot lower to that form and is a crisp error — decision Q: anything that is
+/// neither legal form is rejected, never silently accepted.
+fn lift_target_filter(source: Source, ops: Vec<PipeOp>) -> ModalResult<(PathExpr, Option<Expr>)> {
+    let Source::Path(target) = source else {
+        return Err(ErrMode::Cut(ContextError::new()));
+    };
+    let mut filter: Option<Expr> = None;
+    for op in ops {
+        let PipeOp::Where(pred) = op else {
+            return Err(ErrMode::Cut(ContextError::new()));
+        };
+        filter = Some(match filter {
+            None => pred,
+            Some(prev) => Expr::Binary {
+                op: Op::And,
+                lhs: Box::new(prev),
+                rhs: Box::new(pred),
+            },
+        });
+    }
+    Ok((target, filter))
+}
+
+/// A statement-position pipeline that may terminate in a **write stage** (decision Q, t72).
+/// Without a terminal write it is an ordinary read [`Statement::Query`]; with one it lowers to
+/// the SAME [`Statement::Effect`] the verb-leading [`effect_stmt`] builds. The write stage is
+/// recognised ONLY here (statement position) — never inside a `(subquery)`, a `JOIN`/`UNION`
+/// arm, or a `LET` value, all of which keep using the pure [`pipeline`] — so a write can never
+/// hide in a read context and the §3 safety floor holds structurally.
+fn pipeline_or_effect(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    let source = source(input)?;
+    let mut ops: Vec<PipeOp> = Vec::new();
+    let mut write: Option<PipeWriteHead> = None;
+    loop {
+        // A `|>` boundary. `&[T]` streams are `Copy`, so a non-`|>` token restores the cursor
+        // for the enclosing parser (the `eof`, or a `LET` body / DDL clause that follows).
+        let checkpoint = *input;
+        if punct(Token::Pipe).parse_next(input).is_err() {
+            *input = checkpoint;
+            break;
+        }
+        // A terminal write verb wins over a normal op; a non-write stage backtracks (its leading
+        // verb never matched) and falls through to the ordinary, cut-on-commit pipe op.
+        if let Some(head) = opt(pipe_write_head).parse_next(input)? {
+            write = Some(head);
+            break;
+        }
+        ops.push(cut_err(pipe_op).parse_next(input)?);
+    }
+    match write {
+        Some(head) => build_pipe_effect(input, head, source, ops).map(Statement::Effect),
+        None => Ok(Statement::Query(Pipeline { source, ops })),
+    }
+}
+
 // ---- server DDL -----------------------------------------------------------
 
 fn server_ddl(input: &mut Stream<'_>) -> ModalResult<ServerDdl> {
@@ -1142,8 +1295,11 @@ fn inner_statement(input: &mut Stream<'_>) -> ModalResult<Statement> {
     alt((
         plan_wrap,
         server_ddl.map(Statement::Ddl),
+        // Verb-leading effect (`INSERT INTO …`, the source-less `VALUES` literal form among
+        // them) wins first; a source-leading pipeline then either reads (`Statement::Query`)
+        // or terminates in a write stage and lowers to the same `Statement::Effect` (t72).
         effect_stmt.map(Statement::Effect),
-        pipeline.map(Statement::Query),
+        pipeline_or_effect,
     ))
     .parse_next(input)
 }

@@ -284,6 +284,132 @@ fn remove_where() {
     assert_eq!(e.verb, EffectVerb::Remove);
 }
 
+// ---- writes as pipeline stages (decision Q, t72) --------------------------
+
+/// Render an AST to canonical JSON with every byte-`span` field stripped, so two spellings of
+/// the SAME write — which sit at different byte offsets — compare on *structure* alone. The
+/// whole point of t72 is that the pipe-stage and verb-leading forms lower to one `EffectStmt`;
+/// spans are the only thing that legitimately differs between two source strings.
+fn ast_without_spans(stmt: &Statement) -> serde_json::Value {
+    let mut v = serde_json::to_value(stmt).expect("AST serializes");
+    strip_spans(&mut v);
+    v
+}
+
+fn strip_spans(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(map) => {
+            map.remove("span");
+            for child in map.values_mut() {
+                strip_spans(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                strip_spans(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Decision Q, the load-bearing invariant: a pipe-stage write parses to the SAME effect AST the
+/// verb-leading spelling produces — one plan, two renderings — for every write verb.
+#[test]
+fn pipe_stage_writes_match_their_verb_leading_form() {
+    // INSERT/UPSERT: the upstream pipeline IS the inserted relation (the verb-leading form's
+    // sub-pipeline body); target stays explicit in the stage.
+    let pairs = [
+        (
+            "/mail/inbox |> WHERE flag == TRUE |> INSERT INTO /archive",
+            "INSERT INTO /archive /mail/inbox |> WHERE flag == TRUE",
+        ),
+        (
+            "/sql/pg/src |> SELECT id, body |> UPSERT INTO /drive/out.csv",
+            "UPSERT INTO /drive/out.csv /sql/pg/src |> SELECT id, body",
+        ),
+        // UPDATE/REMOVE: target + filter are lifted from the upstream `path |> WHERE …` so the
+        // pipe-stage form reproduces the verb-leading `UPDATE <path> SET … WHERE …` exactly.
+        (
+            "/sql/pg/orders |> WHERE id == 7 |> UPDATE SET status = 'done'",
+            "UPDATE /sql/pg/orders SET status = 'done' WHERE id == 7",
+        ),
+        (
+            "/mail/spam |> WHERE age > 30 |> REMOVE",
+            "REMOVE /mail/spam WHERE age > 30",
+        ),
+        // RETURNING rides as a trailing `|>` stage in the pipe-stage form, inline in the other.
+        (
+            "/sql/pg/orders |> WHERE id == 7 |> UPDATE SET status = 'done' |> RETURNING id",
+            "UPDATE /sql/pg/orders SET status = 'done' WHERE id == 7 RETURNING id",
+        ),
+    ];
+    for (pipe_form, verb_form) in pairs {
+        let lhs = ast_without_spans(&parse_ok(pipe_form));
+        let rhs = ast_without_spans(&parse_ok(verb_form));
+        assert_eq!(
+            lhs, rhs,
+            "pipe-stage `{pipe_form}` must lower to the same effect AST as `{verb_form}`"
+        );
+    }
+}
+
+/// Both forms are legal and produce an `Effect`; the source-less `VALUES` literal is unchanged.
+#[test]
+fn both_write_forms_are_legal() {
+    // Pipe-stage write.
+    let Statement::Effect(e) = parse_ok("/mail/inbox |> WHERE flag == TRUE |> REMOVE") else {
+        panic!("pipe-stage REMOVE must be an Effect")
+    };
+    assert_eq!(e.verb, EffectVerb::Remove);
+    // Source-less verb-leading literal still parses (the only INSERT form with no inflow).
+    let Statement::Effect(lit) = parse_ok("INSERT INTO /mail/drafts VALUES ('hi')") else {
+        panic!("source-less INSERT … VALUES must stay legal")
+    };
+    assert!(matches!(lit.body, EffectBody::Values(_)));
+}
+
+/// A pipe-stage INSERT/UPSERT keeps the upstream as the relational body (not a `SET`/`VALUES`).
+#[test]
+fn pipe_stage_insert_body_is_the_upstream_pipeline() {
+    let Statement::Effect(e) = parse_ok("/sql/pg/src |> ENCODE csv |> UPSERT INTO /drive/o.csv")
+    else {
+        panic!()
+    };
+    assert_eq!(e.verb, EffectVerb::Upsert);
+    let EffectBody::Pipeline(p) = &e.body else {
+        panic!("expected the upstream pipeline as the body")
+    };
+    assert!(matches!(p.source, Source::Path(_)));
+    assert_eq!(p.ops.len(), 1, "the ENCODE stage is part of the body");
+}
+
+/// A write stage with NO upstream source (a bare `|> INSERT INTO …`) is a clear error, not a
+/// silent acceptance — decision Q's "anything that is neither legal form is an error".
+#[test]
+fn bare_pipe_write_with_no_source_is_an_error() {
+    let _ = parse_err("|> INSERT INTO /mail/drafts");
+    let _ = parse_err("|> REMOVE");
+}
+
+/// A pipe-stage UPDATE/REMOVE whose upstream is not a plain `path |> WHERE …` (here a `SELECT`
+/// transform precedes it) cannot lower to the verb-leading in-place form, so it is rejected.
+#[test]
+fn pipe_stage_update_rejects_non_liftable_upstream() {
+    let _ = parse_err("/sql/pg/orders |> SELECT id |> UPDATE SET status = 'done'");
+}
+
+/// A pipe-stage write is still an explicit effect under `PREVIEW`/`COMMIT` (the safety floor is
+/// unchanged — only the surface syntax moved).
+#[test]
+fn pipe_stage_write_wraps_in_a_plan() {
+    let Statement::Plan(p) = parse_ok("COMMIT /mail/spam |> WHERE age > 30 |> REMOVE") else {
+        panic!("expected a plan wrapper")
+    };
+    assert!(p.commit);
+    assert!(matches!(p.inner.as_ref(), Statement::Effect(_)));
+}
+
 // ---- server DDL -----------------------------------------------------------
 
 #[test]

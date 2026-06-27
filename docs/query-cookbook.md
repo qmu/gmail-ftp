@@ -1178,7 +1178,7 @@ A blob is just bytes until you `DECODE` it; then it is a relation you can filter
 **Export open tickets to a shared CSV report on Drive (round-trip md→csv).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=DECODE,WHERE,SELECT,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M2; features=DECODE,WHERE,SELECT,ENCODE,UPSERT INTO
 # DECODE md … transform … ENCODE csv … UPSERT INTO storage
 /local/.workaholic/tickets/todo/*.md
 |> DECODE md
@@ -1191,7 +1191,7 @@ A blob is just bytes until you `DECODE` it; then it is a relation you can filter
 **Convert a SQL query result into a JSON object dropped in an S3 bucket.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M4; features=WHERE,SELECT,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M4; features=WHERE,SELECT,ENCODE,UPSERT INTO
 /sql/pg/customers
 |> WHERE plan == 'enterprise' AND churned == false
 |> SELECT id, name, mrr, renewal_date
@@ -1202,7 +1202,7 @@ A blob is just bytes until you `DECODE` it; then it is a relation you can filter
 **Normalize a messy CSV and write it back as clean YAML config.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=DECODE,EXTEND,SELECT,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M2; features=DECODE,EXTEND,SELECT,ENCODE,UPSERT INTO
 # csv in, yaml out — codecs decouple input format from output format
 /local/import/regions.csv
 |> DECODE csv
@@ -1227,7 +1227,7 @@ A blob is just bytes until you `DECODE` it; then it is a relation you can filter
 **Promote a draft note to published by flipping its frontmatter and re-encoding.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=DECODE,SET,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M2; features=DECODE,SET,ENCODE,UPSERT INTO
 # md round-trip: frontmatter columns change, body is preserved
 /local/blog/posts/launch-recap.md
 |> DECODE md
@@ -1284,7 +1284,7 @@ A blob is just bytes until you `DECODE` it; then it is a relation you can filter
 **Snapshot the current SQL order book as a JSONL backup in R2.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M4; features=WHERE,SELECT,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M4; features=WHERE,SELECT,ENCODE,UPSERT INTO
 # relational → jsonl, one object per line, into Cloudflare R2
 /sql/pg/orders
 |> WHERE status == 'open'
@@ -1296,7 +1296,7 @@ A blob is just bytes until you `DECODE` it; then it is a relation you can filter
 **Read an old config AS OF a date from SQL and re-publish it as YAML.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M4; features=AS OF,SELECT,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M4; features=AS OF,SELECT,ENCODE,UPSERT INTO
 # temporal read of a relational source, then encode to a blob
 /sql/pg/settings AS OF '2026-01-01'
 |> SELECT key, value
@@ -1321,7 +1321,7 @@ A blob is just bytes until you `DECODE` it; then it is a relation you can filter
 **Extract the body of every README in a repo at a tag for a doc index.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=DECODE,SELECT,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M2; features=DECODE,SELECT,ENCODE,UPSERT INTO
 # md bodies harvested from a git ref, written out as a jsonl index
 /git/monorepo@v3.0.0/packages/**/README.md
 |> DECODE md
@@ -1344,7 +1344,7 @@ A blob is just bytes until you `DECODE` it; then it is a relation you can filter
 **Build a slack-ready digest table from the todo ticket markdown.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=DECODE,WHERE,ORDER BY,SELECT,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M2; features=DECODE,WHERE,ORDER BY,SELECT,ENCODE,UPSERT INTO
 # md → json digest dropped as a file a downstream job posts to Slack
 /local/.workaholic/tickets/todo/*.md
 |> DECODE md
@@ -1370,7 +1370,7 @@ A blob is just bytes until you `DECODE` it; then it is a relation you can filter
 **Flatten a nested TOML config into a flat key/value CSV for review.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=DECODE,SELECT,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M2; features=DECODE,SELECT,ENCODE,UPSERT INTO
 /local/config/app.toml
 |> DECODE toml
 |> SELECT 'database.host' AS key, database.host AS value
@@ -1430,7 +1430,7 @@ Reads describe the world; writes change it. qfs spells every mutation as a pipel
 **Publish a rendered report to S3, overwriting any prior copy at the same key (reversible UPSERT).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=DECODE,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M2; features=DECODE,ENCODE,UPSERT INTO
 /local/reports/q2-summary.md
 |> DECODE md
 |> ENCODE json
@@ -1440,7 +1440,7 @@ Reads describe the world; writes change it. qfs spells every mutation as a pipel
 **Mirror a config blob from Drive into an R2 bucket (idempotent UPSERT, safe to re-run).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M2; features=UPSERT INTO
 /drive/Config/app-settings.toml
 |> UPSERT INTO /r2/edge-config/app-settings.toml
 ```
@@ -1545,7 +1545,7 @@ Reads describe the world; writes change it. qfs spells every mutation as a pipel
 **Mark every shipped order as fulfilled and return the affected rows (reversible UPDATE).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M4; features=WHERE,UPDATE,SET,RETURNING
+# qfs-cookbook: grammar=core; milestone=M4; features=WHERE,UPDATE,SET,RETURNING
 # RETURNING hands back what changed so you can chain or audit it.
 /sql/pg/orders
 |> WHERE status == 'shipped' AND tracking_number <> ''
@@ -1556,7 +1556,7 @@ Reads describe the world; writes change it. qfs spells every mutation as a pipel
 **Apply a 10% loyalty discount to repeat customers' open carts (reversible UPDATE).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M4; features=WHERE,UPDATE,SET,RETURNING
+# qfs-cookbook: grammar=core; milestone=M4; features=WHERE,UPDATE,SET,RETURNING
 /sql/pg/carts
 |> WHERE status == 'open' AND customer_order_count >= 5
 |> UPDATE SET discount_pct = 10, updated_at = now()
@@ -1566,7 +1566,7 @@ Reads describe the world; writes change it. qfs spells every mutation as a pipel
 **Deactivate accounts that never confirmed their email after 30 days (reversible flag flip).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M4; features=WHERE,UPDATE,SET,AND,RETURNING
+# qfs-cookbook: grammar=core; milestone=M4; features=WHERE,UPDATE,SET,AND,RETURNING
 /sql/pg/accounts
 |> WHERE email_confirmed == false AND created_at < '2026-05-27'
 |> UPDATE SET status = 'inactive', deactivated_at = now()
@@ -1576,7 +1576,7 @@ Reads describe the world; writes change it. qfs spells every mutation as a pipel
 **Normalize country codes on legacy customer records (reversible UPDATE with RETURNING for the audit trail).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M4; features=WHERE,UPDATE,SET,RETURNING
+# qfs-cookbook: grammar=core; milestone=M4; features=WHERE,UPDATE,SET,RETURNING
 /sql/pg/customers
 |> WHERE country == 'USA'
 |> UPDATE SET country = 'US'
@@ -1596,7 +1596,7 @@ Reads describe the world; writes change it. qfs spells every mutation as a pipel
 **Remove webhook delivery logs older than 90 days (irreversible — DELETE needs --commit-irreversible).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M4; features=WHERE,REMOVE
+# qfs-cookbook: grammar=core; milestone=M4; features=WHERE,REMOVE
 # REMOVE is a delete: preview shows the count, --commit-irreversible actually purges the rows.
 /sql/pg/webhook_logs
 |> WHERE delivered_at < '2026-03-28'
@@ -1606,7 +1606,7 @@ Reads describe the world; writes change it. qfs spells every mutation as a pipel
 **Purge expired temporary export blobs from S3 (irreversible delete).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=WHERE,REMOVE,LIKE
+# qfs-cookbook: grammar=core; milestone=M2; features=WHERE,REMOVE,LIKE
 /s3/acme-exports/tmp
 |> WHERE key LIKE 'tmp/%' AND last_modified < '2026-06-19'
 |> REMOVE
@@ -1615,7 +1615,7 @@ Reads describe the world; writes change it. qfs spells every mutation as a pipel
 **Delete duplicate draft emails left over from a failed batch (irreversible — clears drafts).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M4; features=WHERE,REMOVE,LIKE,AND
+# qfs-cookbook: grammar=core; milestone=M4; features=WHERE,REMOVE,LIKE,AND
 /mail/drafts
 |> WHERE subject LIKE 'AUTO:%' AND created_at < '2026-06-25'
 |> REMOVE
@@ -1624,7 +1624,7 @@ Reads describe the world; writes change it. qfs spells every mutation as a pipel
 **Evict stale objects from a KV namespace (irreversible delete).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=WHERE,REMOVE
+# qfs-cookbook: grammar=core; milestone=M2; features=WHERE,REMOVE
 /kv/sessions
 |> WHERE expires_at < '2026-06-26T00:00:00Z'
 |> REMOVE
@@ -1720,7 +1720,7 @@ Reads describe the world; writes change it. qfs spells every mutation as a pipel
 **Update Slack channel topics from a SQL config table (reversible — topic edits revert).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M1; features=WHERE,UPDATE,SET,RETURNING
+# qfs-cookbook: grammar=core; milestone=M1; features=WHERE,UPDATE,SET,RETURNING
 /slack/acme/general/channel
 |> WHERE id == 'C12345'
 |> UPDATE SET topic = 'Q3 planning in progress'
@@ -2003,7 +2003,7 @@ LET domain_of = (email: String) => lower(split(email, '@')[2])
 **Bind a markdown frontmatter set and write a summary index from it.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M6; features=LET,DECODE,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M6; features=LET,DECODE,ENCODE,UPSERT INTO
 # posts is decoded once, then both filtered and re-encoded into an index file.
 LET posts =
   /local/blog/posts.jsonl
@@ -2969,7 +2969,7 @@ CREATE JOB ga_snapshot EVERY '1 day' DO
 **Back up a critical table to versioned S3 nightly.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M8; features=CREATE JOB,EVERY,DO,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M8; features=CREATE JOB,EVERY,DO,ENCODE,UPSERT INTO
 # Full-table jsonl dump to a dated key in the backup bucket
 CREATE JOB backup_accounts EVERY '1 day' DO
   /sql/pg/accounts
@@ -3176,7 +3176,7 @@ INSERT INTO /sys/users
 **Promote a viewer to editor on their team.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M3; features=WHERE,UPDATE,SET,RETURNING
+# qfs-cookbook: grammar=core; milestone=M3; features=WHERE,UPDATE,SET,RETURNING
 /sys/users
 |> WHERE email == 'dana@acme.com' AND role == 'viewer'
 |> UPDATE SET role = 'editor'
@@ -3186,7 +3186,7 @@ INSERT INTO /sys/users
 **Off-board someone the moment they leave — revoke their account.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M3; features=WHERE,REMOVE
+# qfs-cookbook: grammar=core; milestone=M3; features=WHERE,REMOVE
 /sys/users
 |> WHERE email == 'former.staff@acme.com'
 |> REMOVE
@@ -3250,7 +3250,7 @@ INSERT INTO /sys/policies
 **Revoke a policy that has become too permissive.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M5; features=WHERE,REMOVE
+# qfs-cookbook: grammar=core; milestone=M5; features=WHERE,REMOVE
 /sys/policies
 |> WHERE name == 'legacy-allow-all-finance'
 |> REMOVE
@@ -3292,7 +3292,7 @@ INSERT INTO /sys/connections
 **Disconnect a third-party integration cleanly.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M3; features=WHERE,REMOVE
+# qfs-cookbook: grammar=core; milestone=M3; features=WHERE,REMOVE
 /sys/connections
 |> WHERE name == 'old-zendesk' AND driver == 'http'
 |> REMOVE
@@ -3378,7 +3378,7 @@ INSERT INTO /sys/projects/members
 **Remove a former contributor from a project without deleting their account.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M5; features=WHERE,REMOVE
+# qfs-cookbook: grammar=core; milestone=M5; features=WHERE,REMOVE
 /sys/projects/members
 |> WHERE project_id == 'q3-migration' AND email == 'rotated.off@acme.com'
 |> REMOVE
@@ -3398,7 +3398,7 @@ INSERT INTO /sys/projects/members
 **Sign off on a pending approval — a second human approves the row.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M+; features=WHERE,UPDATE,SET,RETURNING
+# qfs-cookbook: grammar=core; milestone=M+; features=WHERE,UPDATE,SET,RETURNING
 # The approver must differ from requested_by; the engine enforces four-eyes at commit.
 /sys/approvals
 |> WHERE id == 'apr-8842' AND status == 'pending'
@@ -3599,7 +3599,7 @@ INSERT INTO /mail/drafts
 **"Mirror the weekly report into the shared Drive folder as a CSV."**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=WHERE,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M2; features=WHERE,ENCODE,UPSERT INTO
 # Reversible UPSERT to storage — safe to auto-commit; preview shows the target key.
 /sql/pg/weekly_report
 |> WHERE week == '2026-W26'
@@ -3610,7 +3610,7 @@ INSERT INTO /mail/drafts
 **"Tag every stale open issue so the backlog grooming bot picks them up."**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=WHERE,UPDATE,SET
+# qfs-cookbook: grammar=core; milestone=M2; features=WHERE,UPDATE,SET
 # Reversible field update; the preview lists the affected issue numbers before commit.
 /github/acme/web/issues
 |> WHERE state == 'open' AND updated_at < '2026-03-26'
@@ -3620,7 +3620,7 @@ INSERT INTO /mail/drafts
 **"Drop the processed upload keys from the queue table."**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=WHERE,REMOVE
+# qfs-cookbook: grammar=core; milestone=M2; features=WHERE,REMOVE
 # REMOVE is irreversible: preview enumerates the exact rows it would delete, and the
 # commit needs --commit-irreversible. (It cannot appear inside a TRANSACTION, which is
 # reversible-only.) Reach for UPDATE SET a soft-delete flag if you need it undoable.
@@ -3632,7 +3632,7 @@ INSERT INTO /mail/drafts
 **"Stage the new pricing file into the staging bucket from the source one."**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M2; features=ENCODE,UPSERT INTO
 /s3/source/pricing-2026.json
 |> DECODE json
 |> ENCODE json
@@ -3728,7 +3728,7 @@ CALL ci.dispatch(workflow => 'nightly-export', ref => 'main')
 **"Snapshot the audit log of who changed connections this month into a table."**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M2; features=WHERE,SELECT,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M2; features=WHERE,SELECT,UPSERT INTO
 /sys/audit
 |> WHERE action LIKE 'connection.%' AND at > '2026-06-01'
 |> SELECT actor, action, target, at
@@ -3971,7 +3971,7 @@ LET avg_progress = (rows: Relation) =>
 **Collect every agent's final result and drop it into a shared report blob.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M+; features=WHERE,SELECT,ENCODE,UPSERT INTO
+# qfs-cookbook: grammar=core; milestone=M+; features=WHERE,SELECT,ENCODE,UPSERT INTO
 /hosts/*/claude/sessions
 |> WHERE status == 'done'
 |> SELECT host, task, result, finished_at

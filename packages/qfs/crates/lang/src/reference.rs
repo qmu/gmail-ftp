@@ -54,7 +54,9 @@ pub const fn grammar_ebnf() -> &'static str {
 program       = { binding } , statement ;
 binding       = \"LET\" , name , \"=\" , pipeline ;
 
-statement     = pipeline , [ plan_op ] ;
+(* A statement is a pipeline (which may terminate in a write stage, decision Q) or the   *)
+(* source-less verb-leading literal write; an optional plan_op wraps either.              *)
+statement     = ( pipeline | effect_literal ) , [ plan_op ] ;
 
 (* A pipeline is a source threaded through |> stages. Decision R (t73): the source     *)
 (* position needs no `FROM` — a leading `/path` (or a LET-bound name) IS the source.   *)
@@ -82,11 +84,20 @@ query_stage   = \"WHERE\" , predicate
               | \"INTERSECT\" , source
               | \"EXPAND\" , column ;
 
-(* ---- effects (write) ---- *)
-effect_stage  = \"INSERT INTO\" , target , [ \"VALUES\" , row_list ] [ \"RETURNING\" , projection ]
-              | \"UPSERT INTO\" , target , [ \"VALUES\" , row_list ] [ \"RETURNING\" , projection ]
-              | \"UPDATE\" , assignment
-              | \"REMOVE\" ;
+(* ---- effects (write) — decision Q (t72): a write reads as dataflow. With inflowing  *)
+(* rows it is a TERMINAL pipeline stage; the upstream relation is what it writes        *)
+(* (INSERT/UPSERT) or the rows it rewrites/removes in place (UPDATE/REMOVE, whose target *)
+(* and WHERE are the upstream `/path |> WHERE …`). RETURNING rides as a trailing stage.  *)
+effect_stage  = \"INSERT INTO\" , target
+              | \"UPSERT INTO\" , target
+              | \"UPDATE\" , \"SET\" , assignment
+              | \"REMOVE\"
+              | \"RETURNING\" , projection ;
+
+(* The source-less LITERAL write leads with the verb (no inflowing rows to consume);     *)
+(* `VALUES` supplies the rows inline. This is the only write form that is not a stage.    *)
+effect_literal= \"INSERT INTO\" , target , \"VALUES\" , row_list , [ \"RETURNING\" , projection ]
+              | \"UPSERT INTO\" , target , \"VALUES\" , row_list , [ \"RETURNING\" , projection ] ;
 
 (* ---- procedures (the irreducible state transitions) ---- *)
 call_stage    = \"CALL\" , qualified_proc , \"(\" , [ arg_list ] , \")\" ;

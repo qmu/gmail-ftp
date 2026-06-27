@@ -115,6 +115,43 @@ fn upsert_plan_golden_snapshot() {
         .snapshot("plan_upsert_users");
 }
 
+#[test]
+fn pipe_stage_and_verb_leading_writes_lower_to_one_plan() {
+    // Decision Q (t72): a write spelled as a terminal pipeline stage and the verb-leading
+    // spelling of the same write evaluate to the SAME effect `Plan` — the strongest proof that
+    // this is grammar shape, not new effect semantics. Compared by `Plan` value-equality (the
+    // plan carries no parser spans, so equal plans is the whole assertion).
+    let reg = registry();
+    let pairs = [
+        // INSERT/UPSERT: upstream pipeline body, explicit target.
+        (
+            "/db/src |> WHERE id > 0 |> UPSERT INTO /db/users",
+            "UPSERT INTO /db/users /db/src |> WHERE id > 0",
+        ),
+        // UPDATE: target + filter lifted from the upstream.
+        (
+            "/db/users |> WHERE id == 1 |> UPDATE SET name = 'x'",
+            "UPDATE /db/users SET name = 'x' WHERE id == 1",
+        ),
+        // REMOVE: target + filter lifted from the upstream (irreversible either way).
+        (
+            "/db/users |> WHERE id == 1 |> REMOVE",
+            "REMOVE /db/users WHERE id == 1",
+        ),
+    ];
+    for (pipe_form, verb_form) in pairs {
+        let pipe_plan = assert_plan(pipe_form, &reg);
+        let verb_plan = assert_plan(verb_form, &reg);
+        assert!(
+            pipe_plan.plan() == verb_plan.plan(),
+            "pipe-stage `{pipe_form}` and verb-leading `{verb_form}` must build one Plan:\n  \
+             pipe: {:?}\n  verb: {:?}",
+            pipe_plan.plan(),
+            verb_plan.plan()
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 2. Parser / grammar golden corpus (closed-core keywords, |>, CALL, DECODE, CREATE).
 // ---------------------------------------------------------------------------
