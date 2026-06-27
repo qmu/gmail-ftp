@@ -51,8 +51,9 @@ fn main() {
         // the artifact and be discoverable from the running binary.
         &qfs_skill::render,
         // `qfs account add/list/use/remove`: the real credential-store I/O, injected here (the
-        // binary owns the encrypted `qfs-secrets` LocalStore; qfs-cmd stays off the concrete
-        // backend). The secret is read from stdin, never argv; the store is `0600` + AEAD.
+        // binary owns the envelope-encrypted SQLite store over the Project DB — t43; qfs-cmd stays
+        // off the concrete backend). The secret is read from stdin, never argv; each value is
+        // AEAD-sealed under a data-key wrapped by the `QFS_PASSPHRASE`-derived key.
         &account::run_account,
         // The REAL `qfs run --commit` apply path: drives the qfs-runtime interpreter over the live
         // driver registry (local-fs today). qfs-cmd/qfs-exec stay off qfs-runtime; this is the leaf.

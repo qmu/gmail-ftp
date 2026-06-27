@@ -65,6 +65,14 @@ impl Db {
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
+
+    /// Consume this handle and yield the **owned** `rusqlite::Connection`. The binary uses this
+    /// (after [`ProjectDb::into_db`]) to move a migrated connection into a backend that must OWN it
+    /// — e.g. t43's `SqliteSecrets`, which holds the connection inside a `Mutex` to be `Send + Sync`.
+    #[must_use]
+    pub fn into_connection(self) -> Connection {
+        self.conn
+    }
 }
 
 /// The connection-opening seam (decision F). An impl yields a fresh connection; the binary chooses
@@ -152,6 +160,14 @@ impl ProjectDb {
     pub fn db(&self) -> &Db {
         &self.0
     }
+
+    /// Consume this scope and yield its underlying [`Db`] (already migrated). Paired with
+    /// [`Db::into_connection`] so the binary can move the migrated connection into a backend that
+    /// owns it (t43's `SqliteSecrets`). The scope newtype is dropped once the connection is owned.
+    #[must_use]
+    pub fn into_db(self) -> Db {
+        self.0
+    }
 }
 
 /// The System DB's ordered migration set (forward-only; append, never edit a shipped entry).
@@ -162,11 +178,20 @@ pub const SYSTEM_MIGRATIONS: &[Migration] = &[Migration {
 }];
 
 /// The Project DB's ordered migration set (forward-only; append, never edit a shipped entry).
-pub const PROJECT_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "project_skeleton",
-    sql: include_str!("schema/project.sql"),
-}];
+pub const PROJECT_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "project_skeleton",
+        sql: include_str!("schema/project.sql"),
+    },
+    // t43: the envelope-encrypted credential store (secret_store + secret_meta) and the DB-backed
+    // active-account selection. Appended as a NEW version — migration #1's body stays frozen.
+    Migration {
+        version: 2,
+        name: "project_secret_store",
+        sql: include_str!("schema/project_secrets.sql"),
+    },
+];
 
 /// Structured, secret-free persistence errors (AI-consumable; a DB path is infra, not a secret, but
 /// we never render connection *contents*). Migration failures fold in via [`MigrationError`].
@@ -304,6 +329,31 @@ mod tests {
         assert!(table_exists(proj.db(), "connections"));
         assert!(table_exists(proj.db(), "project_config"));
         assert!(table_exists(proj.db(), "project_state"));
+        // t43 migration #2: the envelope-encrypted credential store + active-account tables.
+        assert!(table_exists(proj.db(), "secret_store"));
+        assert!(table_exists(proj.db(), "secret_meta"));
+        assert!(table_exists(proj.db(), "active_account"));
+        // Both project migrations are recorded.
+        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn project_db_into_db_into_connection_yields_a_migrated_owned_connection() {
+        // The t43 seam: a migrated ProjectDb hands its OWNED rusqlite::Connection to a backend.
+        let conn = ProjectDb::open(&MemorySource)
+            .unwrap()
+            .into_db()
+            .into_connection();
+        // The owned connection sees the migrated schema (a write into secret_meta succeeds).
+        conn.execute(
+            "INSERT INTO secret_meta (id, wrapped_dek, kdf_salt) VALUES (1, x'00', x'01')",
+            [],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM secret_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     #[test]

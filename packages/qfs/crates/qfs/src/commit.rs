@@ -140,17 +140,17 @@ fn live_registry() -> DriverRegistry {
 }
 
 /// Resolve the `(store, credential key)` a networked driver applies with. Reads the **same**
-/// credential `qfs account add <driver> <name>` wrote: the encrypted [`LocalStore`] when
-/// `QFS_PASSPHRASE` + the vault exist, else the process-env store (`QFS_SECRET_*`, the agent /
-/// CI path). The account is the one `qfs account use <driver> <name>` selected (the plaintext
-/// `.active` sidecar), defaulting to `default`. The secret is **not** read here — the client reads
-/// it lazily at request-build time, so a missing/locked credential becomes a clear per-leg auth
-/// error at commit, never a panic at registry build. Returns `None` only if the account id cannot
-/// be constructed (impossible for the literal `default` fallback) — in which case the driver is
-/// simply left unregistered rather than panicking.
+/// credential `qfs account add <driver> <name>` wrote: the envelope-encrypted SQLite store
+/// ([`crate::secret_store::SqliteSecrets`]) when `QFS_PASSPHRASE` + the Project DB exist, else the
+/// process-env store (`QFS_SECRET_*`, the agent / CI path). The account is the one `qfs account use
+/// <driver> <name>` selected (the Project DB's `active_account` table), defaulting to `default`. The
+/// secret is **not** read here — the client reads it lazily at request-build time, so a
+/// missing/locked credential becomes a clear per-leg auth error at commit, never a panic at registry
+/// build. Returns `None` only if the account id cannot be constructed (impossible for the literal
+/// `default` fallback) — in which case the driver is simply left unregistered rather than panicking.
 fn networked_credential(driver: &str) -> Option<(Arc<dyn Secrets>, CredentialKey)> {
     let store: Arc<dyn Secrets> = match crate::account::open_store_for_commit() {
-        Some(local) => Arc::new(local),
+        Some(sqlite) => Arc::new(sqlite),
         None => Arc::new(EnvStore::from_process_env()),
     };
     let account = crate::account::active_account(driver).unwrap_or_else(|| "default".to_string());

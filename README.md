@@ -42,8 +42,12 @@ operating procedure ships embedded in the binary — run `qfs skill` (and `qfs s
   `SEND(d)` does not send mail — it desugars to a `CALL mail.send` node in a `Plan`. Nothing
   happens until `COMMIT`. See [`docs/language.md`](docs/language.md).
 - **Least privilege** (RFD §10). Credentials are stored per driver/account (`qfs account add`),
-  never inline in a config, a log, or a doc. `CREATE POLICY` gates writes by verb / path /
-  irreversibility. See [`docs/server.md`](docs/server.md).
+  never inline in a config, a log, or a doc. They are **envelope-encrypted at rest** in the
+  SQLite Project DB: a random data-key encrypts each secret value, and that data-key is itself
+  wrapped under a key derived from `QFS_PASSPHRASE` (argon2id) — so export `QFS_PASSPHRASE` before
+  `qfs account add`/`use`. (This SQLite store replaces the old encrypted file vault; there is no
+  migration — re-run `qfs account add` once for any existing accounts.) `CREATE POLICY` gates
+  writes by verb / path / irreversibility. See [`docs/server.md`](docs/server.md).
 
 ## Install
 

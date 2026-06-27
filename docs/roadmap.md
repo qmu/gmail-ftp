@@ -628,11 +628,15 @@ Two concerns the current draft conflated, now kept separate:
 | **System DB** | Per host | Projects, cross-project config, `/sys/*` (users, policies, connections, audit) |
 | **Project DB** | Per project | That project's `connections`, config, and state |
 
-Credentials are **envelope-encrypted** at rest: a passphrase or OS keychain unwraps a data-key that
-encrypts the secret columns inside the DB — one persistence path from a single-user laptop to the
-managed cloud. That single-key form is the base case of the **credential vault** (§4.5), which
-generalizes the same envelope into a team key hierarchy. Because the project is still experimental,
-there is **no migration** of today's file vault; the ideal is built fresh (decision E).
+Credentials are **envelope-encrypted** at rest: a data-key encrypts the secret columns inside the DB,
+and the data-key is itself wrapped under a key-encryption-key — today derived from the
+`QFS_PASSPHRASE` passphrase (argon2id); an OS-keychain source to unwrap it without an env var is the
+flagged next step. This is **now the default credential backend** (the SQLite Project DB's
+`secret_store`/`secret_meta` tables) — one persistence path from a single-user laptop to the managed
+cloud. That single-key form is the base case of the **credential vault** (§4.5), which generalizes
+the same envelope into a team key hierarchy. Because the project is still experimental, there is **no
+migration** of the old encrypted file vault; the ideal is built fresh — re-run `qfs account add` once
+per existing account (decision E).
 
 Scale keeps SQLite semantics everywhere by using **distributed SQLite**: **Cloudflare Workers + D1**
 (primary) or **AWS Lambda + EFS** (alternative). The binary stays **stateless** — a request arrives at

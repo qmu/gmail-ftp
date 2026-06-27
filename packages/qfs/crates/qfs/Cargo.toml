@@ -106,6 +106,10 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # resolves the System DB path (`src/store.rs`) and runs the embedded migrations on start. qfs-store
 # reuses the SAME bundled libsqlite3 build as `rusqlite` above, so the artifact carries one C SQLite.
 qfs-store = { path = "../store" }
+# t43: the SQLite `Secrets` backend (src/secret_store.rs) parses the `created_at` column back to an
+# OffsetDateTime for `AccountRecord` (the same RFC3339 metadata qfs-secrets uses). Parsing/formatting
+# only — no secret material ever touches `time`.
+time = { version = "0.3", features = ["parsing", "formatting"] }
 # t36 deployment host-adapter seam: the binary composes the daemon's TokioHost: RuntimeHost,
 # REUSING the existing qfs-http/qfs-cron/qfs-watchtower serve composition behind the trait, and
 # wires the fsync'd FileDurableStore + the on-disk AuditLedger. `host-daemon` is the EC2/Linux

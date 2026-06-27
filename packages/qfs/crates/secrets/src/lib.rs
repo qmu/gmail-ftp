@@ -31,11 +31,19 @@
 //! ## wasm-friendliness
 //! [`LocalStore`] is `cfg(not(target_arch = "wasm32"))` (no fs on Workers); the wasm build
 //! uses `WorkerStore` instead. The trait + DTOs + [`Secret`] + [`resolve`] compile on both.
+//! The [`envelope`] primitive (t43) is likewise `cfg(not(target_arch = "wasm32"))`: its AEAD/KDF
+//! code is pure Rust, but its `rand`/`getrandom` CSPRNG has no default Workers backend, and the
+//! SQLite store that consumes it lives in the (native) binary — Workers use `WorkerStore` and never
+//! need the envelope, so confining it keeps qfs-secrets wasm-buildable (the documented invariant).
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod active;
 mod backends;
+// t43 envelope crypto: native-only (its CSPRNG has no default Workers backend; the SQLite store
+// that consumes it lives in the native binary). Keeps qfs-secrets wasm-buildable.
+#[cfg(not(target_arch = "wasm32"))]
+mod envelope;
 mod key;
 mod resolve;
 mod secret;
@@ -48,6 +56,13 @@ mod worker;
 
 pub use active::ActiveAccounts;
 pub use backends::{EnvStore, InMemoryStore};
+// The envelope-encryption primitive (t43): the SQLite credential store (in the binary) builds on
+// these — a passphrase-derived KEK wraps a random DEK that seals each secret value. Native-only
+// (see the `mod envelope` gate above); Workers never need it.
+#[cfg(not(target_arch = "wasm32"))]
+pub use envelope::{
+    derive_kek, generate_dek, generate_salt, open, seal, unwrap_dek, wrap_dek, EnvelopeError,
+};
 pub use key::{AccountId, AccountIdError, AccountRecord, CredentialKey, DriverId};
 pub use resolve::{resolve, AccountSource, Resolution, ResolveError};
 pub use secret::{Secret, REDACTED};

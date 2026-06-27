@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use qfs_store::{FileSource, StoreError, SystemDb};
+use qfs_store::{FileSource, ProjectDb, StoreError, SystemDb};
 
 /// Resolve the default System DB path.
 ///
@@ -52,6 +52,48 @@ pub fn open_system_db() -> Result<Option<SystemDb>, StoreError> {
     Ok(Some(SystemDb::open(&FileSource::new(path))?))
 }
 
+/// Resolve the default Project DB path (`$XDG_CONFIG_HOME/qfs/project.db`, falling back to
+/// `~/.config/qfs/project.db`), mirroring [`default_system_db_path`] so both DBs share the one `qfs`
+/// config dir.
+///
+/// **OPEN PRODUCT DECISION (flagged for the reviewer, t43 — not baked in):** today this is a SINGLE
+/// default `project.db` (one project per host). The roadmap's §4.2 model is one Project DB *per
+/// project*; the unresolved question is whether each project gets its OWN `project-<slug>.db` file
+/// (file-per-project) or whether projects become rows inside one DB keyed by a project id
+/// (rows-in-System, decision F's tenant→DB route). Until a real multi-project surface lands (t44+),
+/// the binary opens one default `project.db`; revisit the file layout then.
+#[must_use]
+pub fn default_project_db_path() -> Option<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            return Some(PathBuf::from(xdg).join("qfs").join("project.db"));
+        }
+    }
+    std::env::var("HOME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .map(|home| {
+            PathBuf::from(home)
+                .join(".config")
+                .join("qfs")
+                .join("project.db")
+        })
+}
+
+/// Open the Project DB at the default path and apply migrations (idempotent). Returns:
+/// - `Ok(Some(db))` — opened + migrated (the t43 secret-store schema is now present);
+/// - `Ok(None)` — no resolvable config home (HOME/XDG unset);
+/// - `Err(_)` — a real open/migration failure.
+///
+/// The binary moves the migrated connection into the SQLite credential backend via the t42 seam
+/// (`into_db().into_connection()` → `SqliteSecrets::open_or_init`).
+pub fn open_project_db() -> Result<Option<ProjectDb>, StoreError> {
+    let Some(path) = default_project_db_path() else {
+        return Ok(None);
+    };
+    Ok(Some(ProjectDb::open(&FileSource::new(path))?))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -71,6 +113,36 @@ mod tests {
             default_system_db_path(),
             Some(PathBuf::from("/x/cfg/qfs/system.db"))
         );
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn project_db_path_follows_xdg_then_home() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", "/x/cfg");
+        assert_eq!(
+            default_project_db_path(),
+            Some(PathBuf::from("/x/cfg/qfs/project.db"))
+        );
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn open_project_db_creates_and_migrates_the_secret_store() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        let proj = open_project_db().unwrap().expect("config home resolves");
+        // Both project migrations applied (skeleton + t43 secret store).
+        assert_eq!(qfs_store::applied_migrations(proj.db()).unwrap().len(), 2);
         match prev_xdg {
             Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
             None => std::env::remove_var("XDG_CONFIG_HOME"),
