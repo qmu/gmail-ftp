@@ -3,9 +3,9 @@ created_at: 2026-06-26T10:00:00+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [Domain, UX]
-effort:
-commit_hash:
-category:
+effort: L
+commit_hash: 7ca2321
+category: Added
 depends_on: [20260626100000-t42-persistence-sqlite-system-project-db.md, 20260626100300-t45-identity-users-accounts-local-signup.md]
 ---
 
