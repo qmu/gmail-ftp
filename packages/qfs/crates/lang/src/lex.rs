@@ -459,6 +459,13 @@ impl Lexer {
             self.bump();
             self.bump();
             Token::Arrow
+        } else if two('=', '=') {
+            // Maximal munch: `==` (equivalence) before a lone `=` (bind). The `=>`
+            // (Arrow) check above already won where applicable, so the three forms
+            // `=>` / `==` / `=` are each unambiguous (RFD decision O, ticket t70).
+            self.bump();
+            self.bump();
+            Token::EqEq
         } else {
             let single = match ch.c {
                 '=' => Token::Eq,

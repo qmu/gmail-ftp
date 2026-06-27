@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn cross_source_join_via_registry_federates() {
         let mounts = registry();
-        let stmt = parse_statement("FROM /db/users |> JOIN /git/commits ON id = id").unwrap();
+        let stmt = parse_statement("FROM /db/users |> JOIN /git/commits ON id == id").unwrap();
         let phys = plan_query(&stmt, &mounts).unwrap();
         assert_eq!(phys.scan_count(), 2);
         // /db pushes nothing extra (bare scan), /git is None (bare). The join federates.

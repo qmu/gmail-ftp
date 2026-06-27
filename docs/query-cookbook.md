@@ -40,7 +40,7 @@ The simplest thing qfs does is read one source, narrow it with a predicate, and 
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M2; features=FROM,WHERE,NOT,LIKE,AND,SELECT,ORDER BY,LIMIT
 FROM /mail/inbox
-|> WHERE is_read = false
+|> WHERE is_read == false
      AND NOT from LIKE '%@acme.com'
 |> SELECT from, subject, received_at
 |> ORDER BY received_at DESC
@@ -63,7 +63,7 @@ FROM /sql/pg/invoices
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M1; features=FROM,WHERE,IN,AND,SELECT,ORDER BY
 FROM /github/acme/web/pulls
-|> WHERE state = 'open'
+|> WHERE state == 'open'
      AND author IN ('rin', 'kenji', 'sora', 'mei')
 |> SELECT number, title, author, created_at
 |> ORDER BY created_at ASC
@@ -134,8 +134,8 @@ FROM /ga/acme.com/pages
 # qfs-cookbook: grammar=core; milestone=M0; features=FROM,DECODE,WHERE,OR,SELECT
 FROM /local/exports/sales.csv
 |> DECODE csv
-|> WHERE region = 'APAC'
-     OR region = 'ANZ'
+|> WHERE region == 'APAC'
+     OR region == 'ANZ'
 |> SELECT order_id, region, total, closed_at
 ```
 
@@ -144,7 +144,7 @@ FROM /local/exports/sales.csv
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M0; features=FROM,WHERE,EXTEND,SELECT,ORDER BY
 FROM /sql/pg/invoices
-|> WHERE status = 'overdue'
+|> WHERE status == 'overdue'
 |> EXTEND days_late = date_diff('day', due_date, now())
 |> SELECT customer, amount_due, due_date, days_late
 |> ORDER BY days_late DESC
@@ -155,7 +155,7 @@ FROM /sql/pg/invoices
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M1; features=FROM,WHERE,EXTEND,||,SELECT,ORDER BY
 FROM /github/acme/web/issues
-|> WHERE state = 'open'
+|> WHERE state == 'open'
 |> EXTEND label = '#' || number || ' — ' || title
 |> SELECT label, assignee, milestone
 |> ORDER BY number ASC
@@ -178,8 +178,8 @@ FROM /mail/inbox
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M0; features=FROM,WHERE,AND,SELECT,path-nav
 FROM /sql/pg/customers
-|> WHERE billing.address.country = 'JP'
-     AND billing.plan.tier = 'enterprise'
+|> WHERE billing.address.country == 'JP'
+     AND billing.plan.tier == 'enterprise'
 |> SELECT id, name, billing.plan.tier, billing.address.city
 ```
 
@@ -188,8 +188,8 @@ FROM /sql/pg/customers
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M1; features=FROM,WHERE,AND,SELECT,path-nav,ORDER BY
 FROM /github/acme/web/pulls
-|> WHERE state = 'open'
-     AND head.status.state = 'failure'
+|> WHERE state == 'open'
+     AND head.status.state == 'failure'
 |> SELECT number, title, head.ref, head.status.context
 |> ORDER BY number DESC
 ```
@@ -233,7 +233,7 @@ FROM /sql/pg/orders
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M1; features=FROM,WHERE,EXPAND,SELECT,ORDER BY
 FROM /github/acme/web/pulls
-|> WHERE state = 'open'
+|> WHERE state == 'open'
 |> EXPAND requested_reviewers
 |> SELECT number, requested_reviewers.login, requested_reviewers.team
 |> ORDER BY number ASC
@@ -275,7 +275,7 @@ FROM /git/app@v1.2/Cargo.toml
 # qfs-cookbook: grammar=core; milestone=M0; features=FROM,@version,DECODE,WHERE,SELECT
 FROM /s3/acme-config/app/settings.json@K7sJpq2vN1
 |> DECODE json
-|> WHERE feature_flags.new_billing = true
+|> WHERE feature_flags.new_billing == true
 |> SELECT environment, feature_flags.new_billing, rollout.percent
 ```
 
@@ -293,7 +293,7 @@ FROM /drive/Specs/pricing.md@rev_88
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M0; features=FROM,AS OF,WHERE,SELECT
 FROM /sql/pg/orders AS OF '2026-05-01'
-|> WHERE id = 'ord_91823'
+|> WHERE id == 'ord_91823'
 |> SELECT id, status, total, shipped_at, updated_at
 ```
 
@@ -302,8 +302,8 @@ FROM /sql/pg/orders AS OF '2026-05-01'
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M0; features=FROM,AS OF,WHERE,AND,SELECT,ORDER BY
 FROM /sql/pg/price_book AS OF '2026-04-01'
-|> WHERE tier = 'enterprise'
-     AND active = true
+|> WHERE tier == 'enterprise'
+     AND active == true
 |> SELECT sku, list_price, currency
 |> ORDER BY list_price DESC
 ```
@@ -313,8 +313,8 @@ FROM /sql/pg/price_book AS OF '2026-04-01'
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M1; features=FROM,WHERE,OR,SELECT,ORDER BY
 FROM /git/app/refs
-|> WHERE kind = 'branch'
-     OR kind = 'tag'
+|> WHERE kind == 'branch'
+     OR kind == 'tag'
 |> SELECT name, kind, target_sha, updated_at
 |> ORDER BY updated_at DESC
 ```
@@ -324,7 +324,7 @@ FROM /git/app/refs
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M3; features=FROM,WHERE,AND,NOT,LIKE,SELECT,ORDER BY,LIMIT
 FROM /sys/audit
-|> WHERE action = 'login'
+|> WHERE action == 'login'
      AND occurred_at > '2026-06-19'
      AND NOT ip LIKE '203.0.113.%'
 |> SELECT actor, ip, occurred_at, user_agent
@@ -384,9 +384,9 @@ This is the whole reason qfs exists: one query language that JOINs, UNIONs, and 
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M4; features=FROM,WHERE,JOIN,ON,SELECT,ORDER BY
 FROM /sql/pg/orders
-|> WHERE status = 'paid' AND placed_at >= '2026-01-01'
-|> JOIN /github/acme/support/issues ON orders.email = issues.reporter_email
-|> WHERE issues.state = 'open'
+|> WHERE status == 'paid' AND placed_at >= '2026-01-01'
+|> JOIN /github/acme/support/issues ON orders.email == issues.reporter_email
+|> WHERE issues.state == 'open'
 |> SELECT orders.id, orders.total, issues.number, issues.title
 |> ORDER BY orders.total DESC
 ```
@@ -401,8 +401,8 @@ qfs resolves this in two stages, and the resolution is the **same** whether you 
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M4; features=FROM,JOIN,ON,WHERE,SELECT
 FROM /sql/pg/orders
-|> WHERE status = 'paid'
-|> JOIN /github/acme/support/issues ON orders.email = issues.reporter_email
+|> WHERE status == 'paid'
+|> JOIN /github/acme/support/issues ON orders.email == issues.reporter_email
 |> SELECT orders.id, orders.total, issues.number, issues.title, issues.state
 ```
 
@@ -422,8 +422,8 @@ FROM /github/acme/support/issues
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,WHERE,JOIN,ON,SELECT
 FROM /github/acme/web/pulls
-|> WHERE state = 'merged'
-|> JOIN /slack/acme/eng-releases/messages ON pulls.number = messages.thread_ref
+|> WHERE state == 'merged'
+|> JOIN /slack/acme/eng-releases/messages ON pulls.number == messages.thread_ref
 |> SELECT pulls.number, pulls.title, messages.user, messages.text, messages.ts
 ```
 
@@ -454,8 +454,8 @@ FROM /s3/media-prod
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M4; features=FROM,WHERE,JOIN,ON,SELECT
 FROM /ga/marketing-site/events
-|> WHERE event_name = 'sign_up'
-|> JOIN /sql/pg/users ON events.user_id = users.external_id
+|> WHERE event_name == 'sign_up'
+|> JOIN /sql/pg/users ON events.user_id == users.external_id
 |> SELECT events.session_id, events.source, users.id, users.plan, users.created_at
 ```
 
@@ -464,7 +464,7 @@ FROM /ga/marketing-site/events
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,JOIN,ON,SELECT,ORDER BY
 FROM /git/app/commits
-|> JOIN /github/acme/app/pulls ON commits.sha = pulls.merge_commit_sha
+|> JOIN /github/acme/app/pulls ON commits.sha == pulls.merge_commit_sha
 |> SELECT commits.sha, commits.author, commits.message, pulls.number, pulls.title
 |> ORDER BY commits.committed_at
 ```
@@ -474,8 +474,8 @@ FROM /git/app/commits
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M4; features=FROM,JOIN,ON,WHERE,SELECT
 FROM /mail/inbox
-|> JOIN /sql/pg/cases ON inbox.from = cases.customer_email
-|> WHERE cases.status = 'open'
+|> JOIN /sql/pg/cases ON inbox.from == cases.customer_email
+|> WHERE cases.status == 'open'
 |> SELECT inbox.from, inbox.subject, cases.id, cases.priority, cases.assignee
 ```
 
@@ -496,8 +496,8 @@ FROM /sql/pg/products
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,WHERE,JOIN,ON,SELECT,ORDER BY
 FROM /sql/pg/orders
 |> WHERE total > 5000
-|> JOIN /github/acme/support/issues ON orders.email = issues.reporter_email
-|> JOIN /github/acme/support/issues/assignees ON issues.number = assignees.issue_number
+|> JOIN /github/acme/support/issues ON orders.email == issues.reporter_email
+|> JOIN /github/acme/support/issues/assignees ON issues.number == assignees.issue_number
 |> SELECT orders.id, orders.total, issues.number, assignees.login
 |> ORDER BY orders.total DESC
 ```
@@ -507,8 +507,8 @@ FROM /sql/pg/orders
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,WHERE,JOIN,ON,AGGREGATE,GROUP BY
 FROM /github/acme/web/pulls
-|> WHERE state = 'merged'
-|> JOIN /slack/acme/eng-releases/messages ON pulls.number = messages.thread_ref
+|> WHERE state == 'merged'
+|> JOIN /slack/acme/eng-releases/messages ON pulls.number == messages.thread_ref
 |> AGGREGATE count() AS discussed_prs
 |> GROUP BY pulls.base_repo
 ```
@@ -518,8 +518,8 @@ FROM /github/acme/web/pulls
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,WHERE,JOIN,ON,SELECT,EXCEPT
 FROM /sql/pg/customers
-|> WHERE plan = 'enterprise'
-|> JOIN /github/acme/support/issues ON customers.email = issues.reporter_email
+|> WHERE plan == 'enterprise'
+|> JOIN /github/acme/support/issues ON customers.email == issues.reporter_email
 |> SELECT customers.email
 |> EXCEPT
    FROM /mail/sent
@@ -558,8 +558,8 @@ FROM /git/infra@main/schema/tables.yaml
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,JOIN,ON,WHERE,SELECT
 FROM /drive/Contracts
-|> JOIN /sql/pg/customers ON files.customer_id = customers.id
-|> WHERE customers.status = 'active'
+|> JOIN /sql/pg/customers ON files.customer_id == customers.id
+|> WHERE customers.status == 'active'
 |> SELECT files.name, files.modified_at, customers.legal_name, customers.account_manager
 ```
 
@@ -568,7 +568,7 @@ FROM /drive/Contracts
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,JOIN,ON,SELECT
 FROM /slack/acme/incidents/messages
-|> JOIN /git/app/commits ON messages.commit_ref = commits.sha
+|> JOIN /git/app/commits ON messages.commit_ref == commits.sha
 |> SELECT messages.ts, messages.user, commits.sha, commits.author, commits.message
 ```
 
@@ -577,8 +577,8 @@ FROM /slack/acme/incidents/messages
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,JOIN,ON,WHERE,AGGREGATE,GROUP BY
 FROM /ga/marketing-site/events
-|> JOIN /sql/pg/users ON events.user_id = users.external_id
-|> WHERE events.event_name = 'purchase'
+|> JOIN /sql/pg/users ON events.user_id == users.external_id
+|> WHERE events.event_name == 'purchase'
 |> AGGREGATE sum(users.mrr) AS total_mrr, count() AS conversions
 |> GROUP BY events.campaign
 ```
@@ -599,9 +599,9 @@ FROM /r2/backups
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,JOIN,ON,WHERE,SELECT
 FROM /sql/pg/orders
-|> JOIN /github/acme/support/issues ON orders.email = issues.reporter_email
-|> JOIN /slack/acme/escalations/messages ON issues.number = messages.thread_ref
-|> WHERE issues.state = 'open'
+|> JOIN /github/acme/support/issues ON orders.email == issues.reporter_email
+|> JOIN /slack/acme/escalations/messages ON issues.number == messages.thread_ref
+|> WHERE issues.state == 'open'
 |> SELECT orders.id, issues.number, messages.user, messages.text
 ```
 
@@ -621,9 +621,9 @@ FROM /ga/app/events
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,WHERE,JOIN,ON,SELECT
 FROM /github/acme/web/pulls
-|> WHERE state = 'open'
-|> JOIN /directories/google/groups ON pulls.assignee_email = groups.member_email
-|> WHERE groups.name = 'oncall-web'
+|> WHERE state == 'open'
+|> JOIN /directories/google/groups ON pulls.assignee_email == groups.member_email
+|> WHERE groups.name == 'oncall-web'
 |> SELECT pulls.number, pulls.title, pulls.assignee_email, pulls.updated_at
 ```
 
@@ -643,7 +643,7 @@ FROM /sql/pg/invoices
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,JOIN,ON,AGGREGATE,GROUP BY,ORDER BY
 FROM /slack/acme/support/messages
-|> JOIN /sql/pg/accounts ON messages.user_email = accounts.contact_email
+|> JOIN /sql/pg/accounts ON messages.user_email == accounts.contact_email
 |> AGGREGATE count() AS message_count
 |> GROUP BY accounts.tier
 |> ORDER BY message_count DESC
@@ -665,9 +665,9 @@ FROM /git/app/commits
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,JOIN,ON,WHERE,SELECT,ORDER BY
 FROM /mail/inbox
-|> JOIN /sql/pg/customers ON inbox.from = customers.email
-|> JOIN /github/acme/support/issues ON customers.email = issues.reporter_email
-|> WHERE issues.state = 'open'
+|> JOIN /sql/pg/customers ON inbox.from == customers.email
+|> JOIN /github/acme/support/issues ON customers.email == issues.reporter_email
+|> WHERE issues.state == 'open'
 |> SELECT customers.legal_name, inbox.subject, issues.number, issues.title
 |> ORDER BY issues.created_at DESC
 ```
@@ -688,10 +688,10 @@ FROM /s3/media-prod
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,JOIN,ON,WHERE,AGGREGATE,GROUP BY,ORDER BY
 FROM /ga/marketing-site/events
-|> WHERE event_name = 'sign_up'
-|> JOIN /sql/pg/users ON events.user_id = users.external_id
-|> JOIN /sql/pg/orders ON users.id = orders.user_id
-|> WHERE orders.status = 'paid'
+|> WHERE event_name == 'sign_up'
+|> JOIN /sql/pg/users ON events.user_id == users.external_id
+|> JOIN /sql/pg/orders ON users.id == orders.user_id
+|> WHERE orders.status == 'paid'
 |> AGGREGATE sum(orders.total) AS revenue, count() AS paying_signups
 |> GROUP BY events.campaign
 |> ORDER BY revenue DESC
@@ -716,7 +716,7 @@ FROM /git/app/refs
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M5; features=FROM,WHERE,SELECT,EXCEPT
 FROM /sql/pg/customers
-|> WHERE plan = 'pro'
+|> WHERE plan == 'pro'
 |> SELECT external_id AS user_id
 |> EXCEPT
    FROM /ga/app/events
@@ -728,8 +728,8 @@ FROM /sql/pg/customers
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,JOIN,ON,WHERE,AGGREGATE,GROUP BY,ORDER BY
 FROM /github/acme/app/issues
-|> WHERE label = 'incident'
-|> JOIN /git/app/commits ON issues.fix_sha = commits.sha
+|> WHERE label == 'incident'
+|> JOIN /git/app/commits ON issues.fix_sha == commits.sha
 |> AGGREGATE count() AS incident_fixes
 |> GROUP BY commits.author
 |> ORDER BY incident_fixes DESC
@@ -750,7 +750,7 @@ database recorded — to answer questions no single system can.
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M4; features=FROM,WHERE,AGGREGATE,GROUP BY,ORDER BY
 FROM /sql/pg/customers
-|> WHERE status = 'active'
+|> WHERE status == 'active'
 |> AGGREGATE count() AS customers GROUP BY country
 |> ORDER BY customers DESC
 ```
@@ -834,7 +834,7 @@ FROM /ga/www.acme.com/events
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M5; features=FROM,JOIN,ON,AGGREGATE,GROUP BY,ORDER BY
 FROM /sql/pg/orders
-|> JOIN /ga/www.acme.com/attribution ON orders.session_id = attribution.session_id
+|> JOIN /ga/www.acme.com/attribution ON orders.session_id == attribution.session_id
 |> AGGREGATE sum(orders.total) AS revenue, count() AS orders GROUP BY attribution.channel
 |> ORDER BY revenue DESC
 ```
@@ -844,7 +844,7 @@ FROM /sql/pg/orders
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M5; features=FROM,JOIN,ON,AGGREGATE,GROUP BY,EXTEND,ORDER BY
 FROM /ga/www.acme.com/campaigns
-|> JOIN /sql/pg/orders ON campaigns.campaign_id = orders.campaign_id
+|> JOIN /sql/pg/orders ON campaigns.campaign_id == orders.campaign_id
 |> AGGREGATE sum(campaigns.cost) AS spend, count() AS conversions GROUP BY campaigns.campaign_id
 |> EXTEND cpa = spend / conversions
 |> ORDER BY cpa
@@ -855,7 +855,7 @@ FROM /ga/www.acme.com/campaigns
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M2; features=FROM,WHERE,AGGREGATE,GROUP BY,ORDER BY
 FROM /github/acme/web/pulls
-|> WHERE state = 'merged' AND merged_at >= '2026-03-28'
+|> WHERE state == 'merged' AND merged_at >= '2026-03-28'
 |> AGGREGATE count() AS merged_prs GROUP BY author
 |> ORDER BY merged_prs DESC
 ```
@@ -865,7 +865,7 @@ FROM /github/acme/web/pulls
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M2; features=FROM,WHERE,EXTEND,AGGREGATE,GROUP BY,ORDER BY
 FROM /github/acme/web/reviews
-|> WHERE submitted_at >= '2026-05-01' AND state = 'approved'
+|> WHERE submitted_at >= '2026-05-01' AND state == 'approved'
 |> EXTEND latency_hours = (submitted_at - requested_at) / 3600
 |> AGGREGATE avg(latency_hours) AS avg_latency, count() AS reviews GROUP BY reviewer
 |> ORDER BY avg_latency DESC
@@ -876,7 +876,7 @@ FROM /github/acme/web/reviews
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M2; features=FROM,WHERE,EXTEND,AGGREGATE,GROUP BY,ORDER BY
 FROM /github/acme/web/pulls
-|> WHERE state = 'merged' AND merged_at >= '2026-01-01'
+|> WHERE state == 'merged' AND merged_at >= '2026-01-01'
 |> EXTEND week = substr(merged_at, 1, 10)
 |> AGGREGATE count() AS merged, avg(additions + deletions) AS avg_churn GROUP BY week
 |> ORDER BY week
@@ -952,7 +952,7 @@ FROM /mail/inbox
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M1; features=FROM,WHERE,AGGREGATE,GROUP BY,ORDER BY
 FROM /mail/inbox
-|> WHERE received_at >= '2026-04-01' AND is_unread = true
+|> WHERE received_at >= '2026-04-01' AND is_unread == true
 |> AGGREGATE count() AS unread_count GROUP BY from_address
 |> WHERE unread_count > 20
 |> ORDER BY unread_count DESC
@@ -996,7 +996,7 @@ FROM /git/app/commits
 # qfs-cookbook: grammar=extended; milestone=M2; features=FROM,AGGREGATE,GROUP BY,WHERE,ORDER BY
 FROM /git/app/commits
 |> AGGREGATE count(DISTINCT author_email) AS authors, count() AS changes GROUP BY path
-|> WHERE authors = 1 AND changes > 10
+|> WHERE authors == 1 AND changes > 10
 |> ORDER BY changes DESC
 ```
 
@@ -1046,7 +1046,7 @@ FROM /s3/acme-data-lake
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M5; features=FROM,JOIN,ON,WHERE,AGGREGATE,GROUP BY,ORDER BY
 FROM /sql/pg/customers
-|> JOIN /ga/www.acme.com/signups ON customers.email = signups.email
+|> JOIN /ga/www.acme.com/signups ON customers.email == signups.email
 |> WHERE customers.created_at >= '2026-01-01'
 |> AGGREGATE count() AS signups, sum(customers.first_week_spend) AS cohort_revenue GROUP BY signups.acquisition_source
 |> ORDER BY cohort_revenue DESC
@@ -1057,7 +1057,7 @@ FROM /sql/pg/customers
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M2; features=FROM,WHERE,EXTEND,AGGREGATE,GROUP BY,ORDER BY
 FROM /github/acme/web/pulls
-|> WHERE state = 'merged' AND merged_at >= '2026-01-01'
+|> WHERE state == 'merged' AND merged_at >= '2026-01-01'
 |> EXTEND size = additions + deletions
 |> AGGREGATE avg(size) AS avg_pr_size, count() AS prs GROUP BY author
 |> WHERE avg_pr_size > 400
@@ -1085,7 +1085,7 @@ FROM /local/docs/design/auth-rework.md
 # .workaholic/**/*.md read as one table, frontmatter as columns
 FROM /local/.workaholic/tickets/todo/*.md
 |> DECODE md
-|> WHERE status = 'todo'
+|> WHERE status == 'todo'
 |> ORDER BY created_at DESC
 |> SELECT id, title, severity, created_at
 ```
@@ -1150,7 +1150,7 @@ FROM /s3/analytics-exports/events-2026-06.jsonl
 # qfs-cookbook: grammar=core; milestone=M2; features=FROM,DECODE,WHERE,ORDER BY,SELECT
 FROM /drive/Finance/q2-pipeline.csv
 |> DECODE csv
-|> WHERE stage = 'commit' AND amount > 50000
+|> WHERE stage == 'commit' AND amount > 50000
 |> ORDER BY amount DESC
 |> SELECT account, amount, owner, close_date
 ```
@@ -1193,7 +1193,7 @@ FROM /local/.workaholic/tickets/todo/*.md
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M4; features=FROM,WHERE,SELECT,ENCODE,UPSERT INTO
 FROM /sql/pg/customers
-|> WHERE plan = 'enterprise' AND churned = false
+|> WHERE plan == 'enterprise' AND churned == false
 |> SELECT id, name, mrr, renewal_date
 |> ENCODE json
 |> UPSERT INTO /s3/exports/enterprise-accounts.json
@@ -1243,8 +1243,8 @@ FROM /local/blog/posts/launch-recap.md
 # blob-derived relation joined to a real database table
 FROM /local/.workaholic/tickets/todo/*.md
 |> DECODE md
-|> JOIN /sql/pg/users ON owner = users.username
-|> WHERE users.active = false
+|> JOIN /sql/pg/users ON owner == users.username
+|> WHERE users.active == false
 |> SELECT id, title, owner
 ```
 
@@ -1277,7 +1277,7 @@ FROM /s3/pricing/tiers.toml@v8c1f2a
 # qfs-cookbook: grammar=extended; milestone=M2; features=FROM,DECODE,WHERE,SELECT
 FROM /local/docs/**/*.md
 |> DECODE md
-|> WHERE owner IS NULL OR trim(owner) = ''
+|> WHERE owner IS NULL OR trim(owner) == ''
 |> SELECT title, status
 ```
 
@@ -1287,7 +1287,7 @@ FROM /local/docs/**/*.md
 # qfs-cookbook: grammar=extended; milestone=M4; features=FROM,WHERE,SELECT,ENCODE,UPSERT INTO
 # relational → jsonl, one object per line, into Cloudflare R2
 FROM /sql/pg/orders
-|> WHERE status = 'open'
+|> WHERE status == 'open'
 |> SELECT id, customer_id, total, placed_at
 |> ENCODE jsonl
 |> UPSERT INTO /r2/backups/open-orders.jsonl
@@ -1348,7 +1348,7 @@ FROM /github/acme/infra/contents/manifests/services.yaml
 # md → json digest dropped as a file a downstream job posts to Slack
 FROM /local/.workaholic/tickets/todo/*.md
 |> DECODE md
-|> WHERE severity = 'critical'
+|> WHERE severity == 'critical'
 |> ORDER BY created_at
 |> SELECT id, title, owner
 |> ENCODE json
@@ -1410,7 +1410,7 @@ FROM /mail/drafts
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M4; features=FROM,WHERE,EXTEND,CALL,mail.send,||
 FROM /mail/inbox
-|> WHERE label = 'support' AND answered = false AND received_at < '2026-06-25'
+|> WHERE label == 'support' AND answered == false AND received_at < '2026-06-25'
 |> EXTEND ack = 'Hi ' || from_name || ', we have your ticket and will reply within 24h.'
 |> CALL mail.send(to => from_addr, subject => 'Re: ' || subject, body => ack)
 ```
@@ -1477,7 +1477,7 @@ FROM /local/src/handler.rs
 # qfs-cookbook: grammar=core; milestone=M1; features=FROM,WHERE,CALL,github.merge
 # Merging is a one-way door: preview shows which PR, --commit-irreversible performs the squash.
 FROM /github/acme/web/pulls
-|> WHERE number = 42 AND state = 'open' AND mergeable = true
+|> WHERE number == 42 AND state == 'open' AND mergeable == true
 |> CALL github.merge(number => number, method => 'squash')
 ```
 
@@ -1486,7 +1486,7 @@ FROM /github/acme/web/pulls
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M1; features=FROM,WHERE,CALL,github.merge,AND
 FROM /github/acme/web/pulls
-|> WHERE author = 'dependabot[bot]' AND review_decision = 'APPROVED' AND checks_status = 'success'
+|> WHERE author == 'dependabot[bot]' AND review_decision == 'APPROVED' AND checks_status == 'success'
 |> CALL github.merge(number => number, method => 'squash')
 ```
 
@@ -1495,7 +1495,7 @@ FROM /github/acme/web/pulls
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M1; features=FROM,WHERE,CALL,github.comment,||
 FROM /github/acme/web/pulls
-|> WHERE state = 'open' AND review_decision <> 'APPROVED' AND created_at < '2026-06-23'
+|> WHERE state == 'open' AND review_decision <> 'APPROVED' AND created_at < '2026-06-23'
 |> CALL github.comment(number => number,
                        body => 'Friendly nudge — this PR by @' || author || ' is awaiting review.')
 ```
@@ -1505,7 +1505,7 @@ FROM /github/acme/web/pulls
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M1; features=FROM,WHERE,CALL,github.comment,||
 FROM /github/acme/web/pulls
-|> WHERE number = 87 AND checks_status = 'failure'
+|> WHERE number == 87 AND checks_status == 'failure'
 |> CALL github.comment(number => number,
                        body => 'CI failed on ' || head_sha || ': see the run logs for the failing job.')
 ```
@@ -1526,7 +1526,7 @@ FROM /github/acme/web/releases
 # qfs-cookbook: grammar=extended; milestone=M3; features=FROM,WHERE,AGGREGATE,GROUP BY,CALL,slack.post,||
 # /sys/audit is a planned mount but still parses as core today (a path is just a token).
 FROM /sys/audit
-|> WHERE level = 'error' AND ts >= '2026-06-26T00:00:00Z'
+|> WHERE level == 'error' AND ts >= '2026-06-26T00:00:00Z'
 |> AGGREGATE count(*) AS hits GROUP BY service
 |> CALL slack.post(channel => '#oncall',
                    text => service || ' threw ' || hits || ' errors overnight')
@@ -1548,7 +1548,7 @@ FROM /github/acme/web/commits
 # qfs-cookbook: grammar=extended; milestone=M4; features=FROM,WHERE,UPDATE,SET,RETURNING
 # RETURNING hands back what changed so you can chain or audit it.
 FROM /sql/pg/orders
-|> WHERE status = 'shipped' AND tracking_number <> ''
+|> WHERE status == 'shipped' AND tracking_number <> ''
 |> UPDATE SET status = 'fulfilled', fulfilled_at = now()
 |> RETURNING order_id, customer_email, fulfilled_at
 ```
@@ -1558,7 +1558,7 @@ FROM /sql/pg/orders
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M4; features=FROM,WHERE,UPDATE,SET,RETURNING
 FROM /sql/pg/carts
-|> WHERE status = 'open' AND customer_order_count >= 5
+|> WHERE status == 'open' AND customer_order_count >= 5
 |> UPDATE SET discount_pct = 10, updated_at = now()
 |> RETURNING cart_id, customer_id, discount_pct
 ```
@@ -1568,7 +1568,7 @@ FROM /sql/pg/carts
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M4; features=FROM,WHERE,UPDATE,SET,AND,RETURNING
 FROM /sql/pg/accounts
-|> WHERE email_confirmed = false AND created_at < '2026-05-27'
+|> WHERE email_confirmed == false AND created_at < '2026-05-27'
 |> UPDATE SET status = 'inactive', deactivated_at = now()
 |> RETURNING account_id, email
 ```
@@ -1578,7 +1578,7 @@ FROM /sql/pg/accounts
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M4; features=FROM,WHERE,UPDATE,SET,RETURNING
 FROM /sql/pg/customers
-|> WHERE country = 'USA'
+|> WHERE country == 'USA'
 |> UPDATE SET country = 'US'
 |> RETURNING customer_id, country
 ```
@@ -1636,7 +1636,7 @@ FROM /kv/sessions
 # qfs-cookbook: grammar=core; milestone=M1; features=FROM,WHERE,ORDER BY,LIMIT,CALL,ci.dispatch
 # ci.dispatch starts a real run: preview names the workflow and ref, --commit-irreversible fires it.
 FROM /github/acme/web/commits
-|> WHERE branch = 'main' AND checks_status = 'success'
+|> WHERE branch == 'main' AND checks_status == 'success'
 |> ORDER BY committed_at DESC
 |> LIMIT 1
 |> CALL ci.dispatch(workflow => 'deploy.yml', ref => sha)
@@ -1647,7 +1647,7 @@ FROM /github/acme/web/commits
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M1; features=FROM,WHERE,CALL,ci.dispatch
 FROM /github/acme/data/runs
-|> WHERE workflow = 'etl.yml' AND conclusion = 'failure' AND created_at >= '2026-06-25'
+|> WHERE workflow == 'etl.yml' AND conclusion == 'failure' AND created_at >= '2026-06-25'
 |> CALL ci.dispatch(workflow => 'etl.yml', ref => head_branch)
 ```
 
@@ -1675,7 +1675,7 @@ FROM /drive/Imports/access-review.csv
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M4; features=FROM,WHERE,SELECT,INSERT INTO,VALUES,RETURNING
 FROM /sql/pg/candidates
-|> WHERE stage = 'offer_accepted'
+|> WHERE stage == 'offer_accepted'
 |> INSERT INTO /sql/pg/hires
      VALUES (name => name, email => email, start_date => offer_start_date)
 |> RETURNING hire_id, email
@@ -1686,7 +1686,7 @@ FROM /sql/pg/candidates
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M4; features=FROM,WHERE,INSERT INTO,VALUES,||
 FROM /sql/pg/candidates
-|> WHERE stage = 'offer_accepted' AND offer_email_sent = false
+|> WHERE stage == 'offer_accepted' AND offer_email_sent == false
 |> INSERT INTO /mail/drafts
      VALUES (to => email,
              subject => 'Welcome aboard, ' || name || '!',
@@ -1698,7 +1698,7 @@ FROM /sql/pg/candidates
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M1; features=FROM,WHERE,INSERT INTO,VALUES,||
 FROM /sql/pg/test_failures
-|> WHERE flaky = true AND last_seen >= '2026-06-26'
+|> WHERE flaky == true AND last_seen >= '2026-06-26'
 |> INSERT INTO /github/acme/web/issues
      VALUES (title => 'Flaky test: ' || test_name,
              body => 'Failed ' || fail_count || ' times overnight.',
@@ -1710,7 +1710,7 @@ FROM /sql/pg/test_failures
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M1; features=FROM,WHERE,ORDER BY,LIMIT,INSERT INTO,VALUES
 FROM /git/app/commits
-|> WHERE branch = 'main'
+|> WHERE branch == 'main'
 |> ORDER BY committed_at DESC
 |> LIMIT 1
 |> INSERT INTO /git/app/refs
@@ -1722,7 +1722,7 @@ FROM /git/app/commits
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M1; features=FROM,WHERE,UPDATE,SET,RETURNING
 FROM /slack/acme/general/channel
-|> WHERE id = 'C12345'
+|> WHERE id == 'C12345'
 |> UPDATE SET topic = 'Q3 planning in progress'
 |> RETURNING id, topic
 ```
@@ -1740,7 +1740,7 @@ LET cat_avg =
   FROM /sql/pg/orders
   |> AGGREGATE avg(amount) AS avg_amount GROUP BY category
 FROM /sql/pg/orders AS o
-|> JOIN cat_avg AS c ON o.category = c.category
+|> JOIN cat_avg AS c ON o.category == c.category
 |> WHERE o.amount > c.avg_amount
 |> SELECT o.id, o.category, o.amount, c.avg_amount
 ```
@@ -1753,7 +1753,7 @@ LET team_avg =
   FROM /sql/pg/deals
   |> AGGREGATE avg(value) AS team_avg_value GROUP BY team
 FROM /sql/pg/deals AS d
-|> JOIN team_avg AS t ON d.team = t.team
+|> JOIN team_avg AS t ON d.team == t.team
 |> EXTEND vs_team = d.value - t.team_avg_value
 |> SELECT d.rep, d.team, d.value, vs_team
 |> ORDER BY vs_team
@@ -1766,9 +1766,9 @@ FROM /sql/pg/deals AS d
 # active is referenced twice: once to scope orders, once to count the cohort.
 LET active =
   FROM /sql/pg/customers
-  |> WHERE status = 'active'
+  |> WHERE status == 'active'
 FROM /sql/pg/orders AS o
-|> JOIN active AS a ON o.customer_id = a.id
+|> JOIN active AS a ON o.customer_id == a.id
 |> AGGREGATE count(active.id) AS active_customers, sum(o.amount) AS active_revenue
 ```
 
@@ -1870,7 +1870,7 @@ LET brand_avg =
   FROM /sql/pg/products
   |> AGGREGATE avg(unit_price) AS avg_price GROUP BY brand
 FROM /sql/pg/products AS p
-|> JOIN brand_avg AS b ON p.brand = b.brand
+|> JOIN brand_avg AS b ON p.brand == b.brand
 |> WHERE p.unit_price < b.avg_price * 0.7
 |> SELECT p.sku, p.brand, p.unit_price, b.avg_price
 ```
@@ -1926,7 +1926,7 @@ LET emea =
   FROM /sql/pg/regions
   |> WHERE continent IN ('Europe', 'Middle East', 'Africa')
 FROM /sql/pg/orders AS o
-|> JOIN emea AS r ON o.region_id = r.id
+|> JOIN emea AS r ON o.region_id == r.id
 |> AGGREGATE sum(o.amount) AS emea_revenue GROUP BY r.country
 |> ORDER BY emea_revenue
 ```
@@ -1939,7 +1939,7 @@ LET cust_avg =
   FROM /sql/pg/orders
   |> AGGREGATE avg(amount) AS personal_avg GROUP BY customer_id
 FROM /sql/pg/orders AS o
-|> JOIN cust_avg AS c ON o.customer_id = c.customer_id
+|> JOIN cust_avg AS c ON o.customer_id == c.customer_id
 |> WHERE o.amount > c.personal_avg * 1.5
 |> SELECT o.customer_id, o.id, o.amount, c.personal_avg
 ```
@@ -1961,7 +1961,7 @@ FROM /sql/pg/metrics
 LET norm = (s: String) => lower(trim(s))
 FROM /sql/pg/leads AS l
 |> EXTEND lkey = norm(l.company)
-|> JOIN /sql/pg/accounts AS a ON lkey = norm(a.company)
+|> JOIN /sql/pg/accounts AS a ON lkey == norm(a.company)
 |> SELECT l.id, a.id AS account_id, l.company
 ```
 
@@ -1973,7 +1973,7 @@ LET dept_size =
   FROM /sql/pg/employees
   |> AGGREGATE count(id) AS headcount GROUP BY department
 FROM /sql/pg/employees AS e
-|> JOIN dept_size AS d ON e.department = d.department
+|> JOIN dept_size AS d ON e.department == d.department
 |> WHERE e.is_manager
 |> EXTEND span_share = e.direct_reports / d.headcount
 |> SELECT e.name, e.department, span_share
@@ -2072,7 +2072,7 @@ LET cohort =
   FROM /sql/pg/accounts
   |> AGGREGATE avg(annual_spend) AS cohort_avg GROUP BY plan
 FROM /sql/pg/accounts AS a
-|> JOIN cohort AS c ON a.plan = c.plan
+|> JOIN cohort AS c ON a.plan == c.plan
 |> WHERE a.annual_spend > c.cohort_avg * 2
 |> SELECT a.name, a.plan, a.annual_spend, c.cohort_avg
 ```
@@ -2156,10 +2156,10 @@ TRANSACTION {
 TRANSACTION {
   UPDATE /sql/pg/accounts
     SET balance = balance - 500
-    WHERE id = 'ACC-100'
+    WHERE id == 'ACC-100'
   UPDATE /sql/pg/accounts
     SET balance = balance + 500
-    WHERE id = 'ACC-200'
+    WHERE id == 'ACC-200'
 }
 ```
 
@@ -2216,7 +2216,7 @@ TRANSACTION {
 TRANSACTION {
   UPDATE /sql/pg/users
     SET status = 'suspended', suspended_at = '2026-06-26'
-    WHERE id = 'U-553'
+    WHERE id == 'U-553'
   UPSERT INTO /drive/Trust/cases/U-553.json
     VALUES (user => 'U-553', reason => 'fraud_signal', opened => '2026-06-26')
 }
@@ -2235,7 +2235,7 @@ TRANSACTION {
             content => '{"sprint":41,"closed":true}')
   UPDATE /sql/pg/project
     SET current_sprint = 42
-    WHERE id = 'PRJ-1'
+    WHERE id == 'PRJ-1'
 }
 ```
 
@@ -2262,10 +2262,10 @@ TRANSACTION {
 TRANSACTION {
   UPDATE /sql/pg/inventory
     SET qty = qty - 30
-    WHERE sku = 'SKU-12' AND warehouse = 'WH-EAST'
+    WHERE sku == 'SKU-12' AND warehouse == 'WH-EAST'
   UPDATE /sql/pg/inventory
     SET qty = qty + 30
-    WHERE sku = 'SKU-12' AND warehouse = 'WH-WEST'
+    WHERE sku == 'SKU-12' AND warehouse == 'WH-WEST'
 }
 ```
 
@@ -2290,7 +2290,7 @@ TRANSACTION {
 TRANSACTION {
   UPDATE /sql/pg/customers
     SET merged_into = 'C-1001', status = 'merged'
-    WHERE id = 'C-1002'
+    WHERE id == 'C-1002'
   UPSERT INTO /local/ledger/merges.jsonl
     VALUES (survivor => 'C-1001', duplicate => 'C-1002', at => '2026-06-26')
 }
@@ -2336,7 +2336,7 @@ TRANSACTION {
 TRANSACTION {
   UPDATE /sql/pg/inventory
     SET qty = qty + 1
-    WHERE sku = 'SKU-88'
+    WHERE sku == 'SKU-88'
   UPSERT INTO /s3/credit-memos/CM-204.json
     VALUES (id => 'CM-204', order => 'O-9000', amount => 49.00)
 }
@@ -2352,7 +2352,7 @@ TRANSACTION {
     VALUES (name => 'v1.4.0', target => 'main')
   UPDATE /sql/pg/releases
     SET tagged = true, tag = 'v1.4.0'
-    WHERE version = '1.4.0'
+    WHERE version == '1.4.0'
 }
 ```
 
@@ -2364,10 +2364,10 @@ TRANSACTION {
 TRANSACTION {
   INSERT INTO /sql/pg/accounts_v2
     FROM /sql/pg/accounts
-    |> WHERE id = 'ACC-777'
+    |> WHERE id == 'ACC-777'
   UPDATE /sql/pg/accounts
     SET status = 'migrated'
-    WHERE id = 'ACC-777'
+    WHERE id == 'ACC-777'
 }
 ```
 
@@ -2397,7 +2397,7 @@ TRANSACTION {
             content => '{"id":"C-44","country":"JP"}')
   UPDATE /sql/pg/customers
     SET country = 'JP'
-    WHERE id = 'C-44'
+    WHERE id == 'C-44'
 }
 ```
 
@@ -2437,7 +2437,7 @@ TRANSACTION {
 # qfs-cookbook: grammar=extended; milestone=M6; features=FROM,WHERE,CALL,||
 # Step 2 of 2 — the irreversible CALL lives OUTSIDE the transaction, after the commit point.
 FROM /sql/pg/invoices
-|> WHERE id = 'INV-4821' AND status = 'paid'
+|> WHERE id == 'INV-4821' AND status == 'paid'
 |> CALL mail.send(to => billing_email,
                   subject => 'Receipt for ' || id,
                   body => 'Thank you — invoice ' || id || ' is paid in full.')
@@ -2465,7 +2465,7 @@ TRANSACTION {
 # qfs-cookbook: grammar=core; milestone=M6; features=FROM,WHERE,CALL
 # Step 2 of 2 — github.merge is irreversible, so it runs OUTSIDE the transaction afterwards.
 FROM /github/acme/web/pulls/42
-|> WHERE state = 'open'
+|> WHERE state == 'open'
 |> CALL github.merge(number => 42, method => 'squash')
 ```
 
@@ -2488,7 +2488,7 @@ TRANSACTION {
 # qfs-cookbook: grammar=extended; milestone=M6; features=FROM,WHERE,CALL,||
 # Step 2 of 2 — slack.post cannot be un-posted, so it runs OUTSIDE the transaction.
 FROM /sql/pg/releases
-|> WHERE version = '1.4.0' AND announced = false
+|> WHERE version == '1.4.0' AND announced == false
 |> CALL slack.post(channel => '#releases',
                    text => 'Shipped ' || version || ' to the stable channel.')
 ```
@@ -2537,11 +2537,11 @@ CREATE POLICY finance_mail_send
 **Scope a region's analysts to only their own region's rows (row-level security).**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M5; features=CREATE POLICY,ALLOW,ON,WHERE,member_of,=
+# qfs-cookbook: grammar=extended; milestone=M5; features=CREATE POLICY,ALLOW,ON,WHERE,member_of,==
 CREATE POLICY emea_orders_rls
   ALLOW read ON '/sql/pg/orders'
   WHERE member_of('/directories/entra/groups/analysts-emea')
-    AND region = 'EMEA'
+    AND region == 'EMEA'
 ```
 
 **Hide salary and SSN columns from everyone outside HR (column-level scoping).**
@@ -2557,11 +2557,11 @@ CREATE POLICY mask_employee_secrets
 **Let managers read their own direct reports' rows only.**
 
 ```qfs
-# qfs-cookbook: grammar=extended; milestone=M5; features=CREATE POLICY,ALLOW,ON,WHERE,member_of,=
+# qfs-cookbook: grammar=extended; milestone=M5; features=CREATE POLICY,ALLOW,ON,WHERE,member_of,==
 CREATE POLICY manager_sees_reports
   ALLOW read ON '/sql/pg/employees'
   WHERE member_of('/directories/google/groups/managers@acme.com')
-    AND manager_email = current_user()
+    AND manager_email == current_user()
 ```
 
 **Give every full-time employee read access to the company wiki bucket.**
@@ -2720,7 +2720,7 @@ FROM /directories/google/groups/oncall@acme.com/members
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,WHERE,SELECT,AND,LIKE,=,ORDER BY
 FROM /directories/entra/users
-|> WHERE department = 'EMEA'
+|> WHERE department == 'EMEA'
    AND job_title LIKE '%Admin%'
 |> SELECT display_name, email, job_title, manager
 |> ORDER BY display_name
@@ -2742,7 +2742,7 @@ FROM /slack/acme/announcements/messages
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M5; features=FROM,WHERE,SELECT,EXCEPT,=,LIKE
 FROM /directories/ad/users
-|> WHERE account_enabled = true
+|> WHERE account_enabled == true
 |> SELECT email
 |> EXCEPT
    FROM /sys/policies
@@ -2755,8 +2755,8 @@ FROM /directories/ad/users
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M5; features=FROM,SELECT,JOIN,ON,WHERE,AGGREGATE,GROUP BY,ORDER BY
 FROM /directories/google/groups/finance@acme.com/members
-|> JOIN /sys/audit ON members.email = audit.actor_email
-|> WHERE audit.verb = 'call'
+|> JOIN /sys/audit ON members.email == audit.actor_email
+|> WHERE audit.verb == 'call'
 |> AGGREGATE count() AS actions GROUP BY members.email
 |> ORDER BY actions
 ```
@@ -2792,7 +2792,7 @@ plan still require the server's configured irreversible-commit policy.
 # GET /oncall returns the single active rotation row as JSON
 CREATE ENDPOINT GET /oncall AS
   FROM /sql/pg/oncall_rotations
-  |> WHERE active = true
+  |> WHERE active == true
   |> ORDER BY shift_start DESC
   |> LIMIT 1
   |> SELECT engineer, phone, slack_handle, shift_end
@@ -2805,8 +2805,8 @@ CREATE ENDPOINT GET /oncall AS
 # GET /customers/:id/orders joins orders to line items for the requested customer
 CREATE ENDPOINT GET /customers/:id/orders AS
   FROM /sql/pg/orders
-  |> WHERE customer_id = :id
-  |> JOIN /sql/pg/line_items ON line_items.order_id = orders.id
+  |> WHERE customer_id == :id
+  |> JOIN /sql/pg/line_items ON line_items.order_id == orders.id
   |> ORDER BY orders.placed_at DESC
   |> SELECT orders.id, orders.placed_at, line_items.sku, line_items.qty, line_items.price
 ```
@@ -2866,7 +2866,7 @@ CREATE TRIGGER fatal_to_issue ON INSERT INTO /sql/pg/error_log
 # qfs-cookbook: grammar=extended; milestone=M8; features=CREATE TRIGGER,ON,WHERE,AND,DO,CALL,NEW
 # PR-merged on main → dispatch the production deploy workflow
 CREATE TRIGGER deploy_on_merge ON UPDATE /github/acme/web/pulls
-  WHERE NEW.merged = true AND NEW.base = 'main'
+  WHERE NEW.merged == true AND NEW.base == 'main'
   DO CALL ci.dispatch(workflow => 'deploy-prod', ref => NEW.merge_commit_sha)
 ```
 
@@ -2885,7 +2885,7 @@ CREATE TRIGGER archive_slack_files ON INSERT INTO /slack/eng/releases/files
 # qfs-cookbook: grammar=extended; milestone=M8; features=CREATE TRIGGER,ON,WHERE,DO,INSERT INTO,VALUES,NEW,||
 # Reversible (draft only), so it runs unattended
 CREATE TRIGGER welcome_new_user ON INSERT INTO /sql/pg/users
-  WHERE NEW.verified = true
+  WHERE NEW.verified == true
   DO INSERT INTO /mail/drafts
        VALUES (to => NEW.email,
                subject => 'Welcome aboard, ' || NEW.name,
@@ -2898,7 +2898,7 @@ CREATE TRIGGER welcome_new_user ON INSERT INTO /sql/pg/users
 # qfs-cookbook: grammar=extended; milestone=M8; features=CREATE TRIGGER,ON,WHERE,AND,DO,CALL,NEW
 # Only enterprise-tier failures escalate to the pager channel
 CREATE TRIGGER dunning_alert ON INSERT INTO /sql/pg/payment_failures
-  WHERE NEW.amount > 1000 AND NEW.tier = 'enterprise'
+  WHERE NEW.amount > 1000 AND NEW.tier == 'enterprise'
   DO CALL slack.post(channel => '#billing-urgent',
                      text => 'Payment failed: ' || NEW.account || ' ($' || NEW.amount || ')')
 ```
@@ -2935,7 +2935,7 @@ CREATE JOB nightly_sales EVERY '1 day' DO
 # Drafts older than a day with no items are garbage-collected
 CREATE JOB gc_draft_orders EVERY '1 hour' DO
   FROM /sql/pg/orders
-  |> WHERE status = 'draft' AND created_at < now() - interval '1 day'
+  |> WHERE status == 'draft' AND created_at < now() - interval '1 day'
   |> REMOVE
 ```
 
@@ -2946,7 +2946,7 @@ CREATE JOB gc_draft_orders EVERY '1 hour' DO
 # Reads everything merged since the previous run and posts the list
 CREATE JOB weekly_pr_digest EVERY '1 week' DO
   FROM /github/acme/web/pulls
-  |> WHERE merged = true AND merged_at >= LAST_RUN()
+  |> WHERE merged == true AND merged_at >= LAST_RUN()
   |> ORDER BY merged_at DESC
   |> SELECT number, title, author
   |> CALL slack.post(channel => '#eng-weekly', text => 'Shipped last week:')
@@ -2959,7 +2959,7 @@ CREATE JOB weekly_pr_digest EVERY '1 week' DO
 # Pulls yesterday's top pages and upserts them for the BI layer
 CREATE JOB ga_snapshot EVERY '1 day' DO
   FROM /ga/123456/report
-  |> WHERE date = 'yesterday'
+  |> WHERE date == 'yesterday'
   |> ORDER BY pageviews DESC
   |> LIMIT 100
   |> UPSERT INTO /sql/pg/ga_top_pages
@@ -3021,7 +3021,7 @@ CREATE WEBHOOK stripe_events AT /hooks/stripe DO
 CREATE WEBHOOK gh_push AT /hooks/github/push DO
   FROM REQUEST.body
   |> DECODE json
-  |> WHERE ref = 'refs/heads/main'
+  |> WHERE ref == 'refs/heads/main'
   |> INSERT INTO /queues/deploys
        VALUES (sha => after, pusher => pusher.name, queued_at => now())
 ```
@@ -3045,7 +3045,7 @@ CREATE WEBHOOK contact_form AT /hooks/contact DO
 # Reconciles external CI state back into our own table
 CREATE WEBHOOK ci_status AT /hooks/ci DO
   FROM /sql/pg/deploys
-  |> WHERE run_id = REQUEST.body.run_id
+  |> WHERE run_id == REQUEST.body.run_id
   |> UPDATE SET status = REQUEST.body.conclusion, finished_at = now()
 ```
 
@@ -3056,9 +3056,9 @@ CREATE WEBHOOK ci_status AT /hooks/ci DO
 # A non-materialized view re-runs on every read
 CREATE VIEW /views/enterprise_open_tickets AS
   FROM /sql/pg/tickets
-  |> WHERE status = 'open'
-  |> JOIN /sql/pg/accounts ON accounts.id = tickets.account_id
-  |> WHERE accounts.tier = 'enterprise'
+  |> WHERE status == 'open'
+  |> JOIN /sql/pg/accounts ON accounts.id == tickets.account_id
+  |> WHERE accounts.tier == 'enterprise'
   |> SELECT tickets.id, tickets.subject, accounts.name, tickets.opened_at
 ```
 
@@ -3084,7 +3084,7 @@ CREATE VIEW /views/eng_activity AS
 CREATE MATERIALIZED VIEW /views/exec_dashboard AS
   FROM /sql/pg/orders
   |> AGGREGATE sum(total) AS revenue, count() AS orders GROUP BY region
-  |> JOIN /sql/pg/support_load ON support_load.region = orders.region
+  |> JOIN /sql/pg/support_load ON support_load.region == orders.region
   |> SELECT region, revenue, orders, support_load.open_tickets
 ```
 
@@ -3095,8 +3095,8 @@ CREATE MATERIALIZED VIEW /views/exec_dashboard AS
 # Joins CRM, billing, and analytics into one wide row per customer
 CREATE MATERIALIZED VIEW /views/customer_360 AS
   FROM /sql/pg/customers
-  |> JOIN /sql/pg/subscriptions ON subscriptions.customer_id = customers.id
-  |> JOIN /sql/pg/ga_top_pages ON ga_top_pages.customer_id = customers.id
+  |> JOIN /sql/pg/subscriptions ON subscriptions.customer_id == customers.id
+  |> JOIN /sql/pg/ga_top_pages ON ga_top_pages.customer_id == customers.id
   |> SELECT customers.id, customers.name, subscriptions.plan,
             subscriptions.mrr, ga_top_pages.views
   |> ORDER BY subscriptions.mrr DESC
@@ -3132,7 +3132,7 @@ CREATE ENDPOINT GET /dashboard/exec AS
 # Reversible escalation (draft) for unresolved incidents past SLA
 CREATE JOB escalate_incidents EVERY '6 hours' DO
   FROM /sql/pg/incidents
-  |> WHERE status = 'open' AND opened_at < now() - interval '4 hours'
+  |> WHERE status == 'open' AND opened_at < now() - interval '4 hours'
   |> INSERT INTO /mail/drafts
        VALUES (to => 'incident-mgr@acme.com',
                subject => 'SLA breach: incident ' || id,
@@ -3156,7 +3156,7 @@ and directory membership in M5; approvals, metrics, and billing in M9/M+.
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M3; features=FROM,WHERE,SELECT,ORDER BY
 FROM /sys/users
-|> WHERE status = 'active' AND kind = 'human'
+|> WHERE status == 'active' AND kind == 'human'
 |> SELECT email, display_name, role, last_seen_at
 |> ORDER BY last_seen_at DESC
 ```
@@ -3178,7 +3178,7 @@ INSERT INTO /sys/users
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M3; features=FROM,WHERE,UPDATE,SET,RETURNING
 FROM /sys/users
-|> WHERE email = 'dana@acme.com' AND role = 'viewer'
+|> WHERE email == 'dana@acme.com' AND role == 'viewer'
 |> UPDATE SET role = 'editor'
 |> RETURNING email, role
 ```
@@ -3188,7 +3188,7 @@ FROM /sys/users
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M3; features=FROM,WHERE,REMOVE
 FROM /sys/users
-|> WHERE email = 'former.staff@acme.com'
+|> WHERE email == 'former.staff@acme.com'
 |> REMOVE
 ```
 
@@ -3197,7 +3197,7 @@ FROM /sys/users
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M3; features=FROM,WHERE,SELECT,ORDER BY
 FROM /sys/users
-|> WHERE last_seen_at < '2026-03-28' AND status = 'active'
+|> WHERE last_seen_at < '2026-03-28' AND status == 'active'
 |> SELECT email, display_name, role, last_seen_at
 |> ORDER BY last_seen_at
 ```
@@ -3207,7 +3207,7 @@ FROM /sys/users
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M3; features=FROM,WHERE,SELECT
 FROM /sys/accounts
-|> WHERE role = 'admin'
+|> WHERE role == 'admin'
 |> SELECT email, granted_by, granted_at, scope
 ```
 
@@ -3252,7 +3252,7 @@ INSERT INTO /sys/policies
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M5; features=FROM,WHERE,REMOVE
 FROM /sys/policies
-|> WHERE name = 'legacy-allow-all-finance'
+|> WHERE name == 'legacy-allow-all-finance'
 |> REMOVE
 ```
 
@@ -3294,7 +3294,7 @@ INSERT INTO /sys/connections
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M3; features=FROM,WHERE,REMOVE
 FROM /sys/connections
-|> WHERE name = 'old-zendesk' AND driver = 'http'
+|> WHERE name == 'old-zendesk' AND driver == 'http'
 |> REMOVE
 ```
 
@@ -3303,7 +3303,7 @@ FROM /sys/connections
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M3; features=FROM,WHERE,SELECT,ORDER BY
 FROM /sys/audit
-|> WHERE verb = 'REMOVE' AND at > '2026-06-25T00:00:00Z'
+|> WHERE verb == 'REMOVE' AND at > '2026-06-25T00:00:00Z'
 |> SELECT at, actor, verb, resource, committed
 |> ORDER BY at DESC
 ```
@@ -3313,8 +3313,8 @@ FROM /sys/audit
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M3; features=FROM,WHERE,SELECT,ORDER BY
 FROM /sys/audit
-|> WHERE actor = 'dana@acme.com'
-     AND verb = 'CALL'
+|> WHERE actor == 'dana@acme.com'
+     AND verb == 'CALL'
      AND at BETWEEN '2026-06-22T00:00:00Z' AND '2026-06-29T00:00:00Z'
 |> SELECT at, procedure, resource, committed
 |> ORDER BY at
@@ -3336,7 +3336,7 @@ FROM /sys/audit
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M3; features=FROM,JOIN,WHERE,SELECT,ORDER BY
 FROM /sys/audit
-|> JOIN /sys/connections ON /sys/audit.connection = /sys/connections.name
+|> JOIN /sys/connections ON /sys/audit.connection == /sys/connections.name
 |> WHERE /sys/audit.at > '2026-06-20T00:00:00Z'
 |> SELECT /sys/audit.at, /sys/audit.actor, /sys/audit.verb,
           /sys/connections.driver, /sys/connections.scope
@@ -3348,7 +3348,7 @@ FROM /sys/audit
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M5; features=FROM,JOIN,AGGREGATE,GROUP BY,ORDER BY
 FROM /sys/projects
-|> JOIN /sys/projects/members ON /sys/projects.id = /sys/projects/members.project_id
+|> JOIN /sys/projects/members ON /sys/projects.id == /sys/projects/members.project_id
 |> AGGREGATE count(*) AS members GROUP BY /sys/projects.name
 |> ORDER BY members DESC
 ```
@@ -3380,7 +3380,7 @@ INSERT INTO /sys/projects/members
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M5; features=FROM,WHERE,REMOVE
 FROM /sys/projects/members
-|> WHERE project_id = 'q3-migration' AND email = 'rotated.off@acme.com'
+|> WHERE project_id == 'q3-migration' AND email == 'rotated.off@acme.com'
 |> REMOVE
 ```
 
@@ -3390,7 +3390,7 @@ FROM /sys/projects/members
 # qfs-cookbook: grammar=core; milestone=M+; features=FROM,WHERE,SELECT,ORDER BY
 # Approvals are data: a pending row needs a different person to approve it.
 FROM /sys/approvals
-|> WHERE status = 'pending'
+|> WHERE status == 'pending'
 |> SELECT id, requested_by, action, resource, requested_at
 |> ORDER BY requested_at
 ```
@@ -3401,7 +3401,7 @@ FROM /sys/approvals
 # qfs-cookbook: grammar=extended; milestone=M+; features=FROM,WHERE,UPDATE,SET,RETURNING
 # The approver must differ from requested_by; the engine enforces four-eyes at commit.
 FROM /sys/approvals
-|> WHERE id = 'apr-8842' AND status = 'pending'
+|> WHERE id == 'apr-8842' AND status == 'pending'
 |> UPDATE SET status = 'approved', approved_by = 'security-lead@acme.com'
 |> RETURNING id, action, status, approved_by
 ```
@@ -3411,7 +3411,7 @@ FROM /sys/approvals
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M+; features=FROM,WHERE,SELECT,ORDER BY
 FROM /sys/approvals
-|> WHERE status = 'approved' AND approved_by = requested_by
+|> WHERE status == 'approved' AND approved_by == requested_by
 |> SELECT id, action, resource, requested_by, approved_at
 |> ORDER BY approved_at DESC
 ```
@@ -3421,7 +3421,7 @@ FROM /sys/approvals
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M+; features=FROM,WHERE,SELECT,ORDER BY,LIMIT
 FROM /sys/metrics
-|> WHERE window = '5m' AND metric = 'query_latency_p95'
+|> WHERE window == '5m' AND metric == 'query_latency_p95'
 |> SELECT driver, value, unit, at
 |> ORDER BY value DESC
 |> LIMIT 10
@@ -3432,7 +3432,7 @@ FROM /sys/metrics
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M+; features=FROM,WHERE,AGGREGATE,GROUP BY,ORDER BY
 FROM /sys/metrics
-|> WHERE metric = 'query_count' AND at > '2026-06-26T00:00:00Z'
+|> WHERE metric == 'query_count' AND at > '2026-06-26T00:00:00Z'
 |> AGGREGATE sum(value) AS total_queries GROUP BY driver
 |> ORDER BY total_queries DESC
 ```
@@ -3442,7 +3442,7 @@ FROM /sys/metrics
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M+; features=FROM,WHERE,AGGREGATE,GROUP BY,ORDER BY
 FROM /sys/billing
-|> WHERE period = '2026-06'
+|> WHERE period == '2026-06'
 |> AGGREGATE sum(amount) AS spend, sum(units) AS units GROUP BY project, sku
 |> ORDER BY spend DESC
 ```
@@ -3486,7 +3486,7 @@ FROM /sys/connections
 # qfs-cookbook: grammar=core; milestone=M2; features=FROM,WHERE,SELECT,ORDER BY,LIMIT
 # Exploratory read — preview: "reads only, 0 effects". The agent shows the table inline.
 FROM /mail/inbox
-|> WHERE unread = true
+|> WHERE unread == true
 |> SELECT from_addr, subject, received_at
 |> ORDER BY received_at DESC
 |> LIMIT 10
@@ -3497,7 +3497,7 @@ FROM /mail/inbox
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M2; features=FROM,WHERE,AGGREGATE,GROUP BY,ORDER BY
 FROM /github/acme/web/pulls
-|> WHERE state = 'open'
+|> WHERE state == 'open'
 |> AGGREGATE count() AS open_prs GROUP BY requested_reviewer
 |> ORDER BY open_prs DESC
 ```
@@ -3520,8 +3520,8 @@ FROM /slack/acme/support/messages
 # Cross-service read; preview reports zero effects, so the agent answers directly.
 FROM /sql/pg/customers
 |> WHERE churned_at BETWEEN '2026-01-01' AND '2026-03-31'
-|> JOIN /sql/pg/invoices ON customers.id = invoices.customer_id
-|> WHERE invoices.status = 'open'
+|> JOIN /sql/pg/invoices ON customers.id == invoices.customer_id
+|> WHERE invoices.status == 'open'
 |> SELECT customers.name, customers.email, invoices.amount, invoices.due_date
 ```
 
@@ -3577,7 +3577,7 @@ INSERT INTO /mail/drafts
 # qfs-cookbook: grammar=extended; milestone=M2; features=FROM,WHERE,INSERT INTO,VALUES,||
 # Reversible: drafts only. Nothing is sent — CALL mail.send would be a separate, gated step.
 FROM /sql/pg/invoices
-|> WHERE status = 'open' AND due_date < '2026-06-01'
+|> WHERE status == 'open' AND due_date < '2026-06-01'
 |> INSERT INTO /mail/drafts
      VALUES (to => customer_email,
              subject => 'Invoice ' || invoice_no || ' is past due',
@@ -3590,7 +3590,7 @@ FROM /sql/pg/invoices
 # qfs-cookbook: grammar=extended; milestone=M2; features=FROM,AGGREGATE,EXTEND,UPSERT INTO
 # UPSERT is reversible (key-addressed); auto-commits within POLICY under default mode.
 FROM /sql/pg/subscriptions
-|> WHERE status = 'active'
+|> WHERE status == 'active'
 |> AGGREGATE sum(mrr) AS mrr GROUP BY plan
 |> EXTEND snapshot_date = '2026-06-26'
 |> UPSERT INTO /sql/pg/mrr_daily
@@ -3602,7 +3602,7 @@ FROM /sql/pg/subscriptions
 # qfs-cookbook: grammar=extended; milestone=M2; features=FROM,WHERE,ENCODE,UPSERT INTO
 # Reversible UPSERT to storage — safe to auto-commit; preview shows the target key.
 FROM /sql/pg/weekly_report
-|> WHERE week = '2026-W26'
+|> WHERE week == '2026-W26'
 |> ENCODE csv
 |> UPSERT INTO /drive/Reports/weekly-2026-W26.csv
 ```
@@ -3613,7 +3613,7 @@ FROM /sql/pg/weekly_report
 # qfs-cookbook: grammar=extended; milestone=M2; features=FROM,WHERE,UPDATE,SET
 # Reversible field update; the preview lists the affected issue numbers before commit.
 FROM /github/acme/web/issues
-|> WHERE state = 'open' AND updated_at < '2026-03-26'
+|> WHERE state == 'open' AND updated_at < '2026-03-26'
 |> UPDATE SET label = 'stale'
 ```
 
@@ -3625,7 +3625,7 @@ FROM /github/acme/web/issues
 # commit needs --commit-irreversible. (It cannot appear inside a TRANSACTION, which is
 # reversible-only.) Reach for UPDATE SET a soft-delete flag if you need it undoable.
 FROM /sql/pg/upload_queue
-|> WHERE status = 'processed'
+|> WHERE status == 'processed'
 |> REMOVE
 ```
 
@@ -3646,7 +3646,7 @@ FROM /s3/source/pricing-2026.json
 # Irreversible: CALL mail.send. Under the default safety mode preview reports
 # "irreversible effect — awaiting approval"; the agent surfaces it and waits for a human.
 FROM /sql/pg/invoices
-|> WHERE status = 'open' AND due_date < '2026-06-01'
+|> WHERE status == 'open' AND due_date < '2026-06-01'
 |> CALL mail.send(to => customer_email,
                   subject => 'Final reminder: invoice ' || invoice_no,
                   body => 'This invoice is now seriously overdue. Please settle promptly.')
@@ -3694,7 +3694,7 @@ FROM /github/acme/web/issues/204
 # Exploratory cross-service read; preview: "reads only, 0 effects".
 FROM /mail/inbox
 |> WHERE subject LIKE '%refund%' OR body LIKE '%refund%'
-|> JOIN /sql/pg/customers ON inbox.from_addr = customers.email
+|> JOIN /sql/pg/customers ON inbox.from_addr == customers.email
 |> WHERE customers.plan <> 'free'
 |> SELECT inbox.from_addr, inbox.subject, customers.plan
 ```
@@ -3704,7 +3704,7 @@ FROM /mail/inbox
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M2; features=FROM,SELECT,INTERSECT
 FROM /ga/acme-prod/sessions
-|> WHERE event = 'session_start'
+|> WHERE event == 'session_start'
 |> SELECT user_email AS email
 |> INTERSECT
    FROM /sql/pg/orders
@@ -3751,7 +3751,7 @@ bounded by POLICY — a host only answers for the rows and paths your role is al
 # qfs-cookbook: grammar=core; milestone=M7; features=FROM,WHERE,SELECT,ORDER BY
 # Live status of every running Claude Code session on one host.
 FROM /hosts/buildbox-01/claude/sessions
-|> WHERE status = 'running'
+|> WHERE status == 'running'
 |> SELECT task, progress, last_message, started_at
 |> ORDER BY progress
 ```
@@ -3761,7 +3761,7 @@ FROM /hosts/buildbox-01/claude/sessions
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M7; features=FROM,WHERE,SELECT,ORDER BY,AND
 FROM /hosts/buildbox-01/claude/sessions
-|> WHERE status = 'running' AND last_message_at < '2026-06-26T09:00:00Z'
+|> WHERE status == 'running' AND last_message_at < '2026-06-26T09:00:00Z'
 |> SELECT id, task, last_message, last_message_at
 |> ORDER BY last_message_at
 ```
@@ -3807,7 +3807,7 @@ FROM /hosts/buildbox-01/claude/sessions
 # qfs-cookbook: grammar=core; milestone=M+; features=FROM,WHERE,SELECT,ORDER BY
 # A wildcard host segment fans the read across the federated fabric; POLICY scopes each host's rows.
 FROM /hosts/*/claude/sessions
-|> WHERE status = 'running'
+|> WHERE status == 'running'
 |> SELECT host, task, progress, last_message
 |> ORDER BY host, progress
 ```
@@ -3817,7 +3817,7 @@ FROM /hosts/*/claude/sessions
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M+; features=FROM,WHERE,AGGREGATE,GROUP BY,ORDER BY
 FROM /hosts/*/claude/sessions
-|> WHERE status = 'running'
+|> WHERE status == 'running'
 |> AGGREGATE count() AS busy, min(progress) AS least_done GROUP BY host
 |> ORDER BY busy
 ```
@@ -3828,7 +3828,7 @@ FROM /hosts/*/claude/sessions
 # qfs-cookbook: grammar=extended; milestone=M+; features=FROM,WHERE,INSERT INTO,VALUES
 # One pipeline writes an instruction into each matched session; the tunnel needs a Cloud sign-in.
 FROM /hosts/*/claude/sessions
-|> WHERE status = 'idle'
+|> WHERE status == 'idle'
 |> INSERT INTO /hosts/*/claude/sessions/instructions
      VALUES (host => host, session => id,
              text => 'Claim the next ticket from /sys/projects/qfs/queue and start it.')
@@ -3839,7 +3839,7 @@ FROM /hosts/*/claude/sessions
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M+; features=FROM,WHERE,SELECT,ORDER BY
 FROM /hosts/*/claude/sessions
-|> WHERE status = 'done'
+|> WHERE status == 'done'
 |> SELECT host, task, result, finished_at
 |> ORDER BY finished_at
 ```
@@ -3849,8 +3849,8 @@ FROM /hosts/*/claude/sessions
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M+; features=FROM,JOIN,ON,WHERE,SELECT
 FROM /hosts/*/claude/sessions
-|> JOIN /sql/pg/agent_tasks ON sessions.task_id = agent_tasks.id
-|> WHERE sessions.status = 'running'
+|> JOIN /sql/pg/agent_tasks ON sessions.task_id == agent_tasks.id
+|> WHERE sessions.status == 'running'
 |> SELECT host, agent_tasks.title, agent_tasks.priority, sessions.progress
 ```
 
@@ -3860,7 +3860,7 @@ FROM /hosts/*/claude/sessions
 # qfs-cookbook: grammar=core; milestone=M+; features=FROM,WHERE,SELECT,ORDER BY
 # /git on a remote host resolves over the tunnel; every blob read is POLICY-bounded.
 FROM /hosts/gpu-rig-02/claude/sessions/current/changed_files
-|> WHERE staged = true
+|> WHERE staged == true
 |> SELECT path, additions, deletions
 |> ORDER BY additions
 ```
@@ -3870,8 +3870,8 @@ FROM /hosts/gpu-rig-02/claude/sessions/current/changed_files
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M+; features=FROM,WHERE,JOIN,ON,SELECT
 FROM /hosts/*/claude/sessions
-|> WHERE status = 'done'
-|> JOIN /github/acme/web/pulls ON sessions.pr_number = pulls.number
+|> WHERE status == 'done'
+|> JOIN /github/acme/web/pulls ON sessions.pr_number == pulls.number
 |> SELECT host, pulls.number, pulls.title, pulls.state
 ```
 
@@ -3890,7 +3890,7 @@ INSERT INTO /sys/projects/qfs/connections
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M9; features=FROM,WHERE,INSERT INTO,VALUES
 FROM /sys/connections
-|> WHERE name = 'slack-eng' AND owner = 'a@qmu.jp'
+|> WHERE name == 'slack-eng' AND owner == 'a@qmu.jp'
 |> INSERT INTO /sys/projects/qfs/connections
      VALUES (name => name, driver => driver, scope => 'team')
 ```
@@ -3900,7 +3900,7 @@ FROM /sys/connections
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M9; features=FROM,WHERE,SELECT,ORDER BY
 FROM /sys/projects/qfs/connections
-|> WHERE scope = 'team'
+|> WHERE scope == 'team'
 |> SELECT name, driver, owner, last_used_at
 |> ORDER BY last_used_at
 ```
@@ -3910,7 +3910,7 @@ FROM /sys/projects/qfs/connections
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M+; features=FROM,WHERE,SELECT,ORDER BY
 FROM /sys/projects/qfs/hosts
-|> WHERE online = true
+|> WHERE online == true
 |> SELECT host, agent_count, last_heartbeat_at, cloud_signed_in
 |> ORDER BY last_heartbeat_at
 ```
@@ -3929,10 +3929,10 @@ FROM /hosts/*/claude/sessions
 
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M+; features=LET,FROM,WHERE,JOIN,ON,SELECT
-LET running = (FROM /hosts/*/claude/sessions |> WHERE status = 'running')
+LET running = (FROM /hosts/*/claude/sessions |> WHERE status == 'running')
 FROM running
-|> JOIN /sys/projects/qfs/hosts ON running.host = hosts.host
-|> WHERE hosts.cloud_signed_in = true
+|> JOIN /sys/projects/qfs/hosts ON running.host == hosts.host
+|> WHERE hosts.cloud_signed_in == true
 |> SELECT running.host, running.task, running.progress, hosts.region
 ```
 
@@ -3941,7 +3941,7 @@ FROM running
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M+; features=FROM,WHERE,INSERT INTO,VALUES,||
 FROM /sys/projects/qfs/hosts
-|> WHERE online = true
+|> WHERE online == true
 |> INSERT INTO /hosts/*/claude/sessions/instructions
      VALUES (host => host, session => 'next',
              text => 'You are shard ' || host || '. Build and test only crates owned by this host.')
@@ -3954,7 +3954,7 @@ FROM /sys/projects/qfs/hosts
 LET avg_progress = (rows: Relation) =>
   reduce(rows.progress, (acc: Float, p: Float) => acc + p, 0.0) / count(rows)
 FROM /hosts/*/claude/sessions
-|> WHERE status = 'running'
+|> WHERE status == 'running'
 |> SELECT avg_progress(self) AS fleet_progress
 ```
 
@@ -3963,7 +3963,7 @@ FROM /hosts/*/claude/sessions
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M+; features=FROM,JOIN,ON,WHERE,SELECT,DISTINCT
 FROM /hosts/*/claude/sessions/current/changed_files AS a
-|> JOIN /hosts/*/claude/sessions/current/changed_files AS b ON a.path = b.path
+|> JOIN /hosts/*/claude/sessions/current/changed_files AS b ON a.path == b.path
 |> WHERE a.host <> b.host
 |> SELECT DISTINCT a.path, a.host, b.host
 ```
@@ -3973,7 +3973,7 @@ FROM /hosts/*/claude/sessions/current/changed_files AS a
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M+; features=FROM,WHERE,SELECT,ENCODE,UPSERT INTO
 FROM /hosts/*/claude/sessions
-|> WHERE status = 'done'
+|> WHERE status == 'done'
 |> SELECT host, task, result, finished_at
 |> ENCODE md
 |> UPSERT INTO /drive/Team/agent-run-2026-06-26.md
@@ -3984,7 +3984,7 @@ FROM /hosts/*/claude/sessions
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M+; features=FROM,WHERE,AGGREGATE,GROUP BY,INSERT INTO,VALUES,||
 FROM /hosts/*/claude/sessions
-|> WHERE status = 'done'
+|> WHERE status == 'done'
 |> AGGREGATE count() AS shipped GROUP BY host
 |> INSERT INTO /slack/acme/eng-fabric/messages
      VALUES (text => host || ' shipped ' || shipped || ' tasks this run.')
@@ -3995,7 +3995,7 @@ FROM /hosts/*/claude/sessions
 ```qfs
 # qfs-cookbook: grammar=extended; milestone=M+; features=FROM,WHERE,INSERT INTO,VALUES
 FROM /hosts/*/claude/sessions
-|> WHERE status = 'running'
+|> WHERE status == 'running'
 |> INSERT INTO /hosts/*/claude/sessions/instructions
      VALUES (host => host, session => id,
              text => 'CI on main is red. Stop pushing and wait for the all-clear.')
@@ -4007,7 +4007,7 @@ FROM /hosts/*/claude/sessions
 # qfs-cookbook: grammar=core; milestone=M+; features=FROM,WHERE,SELECT,ORDER BY
 # Cross-machine reads are POLICY-bounded; the audit log records what each host withheld.
 FROM /sys/audit
-|> WHERE action = 'fabric.read' AND outcome = 'denied'
+|> WHERE action == 'fabric.read' AND outcome == 'denied'
 |> SELECT host, principal, path, reason, at
 |> ORDER BY at
 ```
@@ -4017,7 +4017,7 @@ FROM /sys/audit
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M+; features=FROM,JOIN,ON,WHERE,SELECT,ORDER BY
 FROM /hosts/gpu-rig-02/claude/sessions/current/commits
-|> JOIN /github/acme/web/pulls ON commits.sha = pulls.head_sha
+|> JOIN /github/acme/web/pulls ON commits.sha == pulls.head_sha
 |> WHERE pulls.review_state <> 'approved'
 |> SELECT commits.sha, commits.message, pulls.number, pulls.review_state
 |> ORDER BY commits.committed_at
@@ -4028,7 +4028,7 @@ FROM /hosts/gpu-rig-02/claude/sessions/current/commits
 ```qfs
 # qfs-cookbook: grammar=core; milestone=M+; features=FROM,JOIN,ON,SELECT,ORDER BY
 FROM /sys/projects/qfs/hosts
-|> JOIN /sys/metrics ON hosts.host = metrics.host
+|> JOIN /sys/metrics ON hosts.host == metrics.host
 |> SELECT hosts.host, hosts.agent_count, metrics.cpu_idle_pct, metrics.free_mem_gb
 |> ORDER BY metrics.cpu_idle_pct
 ```

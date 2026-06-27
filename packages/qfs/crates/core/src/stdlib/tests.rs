@@ -639,7 +639,7 @@ fn impure_alias_body_is_rejected() {
     let err = reg
         .register_prelude(&Prelude::new(
             DriverId::new("mail"),
-            vec![AliasDecl::new("BAD", "FROM /mail/drafts |> WHERE x = 1")],
+            vec![AliasDecl::new("BAD", "FROM /mail/drafts |> WHERE x == 1")],
         ))
         .unwrap_err();
     assert_eq!(err.code(), "prelude_impure_alias");

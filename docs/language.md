@@ -112,9 +112,11 @@ format        = "json" | "jsonl" | "yaml" | "toml" | "csv" | "md" ;
 plan_op       = "PREVIEW" | "COMMIT" ;
 
 (* ---- predicate / expression core ---- *)
+(* Decision O (t70): `=` ALWAYS binds (LET / EXTEND / SET / named arg);             *)
+(* equivalence is the explicit `==`. Unlike SQL, a lone `=` never compares.         *)
 predicate     = expr , { ( "AND" | "OR" ) , expr } | "NOT" , predicate ;
 expr          = operand , [ comparison , operand ] ;
-comparison    = "=" | "<>" | "<" | ">" | "<=" | ">="
+comparison    = "==" | "<>" | "<" | ">" | "<=" | ">="
               | "LIKE" | "~" | "IN" | "ANY" | "BETWEEN" ;
 operand       = column | literal ;
 

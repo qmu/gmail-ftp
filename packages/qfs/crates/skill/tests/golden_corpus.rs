@@ -326,7 +326,7 @@ fn negative_unsupported_verb_fails_structurally() {
     // Planning an UPDATE must fail at resolve time with the structured `unsupported_verb` error
     // (RFD §5) — the agent-legible failure path — BEFORE any plan or I/O exists.
     let reg = service_registry();
-    let stmt = parse_statement("UPDATE /slack/acme/general/messages SET text = 'x' WHERE id = 1")
+    let stmt = parse_statement("UPDATE /slack/acme/general/messages SET text = 'x' WHERE id == 1")
         .expect("the statement parses (UPDATE is closed-core; the NODE rejects it)");
     let err = Evaluator::new(&reg)
         .eval(&stmt)

@@ -122,6 +122,13 @@ fn classify(tok: &Token) -> (ParseErrorCode, String) {
             ParseErrorCode::ReservedAsIdentifier,
             "a reserved keyword cannot be used here".to_string(),
         ),
+        // A lone `=` where the grammar wanted a comparison or pipe boundary is almost
+        // always a stale SQL-style equality. Steer to `==` (RFD decision O, t70): `=`
+        // binds (assignment / named-arg / SET), `==` compares.
+        Token::Eq => (
+            ParseErrorCode::UnexpectedToken,
+            "`=` binds (assignment); use `==` for equivalence (RFD decision O)".to_string(),
+        ),
         _ => (
             ParseErrorCode::UnexpectedToken,
             "the grammar did not expect this token here".to_string(),
@@ -167,7 +174,8 @@ fn describe(tok: &Token) -> String {
     match tok {
         Token::Keyword(k) => format!("keyword `{}`", k.text()),
         Token::Pipe => "`|>`".to_string(),
-        Token::Eq | Token::Ne | Token::Lt | Token::Gt | Token::Le | Token::Ge | Token::Tilde => {
+        Token::Eq => "`=`".to_string(),
+        Token::EqEq | Token::Ne | Token::Lt | Token::Gt | Token::Le | Token::Ge | Token::Tilde => {
             "an operator".to_string()
         }
         Token::LParen => "`(`".to_string(),
@@ -353,7 +361,10 @@ fn predicate_tail(input: &mut Stream<'_>) -> ModalResult<TailFn> {
 
 fn cmp_op(input: &mut Stream<'_>) -> ModalResult<Op> {
     any.verify_map(|t: Spanned<Token>| match t.node {
-        Token::Eq => Some(Op::Eq),
+        // Equivalence is `==` (RFD decision O, t70). A lone `=` is the binding token
+        // and is intentionally NOT a comparator here — it surfaces as a crisp error
+        // steering to `==` (see `classify`).
+        Token::EqEq => Some(Op::Eq),
         Token::Ne => Some(Op::Ne),
         Token::Lt => Some(Op::Lt),
         Token::Gt => Some(Op::Gt),

@@ -135,6 +135,34 @@ fn golden_typed_literal_between() {
     );
 }
 
+/// RFD decision O (ticket t70): the three `=`-shaped forms must each lex
+/// unambiguously under maximal munch — `=>` (named-arg / lambda arrow) and `==`
+/// (equivalence comparison) and a lone `=` (assignment / binding). Locks the lexer
+/// precedence so none of the three can shadow another.
+#[test]
+fn golden_eq_eqeq_arrow_disambiguate() {
+    // Lone `=` is the binding/assignment token.
+    assert_eq!(
+        nodes("a = 1"),
+        vec![Token::Ident("a".into()), Token::Eq, Token::Int(1),]
+    );
+    // `==` is the equivalence comparator (one token, maximal munch).
+    assert_eq!(
+        nodes("a == 1"),
+        vec![Token::Ident("a".into()), Token::EqEq, Token::Int(1),]
+    );
+    // `=>` still wins as the arrow.
+    assert_eq!(
+        nodes("a => 1"),
+        vec![Token::Ident("a".into()), Token::Arrow, Token::Int(1),]
+    );
+    // All three adjacent: `==` then `=>` then a lone `=`.
+    let src = "== => =";
+    let toks = lex(src).expect("valid");
+    assert_spans_round_trip(src, &toks);
+    assert_eq!(nodes(src), vec![Token::EqEq, Token::Arrow, Token::Eq]);
+}
+
 #[test]
 fn golden_named_proc_arg_arrow() {
     let src = "CALL github.merge(method=>'squash')";

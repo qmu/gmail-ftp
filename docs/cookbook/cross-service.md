@@ -10,7 +10,7 @@ locally — so a Postgres table and a GitHub repo combine as easily as two datab
 
 ```qfs
 FROM /sql/pg/orders
-|> JOIN /github/acme/web/issues ON id = issue_id
+|> JOIN /github/acme/web/issues ON id == issue_id
 |> SELECT id, title, status
 ```
 
@@ -20,7 +20,7 @@ FROM /sql/pg/orders
 
 ```qfs
 FROM /sql/pg/users
-|> JOIN /git/myrepo/commits ON id = author_id
+|> JOIN /git/myrepo/commits ON id == author_id
 |> SELECT name, message
 ```
 
@@ -30,7 +30,7 @@ FROM /sql/pg/users
 
 ```qfs
 FROM /sql/pg/orders
-|> JOIN /local/regions.csv ON region = code
+|> JOIN /local/regions.csv ON region == code
 |> SELECT id, region, total
 ```
 

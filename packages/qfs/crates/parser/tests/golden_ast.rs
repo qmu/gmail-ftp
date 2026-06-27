@@ -20,7 +20,7 @@ use qfs_parser::parse_statement;
 /// The full acceptance corpus: every form the criteria enumerate.
 const CORPUS: &[&str] = &[
     // multi-op query
-    "FROM /mail/inbox |> WHERE id = 1 |> SELECT id, subject AS title |> JOIN /contacts ON id = c |> AGGREGATE count(id) AS n |> ORDER BY n DESC |> LIMIT 10",
+    "FROM /mail/inbox |> WHERE id == 1 |> SELECT id, subject AS title |> JOIN /contacts ON id == c |> AGGREGATE count(id) AS n |> ORDER BY n DESC |> LIMIT 10",
     // EXPAND
     "FROM /mail/inbox |> EXPAND attachments",
     // DISTINCT
@@ -32,7 +32,7 @@ const CORPUS: &[&str] = &[
     // effect verbs
     "INSERT INTO /t VALUES (1, 2) RETURNING id",
     "UPSERT INTO /s3/bucket/key VALUES ('blob')",
-    "UPDATE /sql/pg/orders SET status = 'done' WHERE id = 7",
+    "UPDATE /sql/pg/orders SET status = 'done' WHERE id == 7",
     "REMOVE /mail/spam WHERE age > 30",
     // codecs
     "FROM /fs/data.json |> DECODE json |> ENCODE yaml",
@@ -44,7 +44,7 @@ const CORPUS: &[&str] = &[
     "FROM /git/repo@main/src",
     "FROM /sql/pg/orders AS OF '2026-01-01'",
     // struct path access
-    "FROM /t |> WHERE a.b.c = 1",
+    "FROM /t |> WHERE a.b.c == 1",
     // every CREATE form
     "CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5",
     "CREATE TRIGGER notify ON inbox DO INSERT INTO /log VALUES ('x')",
@@ -81,7 +81,7 @@ fn corpus_parses_and_serialises_deterministically() {
 fn pinned_goldens() {
     let cases: &[(&str, &str)] = &[
         (
-            "FROM /mail/inbox |> WHERE id = 1 |> LIMIT 5",
+            "FROM /mail/inbox |> WHERE id == 1 |> LIMIT 5",
             r#"{"Query":{"source":{"Path":{"segments":[{"name":"mail","version":null,"glob":false},{"name":"inbox","version":null,"glob":false}],"as_of":null,"span":[5,16]}},"ops":[{"Where":{"Binary":{"op":"Eq","lhs":{"Col":"id"},"rhs":{"Lit":{"Int":1}}}}},{"Limit":5}]}}"#,
         ),
         (

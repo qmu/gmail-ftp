@@ -225,7 +225,7 @@ pub const KEYWORDS: &[&str] = &[
 /// from [`KEYWORDS`] because operators are punctuation/word tokens rather than
 /// statement keywords. Frozen on the same terms as the keyword set.
 pub const OPERATORS: &[&str] = &[
-    "|>", "=", "<>", "<", ">", "<=", ">=", "AND", "OR", "NOT", "LIKE", "~", "ANY", "IN", "BETWEEN",
+    "|>", "==", "<>", "<", ">", "<=", ">=", "AND", "OR", "NOT", "LIKE", "~", "ANY", "IN", "BETWEEN",
 ];
 
 #[cfg(test)]
@@ -272,13 +272,27 @@ mod tests {
     }
 
     /// Locks the frozen operator count (RFD §3 lists `|>` plus 14 comparison /
-    /// logical / set operators = 15).
+    /// logical / set operators = 15). Ticket t70 (RFD decision O) is a *deliberate
+    /// vocabulary event*: the equivalence comparator `=` is reclassified — the lone
+    /// `=` becomes the assignment/binding token (punctuation, like `=>`/`||`/`.`,
+    /// not a comparison operator) and `==` takes its place as the comparator. The
+    /// count therefore stays 15; this freeze test is the tripwire that the swap was
+    /// the intended one-for-one edit and not an accidental add/drop.
     #[test]
     fn operator_count_is_frozen() {
         assert_eq!(
             OPERATORS.len(),
             15,
-            "the operator set is frozen at 15 entries (RFD §3)"
+            "the operator set is frozen at 15 entries (RFD §3; `=`→`==` swap is t70 decision O)"
+        );
+        // The binding `=` is no longer a comparison operator; `==` is the comparator.
+        assert!(
+            OPERATORS.contains(&"=="),
+            "`==` is the equivalence comparator (RFD decision O, t70)"
+        );
+        assert!(
+            !OPERATORS.contains(&"="),
+            "`=` is the assignment/binding token, not a comparison operator (t70)"
         );
     }
 

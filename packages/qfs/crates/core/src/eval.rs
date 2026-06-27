@@ -852,8 +852,8 @@ fn describe_schema(driver: &dyn Driver, vfs: &str) -> Result<Schema, EvalError> 
 /// column names are honoured; otherwise positional `col0, col1, …` names are synthesised.
 /// Lower an `UPDATE … SET … WHERE …` / `REMOVE … WHERE …` body into the effect's row payload. The
 /// row carries the `SET` columns (the new values) plus the equality-key columns extracted from the
-/// `WHERE` (`col = <const>` leaves) — exactly what a key-addressed applier (e.g. the SQL driver)
-/// splits into `SET <non-key>` + `WHERE <key>`. A bare `REMOVE … WHERE id = 1` yields a one-column
+/// `WHERE` (`col == <const>` leaves) — exactly what a key-addressed applier (e.g. the SQL driver)
+/// splits into `SET <non-key>` + `WHERE <key>`. A bare `REMOVE … WHERE id == 1` yields a one-column
 /// `[id]` row; a non-equality filter contributes no key column (the applier then rejects an
 /// un-keyed whole-table write, honestly). Constants only — a non-literal `SET`/`WHERE` value is a
 /// structured [`EvalError::NonLiteralValues`].
@@ -878,7 +878,7 @@ fn setwhere_row_batch(
     Ok(RowBatch::new(Schema::new(cols), vec![Row::new(vals)]))
 }
 
-/// Collect `col = <const>` equality leaves from a `WHERE` predicate (recursing through `AND`),
+/// Collect `col == <const>` equality leaves from a `WHERE` predicate (recursing through `AND`),
 /// returning each as `(column, value)`. Non-equality leaves, `OR`, and non-constant right-hand
 /// sides are skipped — they carry no key the applier can address by, which the applier surfaces as
 /// an honest "supply the key column(s)" rejection rather than a wrong-row write.

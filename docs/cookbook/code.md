@@ -33,7 +33,7 @@ GitHub is an **object graph**: things (PRs, issues) with actions you `CALL`.
 
 ```qfs
 FROM /github/acme/web/pulls
-|> WHERE state = 'open'
+|> WHERE state == 'open'
 |> SELECT number, title
 |> ORDER BY number DESC
 |> LIMIT 10

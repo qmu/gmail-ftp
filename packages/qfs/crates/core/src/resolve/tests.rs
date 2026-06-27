@@ -281,7 +281,7 @@ fn alias_over_valueless_receiver_fails_closed() {
 /// ticket): resolution simply produces no binding for it and does not error.
 #[test]
 fn non_alias_function_is_ignored() {
-    let calls = resolve("FROM /mail/inbox |> WHERE upper(subject) = 'X'").unwrap();
+    let calls = resolve("FROM /mail/inbox |> WHERE upper(subject) == 'X'").unwrap();
     assert!(
         calls.is_empty(),
         "a non-prelude function is left for the function-registry ticket"

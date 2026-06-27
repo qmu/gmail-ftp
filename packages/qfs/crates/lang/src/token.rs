@@ -26,8 +26,13 @@ pub enum Token {
     // -- operators --
     /// `|>` — the pipe operator.
     Pipe,
-    /// `=` — equality.
+    /// `=` — assignment / binding only (RFD decision O, ticket t70). Binds names
+    /// in `LET x = …`, `EXTEND col = …`, `SET col = …`, `UPDATE … SET …`. It is
+    /// **never** equivalence; comparison is the explicit [`Token::EqEq`] (`==`).
     Eq,
+    /// `==` — equality comparison (RFD decision O, ticket t70). Distinct from the
+    /// binding [`Token::Eq`] (`=`): in qfs, unlike SQL, a single `=` never compares.
+    EqEq,
     /// `<>` — inequality.
     Ne,
     /// `<` — less-than.

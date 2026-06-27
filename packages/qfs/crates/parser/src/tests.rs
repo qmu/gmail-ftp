@@ -35,7 +35,7 @@ fn multi_op_pipeline_covers_where_select_join_aggregate_order_limit() {
         "FROM /mail/inbox \
          |> WHERE subject LIKE 'invoice' AND size > 1000 \
          |> SELECT id, subject AS title \
-         |> JOIN /contacts ON id = contact_id \
+         |> JOIN /contacts ON id == contact_id \
          |> AGGREGATE count(id) AS n \
          |> GROUP BY contact_id \
          |> ORDER BY n DESC \
@@ -189,7 +189,7 @@ fn path_as_of_temporal() {
 
 #[test]
 fn struct_path_access_a_b_c() {
-    let stmt = parse_ok("FROM /t |> WHERE a.b.c = 1");
+    let stmt = parse_ok("FROM /t |> WHERE a.b.c == 1");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Where(Expr::Binary { lhs, .. }) = &p.ops[0] else {
         panic!()
@@ -204,8 +204,9 @@ fn struct_path_access_a_b_c() {
 
 #[test]
 fn in_between_anyop_predicates() {
-    let stmt =
-        parse_ok("FROM /t |> WHERE id IN (1, 2, 3) AND price BETWEEN 10 AND 20 AND x = ANY (4, 5)");
+    let stmt = parse_ok(
+        "FROM /t |> WHERE id IN (1, 2, 3) AND price BETWEEN 10 AND 20 AND x == ANY (4, 5)",
+    );
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Where(e) = &p.ops[0] else {
         panic!()
@@ -222,7 +223,7 @@ fn in_between_anyop_predicates() {
 
 #[test]
 fn not_and_or_precedence() {
-    let stmt = parse_ok("FROM /t |> WHERE NOT a = 1 OR b = 2");
+    let stmt = parse_ok("FROM /t |> WHERE NOT a == 1 OR b == 2");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Where(e) = &p.ops[0] else {
         panic!()
@@ -261,14 +262,14 @@ fn upsert_distinct_from_insert() {
 
 #[test]
 fn insert_from_subpipeline() {
-    let stmt = parse_ok("INSERT INTO /archive FROM /mail/inbox |> WHERE flag = TRUE");
+    let stmt = parse_ok("INSERT INTO /archive FROM /mail/inbox |> WHERE flag == TRUE");
     let Statement::Effect(e) = stmt else { panic!() };
     assert!(matches!(e.body, EffectBody::Pipeline(_)));
 }
 
 #[test]
 fn update_set_where() {
-    let stmt = parse_ok("UPDATE /sql/pg/orders SET status = 'done' WHERE id = 7");
+    let stmt = parse_ok("UPDATE /sql/pg/orders SET status = 'done' WHERE id == 7");
     let Statement::Effect(e) = stmt else { panic!() };
     assert_eq!(e.verb, EffectVerb::Update);
     let EffectBody::SetWhere { set, filter } = &e.body else {
@@ -565,7 +566,7 @@ fn closed_core_variant_counts_are_locked() {
 fn let_binding_binds_a_relation_and_threads_body() {
     // A single LET binding followed by the statement that uses it (one per line, `;`-free).
     let stmt = parse_ok(
-        "LET active = FROM /sql/pg/customers |> WHERE status = 'active'\n\
+        "LET active = FROM /sql/pg/customers |> WHERE status == 'active'\n\
          FROM active |> SELECT id",
     );
     let Statement::Let { name, value, body } = stmt else {
@@ -684,6 +685,43 @@ fn missing_pipe_is_rejected() {
 fn dangling_where_is_eof() {
     let err = parse_err("FROM /mail |> WHERE");
     assert_eq!(err.code, ParseErrorCode::UnexpectedEof);
+}
+
+/// RFD decision O (ticket t70): a lone `=` always binds; it is never equality. A
+/// stale SQL-style `WHERE a = 1` must therefore fail, with a message that steers the
+/// author (human or AI) to `==` for equivalence (RFD §5 actionable-error contract).
+#[test]
+fn equals_as_comparison_is_rejected_steering_to_eqeq() {
+    let err = parse_err("FROM /t |> WHERE a = 1");
+    assert_eq!(err.code, ParseErrorCode::UnexpectedToken);
+    assert!(
+        err.message.contains("=="),
+        "message should steer to `==` for equivalence, got: {}",
+        err.message
+    );
+    // The diagnostic points at the offending `=` (and never echoes any literal).
+    let src = "FROM /t |> WHERE a = 1";
+    assert_eq!(&src[err.span.range()], "=");
+}
+
+/// The migrated comparison form `WHERE x == 5` parses as an equality predicate, while
+/// the binding `=` keeps working in `EXTEND`/`SET` — the two roles never collide
+/// (decision O, t70).
+#[test]
+fn eqeq_compares_while_eq_still_binds() {
+    let stmt = parse_ok("FROM /t |> WHERE x == 5");
+    let Statement::Query(p) = stmt else { panic!() };
+    let PipeOp::Where(Expr::Binary { op: Op::Eq, .. }) = &p.ops[0] else {
+        panic!(
+            "`WHERE x == 5` should parse as an Eq comparison, got {:?}",
+            p.ops[0]
+        )
+    };
+    // `=` is still the assignment/binding token in EXTEND and SET.
+    let stmt = parse_ok("FROM /t |> EXTEND y = x |> SET z = 1");
+    let Statement::Query(p) = stmt else { panic!() };
+    assert!(matches!(p.ops[0], PipeOp::Extend(_)));
+    assert!(matches!(p.ops[1], PipeOp::Set(_)));
 }
 
 #[test]

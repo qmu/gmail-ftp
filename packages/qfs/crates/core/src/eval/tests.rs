@@ -144,7 +144,7 @@ fn eval(src: &str) -> Result<EvalValue, EvalError> {
 
 #[test]
 fn query_pipeline_folds_to_relation_with_threaded_schema() {
-    let v = eval("FROM /db/users |> WHERE active = true |> SELECT id, name").unwrap();
+    let v = eval("FROM /db/users |> WHERE active == true |> SELECT id, name").unwrap();
     let rel = v.as_relation().expect("a query yields a relation");
     // The fold produced a Project at the top, threading the source schema down.
     assert!(matches!(rel, PlanSource::Project { .. }));
@@ -212,7 +212,7 @@ fn upsert_and_update_evaluate_to_their_kinds() {
         .unwrap();
     assert_eq!(upsert.nodes()[0].kind, EffectKind::Upsert);
 
-    let update = eval("UPDATE /db/users SET name = 'b' WHERE id = 1")
+    let update = eval("UPDATE /db/users SET name = 'b' WHERE id == 1")
         .unwrap()
         .as_plan()
         .cloned()
@@ -240,7 +240,7 @@ fn insert_from_query_emits_a_read_dependency() {
 
 #[test]
 fn remove_is_flagged_inherently_irreversible() {
-    let plan = eval("REMOVE /db/users WHERE id = 1")
+    let plan = eval("REMOVE /db/users WHERE id == 1")
         .unwrap()
         .as_plan()
         .cloned()
@@ -285,7 +285,7 @@ fn returning_projection_schema_is_computed() {
 
 #[test]
 fn preview_of_evaluated_plan_is_secret_free_and_ordered() {
-    let plan = eval("REMOVE /db/users WHERE id = 1")
+    let plan = eval("REMOVE /db/users WHERE id == 1")
         .unwrap()
         .as_plan()
         .cloned()
@@ -330,7 +330,7 @@ fn unknown_column_in_projection_is_structured() {
 fn capability_denied_verb_never_reaches_a_plan() {
     // /mail allows only select+insert; UPDATE is denied at resolve time — the evaluator
     // surfaces the structured resolve error, no plan is built.
-    let err = eval("UPDATE /mail/inbox SET subject = 'x' WHERE id = 1").unwrap_err();
+    let err = eval("UPDATE /mail/inbox SET subject = 'x' WHERE id == 1").unwrap_err();
     assert_eq!(err.code(), "unsupported_verb");
     assert!(matches!(
         err,

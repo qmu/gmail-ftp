@@ -124,7 +124,7 @@ the rest — joins, extra filtering, sorting — locally:
 
 ```qfs
 FROM /sql/pg/orders
-|> JOIN /github/acme/web/issues ON id = issue_id
+|> JOIN /github/acme/web/issues ON id == issue_id
 |> SELECT id, title
 ```
 

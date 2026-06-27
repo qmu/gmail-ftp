@@ -67,7 +67,7 @@ FROM /local/config.json
 ```qfs
 FROM /local/events.json
 |> DECODE json
-|> WHERE level = 'error'
+|> WHERE level == 'error'
 |> ENCODE csv
 ```
 

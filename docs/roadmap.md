@@ -125,7 +125,7 @@ Federation — one query, many services — is the point:
 
 ```qfs
 FROM /sql/pg/orders
-|> JOIN /github/acme/web/issues ON id = issue_id
+|> JOIN /github/acme/web/issues ON id == issue_id
 |> SELECT id, title
 ```
 
@@ -213,12 +213,12 @@ value" and "is this value equal" reads as a trap. So qfs splits them: `=` **alwa
 (`let x = …`, `extend col = …`, `set col = …`, `update … set …`), and equivalence is the explicit
 **`==`**. The other comparisons are unchanged (`<> < > <= >= like ~ in between any`).
 
-> Today's binary still parses a single `=` as comparison, requires `from`, and renders keywords
-> uppercase; that is why §1.1 (the grammar you have today ✅) and the `grammar=core` recipes in the
-> [query cookbook](/query-cookbook) still show `WHERE x = …`. Once the M6 grammar tickets above land, a
-> single migration pass rewrites every example to `==`, no-`from`, lowercase, unquoted in one go — until
-> then, the catalogue stays honest about what parses *now*. **The 🧭 examples below already show the
-> target grammar.**
+> The `=`/`==` split (decision O) **has now landed** (ticket t70): the binary parses a single `=` as a
+> bind/assignment only, and `==` as equivalence, so §1.1 (the grammar you have today ✅) and the
+> `grammar=core` recipes in the [query cookbook](/query-cookbook) use `WHERE x == …`. Today's binary
+> still requires `from` and renders keywords uppercase; once the remaining M6 grammar tickets above land,
+> a migration pass finishes the rest (no-`from`, lowercase, unquoted) — until then, the catalogue stays
+> honest about what parses *now*. **The 🧭 examples below already show the full target grammar.**
 
 ```qfs
 # 🧭 proposed — `=` binds the name, `==` tests equivalence; the two never collide.

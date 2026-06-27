@@ -21,7 +21,7 @@ FROM /mail/inbox
 
 ```qfs
 FROM /mail/inbox
-|> WHERE from = 'billing@stripe.com'
+|> WHERE from == 'billing@stripe.com'
 |> SELECT date, subject
 ```
 
@@ -88,7 +88,7 @@ REMOVE /mail/inbox
 
 ```qfs
 REMOVE /mail/inbox
-  WHERE from = 'noreply@spammy.example'
+  WHERE from == 'noreply@spammy.example'
 ```
 
 ::: tip

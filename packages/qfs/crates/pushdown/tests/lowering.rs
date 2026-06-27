@@ -62,7 +62,7 @@ fn where_predicate_is_sourced_from_the_ast_and_pushed() {
 
 #[test]
 fn lower_predicate_maps_and_or_not_and_comparisons() {
-    let pipe = pipeline_of("FROM /db/t |> WHERE age >= 18 AND name = 'a'");
+    let pipe = pipeline_of("FROM /db/t |> WHERE age >= 18 AND name == 'a'");
     let plan = lower_query(&pipe, &source_of, &schema_of).unwrap();
     let LogicalPlan::Filter { predicate, .. } = &plan else {
         panic!("expected a Filter");
@@ -73,7 +73,7 @@ fn lower_predicate_maps_and_or_not_and_comparisons() {
 #[test]
 fn cross_source_join_lowered_from_dsl_federates() {
     // A JOIN whose two sides resolve to different sources federates locally.
-    let pipe = pipeline_of("FROM /pg/orders |> JOIN /git/commits ON id = id");
+    let pipe = pipeline_of("FROM /pg/orders |> JOIN /git/commits ON id == id");
     let plan = lower_query(&pipe, &source_of, &schema_of).unwrap();
     let reg = SourceRegistry::new()
         .with(SourceId::new("pg"), PushdownProfile::Full)
@@ -106,7 +106,7 @@ fn lower_predicate_handles_like_and_in_and_between() {
         assert_eq!(plan.is_ok(), ok, "{src}");
     }
     // And lower_predicate is exposed for direct use over an AST Expr.
-    let pipe = pipeline_of("FROM /db/t |> WHERE age = 5");
+    let pipe = pipeline_of("FROM /db/t |> WHERE age == 5");
     if let qfs_parser::PipeOp::Where(e) = &pipe.ops[0] {
         let p = lower_predicate(e).unwrap();
         assert!(matches!(p, Predicate::Cmp(_, _, _)));

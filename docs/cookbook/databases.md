@@ -34,7 +34,7 @@ FROM /sql/pg/orders
 
 ```qfs
 FROM /sql/pg/users
-|> WHERE age >= 18 AND country = 'JP'
+|> WHERE age >= 18 AND country == 'JP'
 |> SELECT id, name, age
 ```
 
@@ -81,7 +81,7 @@ INSERT INTO /sql/pg/audit
 ```qfs
 UPDATE /sql/pg/orders
   SET status = 'shipped'
-  WHERE id = 7
+  WHERE id == 7
 ```
 
 **Upsert — the retry-safe write** (create-or-replace; running it twice converges):

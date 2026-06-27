@@ -40,7 +40,7 @@ Join a database table to your GitHub issues — across two completely different 
 
 ```qfs
 FROM /sql/pg/orders
-|> JOIN /github/acme/web/issues ON id = issue_id
+|> JOIN /github/acme/web/issues ON id == issue_id
 |> SELECT id, title
 ```
 
