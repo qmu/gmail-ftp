@@ -550,8 +550,9 @@ fn preview_and_commit_wrappers() {
 /// deliberate, reviewed change-control event.
 #[test]
 fn closed_core_variant_counts_are_locked() {
-    // 5 statement forms (Query, Effect, Ddl, Plan, Let). `Let` is the deliberate M6
-    // functional-core addition (ticket t60), gated by exactly this lock + the keyword freeze.
+    // 6 statement forms (Query, Effect, Ddl, Plan, Let, Transaction). `Let` (t60) and
+    // `Transaction` (t62) are the deliberate M6 functional-core additions, each gated by exactly
+    // this lock + the keyword freeze so the addition is reviewed, not smuggled in.
     let statement_variants = [
         Statement::Query(Pipeline {
             source: Source::Values(Values {
@@ -613,11 +614,16 @@ fn closed_core_variant_counts_are_locked() {
             })),
             span: Span::new(0, 0),
         }),
+        Statement::Transaction {
+            body: vec![],
+            span: Span::new(0, 0),
+        },
     ];
     assert_eq!(
         statement_variants.len(),
-        5,
-        "Statement is closed at 5 forms (RFD §3 + the t60 `LET` functional-core addition)"
+        6,
+        "Statement is closed at 6 forms (RFD §3 + the t60 `LET` and t62 `TRANSACTION` \
+         functional-core additions)"
     );
 
     // 18 closed-core pipe ops — each maps to a frozen query/transform keyword or a
@@ -773,6 +779,93 @@ fn two_bare_statements_without_a_binding_are_rejected() {
     // trailing input, not a silent split.
     let err = parse_err("/sql/pg/a\n/sql/pg/b");
     assert!(!err.expected.is_empty());
+}
+
+// ---- TRANSACTION block (M6, ticket t62) -----------------------------------
+
+#[test]
+fn transaction_block_of_two_upserts_parses() {
+    // The roadmap §1.2 canonical shape: two reversible UPSERTs grouped into one block.
+    let stmt = parse_ok(
+        "TRANSACTION { \
+           UPSERT INTO /sql/pg/orders VALUES (1); \
+           UPSERT INTO /sql/pg/audit VALUES (1) \
+         }",
+    );
+    let Statement::Transaction { body, .. } = stmt else {
+        panic!("expected a TRANSACTION block, got {stmt:?}")
+    };
+    assert_eq!(body.len(), 2, "two effect members, in source order");
+    for member in &body {
+        let Statement::Effect(e) = member else {
+            panic!("a transaction member must be an Effect, got {member:?}")
+        };
+        assert_eq!(e.verb, EffectVerb::Upsert);
+    }
+}
+
+#[test]
+fn transaction_block_accepts_trailing_semicolon_and_pipe_stage_writes() {
+    // A trailing `;` is allowed; a pipe-stage write (decision Q) is a legal effect member.
+    let stmt = parse_ok(
+        "TRANSACTION { \
+           /sql/pg/src |> WHERE flag == TRUE |> UPDATE SET status = 'done'; \
+           INSERT INTO /sql/pg/audit VALUES (1); \
+         }",
+    );
+    let Statement::Transaction { body, .. } = stmt else {
+        panic!("expected a TRANSACTION block")
+    };
+    assert_eq!(body.len(), 2);
+    assert!(matches!(body[0], Statement::Effect(_)));
+    assert!(matches!(body[1], Statement::Effect(_)));
+}
+
+#[test]
+fn transaction_block_parses_irreversible_member_shape() {
+    // Reversibility is an EVAL-time concern, not a parse-time one: a `REMOVE` inside parses
+    // fine here and is rejected later by the evaluator's reversible-only guard.
+    let stmt = parse_ok("TRANSACTION { REMOVE /sql/pg/t WHERE id == 1 }");
+    let Statement::Transaction { body, .. } = stmt else {
+        panic!("expected a TRANSACTION block")
+    };
+    assert_eq!(body.len(), 1);
+    let Statement::Effect(e) = &body[0] else {
+        panic!()
+    };
+    assert_eq!(e.verb, EffectVerb::Remove);
+}
+
+#[test]
+fn empty_transaction_block_parses() {
+    let stmt = parse_ok("TRANSACTION { }");
+    let Statement::Transaction { body, .. } = stmt else {
+        panic!("expected a TRANSACTION block")
+    };
+    assert!(body.is_empty());
+}
+
+#[test]
+fn transaction_block_can_be_wrapped_in_commit() {
+    let stmt = parse_ok("COMMIT TRANSACTION { UPSERT INTO /sql/pg/t VALUES (1) }");
+    let Statement::Plan(p) = stmt else {
+        panic!("expected a plan wrapper")
+    };
+    assert!(p.commit);
+    assert!(matches!(p.inner.as_ref(), Statement::Transaction { .. }));
+}
+
+#[test]
+fn transaction_body_rejects_a_pure_read() {
+    // A read pipeline is not a legal transaction member (reversible-only block holds only
+    // effects) — a clear error, never a silent accept.
+    let _ = parse_err("TRANSACTION { /sql/pg/t |> LIMIT 5 }");
+}
+
+#[test]
+fn transaction_does_not_nest() {
+    // Conservative this slice (decision G): no nested `TRANSACTION` inside a transaction body.
+    let _ = parse_err("TRANSACTION { TRANSACTION { UPSERT INTO /t VALUES (1) } }");
 }
 
 // ---- governance: rejection cases ------------------------------------------

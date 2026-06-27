@@ -9,7 +9,7 @@ The grammar is **fixed and small** — adding a new service never adds new keywo
 
 ## Reserved keywords
 
-These 38 words make up the whole language. Because the set is fixed, anything you learn here keeps working as new services are added.
+These 39 words make up the whole language. Because the set is fixed, anything you learn here keeps working as new services are added.
 
 | # | keyword |
 |---|---------|
@@ -36,21 +36,22 @@ These 38 words make up the whole language. Because the set is fixed, anything yo
 | 21 | `VALUES` |
 | 22 | `RETURNING` |
 | 23 | `CALL` |
-| 24 | `DECODE` |
-| 25 | `ENCODE` |
-| 26 | `PREVIEW` |
-| 27 | `COMMIT` |
-| 28 | `CREATE` |
-| 29 | `ENDPOINT` |
-| 30 | `TRIGGER` |
-| 31 | `JOB` |
-| 32 | `VIEW` |
-| 33 | `MATERIALIZED VIEW` |
-| 34 | `WEBHOOK` |
-| 35 | `POLICY` |
-| 36 | `DO` |
-| 37 | `EVERY` |
-| 38 | `ON` |
+| 24 | `TRANSACTION` |
+| 25 | `DECODE` |
+| 26 | `ENCODE` |
+| 27 | `PREVIEW` |
+| 28 | `COMMIT` |
+| 29 | `CREATE` |
+| 30 | `ENDPOINT` |
+| 31 | `TRIGGER` |
+| 32 | `JOB` |
+| 33 | `VIEW` |
+| 34 | `MATERIALIZED VIEW` |
+| 35 | `WEBHOOK` |
+| 36 | `POLICY` |
+| 37 | `DO` |
+| 38 | `EVERY` |
+| 39 | `ON` |
 
 ## Grammar (EBNF)
 
@@ -66,9 +67,18 @@ The pipe-SQL grammar. Every UPPERCASE terminal is a frozen reserved keyword abov
 program       = { binding } , statement ;
 binding       = "LET" , name , "=" , pipeline ;
 
-(* A statement is a pipeline (which may terminate in a write stage, decision Q) or the   *)
-(* source-less verb-leading literal write; an optional plan_op wraps either.              *)
-statement     = ( pipeline | effect_literal ) , [ plan_op ] ;
+(* A statement is a pipeline (which may terminate in a write stage, decision Q), the      *)
+(* source-less verb-leading literal write, or a TRANSACTION block (M6, ticket t62); an     *)
+(* optional plan_op wraps any of them.                                                    *)
+statement     = ( pipeline | effect_literal | transaction ) , [ plan_op ] ;
+
+(* ---- transactions (M6, ticket t62, decision G) ---- *)
+(* A reversible-only, all-or-nothing block: a `;`-separated sequence of effect            *)
+(* statements committed in source order. Every effect inside MUST be reversible —          *)
+(* an irreversible effect (REMOVE, an irreversible CALL) is a hard eval-time error, never  *)
+(* a needs-an-ack prompt — so the block can always roll back. No nesting, no LET inside.    *)
+transaction   = "TRANSACTION" , "{" , [ effect_stmt , { ";" , effect_stmt } , [ ";" ] ] , "}" ;
+effect_stmt   = effect_literal | ( pipeline , effect_stage ) ;
 
 (* A pipeline is a source threaded through |> stages. Decision R (t73): the source     *)
 (* position needs no `FROM` — a leading `/path` (or a LET-bound name) IS the source.   *)

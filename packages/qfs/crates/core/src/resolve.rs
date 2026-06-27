@@ -254,6 +254,15 @@ impl<'r> Resolver<'r> {
                 let inner = scope.with(name);
                 self.resolve_statement_into(body, &inner, out)
             }
+            // A `TRANSACTION { … }` block (M6, t62): each body member is an effect statement —
+            // resolve every one (capability/procedure gate) so a denied verb inside the block
+            // fails before a plan exists, exactly as it would outside the block.
+            Statement::Transaction { body, .. } => {
+                for member in body {
+                    self.resolve_statement_into(member, scope, out)?;
+                }
+                Ok(())
+            }
             // Server DDL desugars to `/server/...` effects downstream (later epic). Its
             // optional `DO`/`AS` clauses are themselves statements — resolve those.
             Statement::Ddl(ddl) => {

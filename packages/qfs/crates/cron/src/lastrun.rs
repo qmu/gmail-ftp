@@ -64,6 +64,12 @@ pub fn bind_last_run(stmt: &mut Statement, boundary: Instant) {
             bind_last_run(value, boundary);
             bind_last_run(body, boundary);
         }
+        // A `TRANSACTION { … }` block (M6, t62): rewrite `LAST_RUN()` through every member.
+        Statement::Transaction { body, .. } => {
+            for member in body {
+                bind_last_run(member, boundary);
+            }
+        }
     }
 }
 
@@ -243,6 +249,12 @@ fn detect_stmt(stmt: &Statement, found: &mut bool) {
         Statement::Let { value, body, .. } => {
             detect_stmt(value, found);
             detect_stmt(body, found);
+        }
+        // A `TRANSACTION { … }` block (M6, t62): a `LAST_RUN()` may live in any member.
+        Statement::Transaction { body, .. } => {
+            for member in body {
+                detect_stmt(member, found);
+            }
         }
     }
 }

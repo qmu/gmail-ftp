@@ -87,6 +87,12 @@ pub fn bind_new(stmt: &mut Statement, binds: &NewBindings) {
             bind_new(value, binds);
             bind_new(body, binds);
         }
+        // A `TRANSACTION { … }` block (M6, t62): bind `NEW.*` through every effect member.
+        Statement::Transaction { body, .. } => {
+            for member in body {
+                bind_new(member, binds);
+            }
+        }
     }
 }
 

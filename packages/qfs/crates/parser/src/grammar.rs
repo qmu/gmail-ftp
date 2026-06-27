@@ -1294,6 +1294,8 @@ fn raw_token_text(input: &mut Stream<'_>) -> ModalResult<String> {
 fn inner_statement(input: &mut Stream<'_>) -> ModalResult<Statement> {
     alt((
         plan_wrap,
+        // A `TRANSACTION { … }` block (M6, t62): a distinct leading keyword, so order-independent.
+        transaction_block,
         server_ddl.map(Statement::Ddl),
         // Verb-leading effect (`INSERT INTO …`, the source-less `VALUES` literal form among
         // them) wins first; a source-leading pipeline then either reads (`Statement::Query`)
@@ -1302,6 +1304,46 @@ fn inner_statement(input: &mut Stream<'_>) -> ModalResult<Statement> {
         pipeline_or_effect,
     ))
     .parse_next(input)
+}
+
+/// One statement inside a `TRANSACTION { … }` block (M6, ticket t62): an **effect** statement
+/// only — a verb-leading `INSERT/UPSERT/UPDATE/REMOVE …` (the source-less `VALUES` literal form
+/// among them) or a terminal pipe-stage write (`/path |> … |> REMOVE`). A pure read pipeline, a
+/// nested `TRANSACTION`, a `LET`, a DDL, or a `PREVIEW`/`COMMIT` wrapper is rejected here (the
+/// shape gate) so the block stays a thin, reversible-only wrapper over [`EffectStmt`]s; the
+/// reversibility check itself is the eval-time gate, not this parser.
+fn transaction_item(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    // Verb-leading effect wins first; backtracks cleanly when the next item is absent (`}`).
+    if let Some(e) = opt(effect_stmt).parse_next(input)? {
+        return Ok(Statement::Effect(e));
+    }
+    // Otherwise a source-leading pipeline that MUST terminate in a write stage. A bare read is
+    // not a legal transaction member: once a non-effect is parsed it is a crisp authoring error
+    // (`cut`), never a silent accept — decision G's reversible-only block holds no read.
+    match pipeline_or_effect(input)? {
+        eff @ Statement::Effect(_) => Ok(eff),
+        _ => Err(ErrMode::Cut(ContextError::new())),
+    }
+}
+
+/// A `TRANSACTION { <effect> ; <effect> ; … }` block (M6, ticket t62, decision G): a
+/// reversible-only, all-or-nothing group of effect statements in commit-point (source) order.
+/// Once `TRANSACTION` is consumed we are committed (`cut_err` on the braces), so a malformed
+/// block is a crisp error pointing *inside* it. The effects are `;`-separated (a trailing `;` is
+/// allowed) and an empty block parses to an empty (trivially reversible) plan. Reversibility is
+/// enforced at eval time (`EvalError::IrreversibleInTransaction`), not here.
+fn transaction_block(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    let open = kw(Keyword::Transaction).parse_next(input)?;
+    let _ = cut_err(punct(Token::LBrace)).parse_next(input)?;
+    let body: Vec<Statement> =
+        separated(0.., transaction_item, punct(Token::Semicolon)).parse_next(input)?;
+    // An optional trailing `;` after the final effect (winnow's `separated` leaves it unconsumed).
+    let _ = opt(punct(Token::Semicolon)).parse_next(input)?;
+    let close = cut_err(punct(Token::RBrace)).parse_next(input)?;
+    Ok(Statement::Transaction {
+        body,
+        span: Span::new(open.start, close.end),
+    })
 }
 
 /// `PREVIEW <stmt>` / `COMMIT <stmt>` — the plan wrapper (RFD §6).

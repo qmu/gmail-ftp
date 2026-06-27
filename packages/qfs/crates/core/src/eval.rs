@@ -213,6 +213,16 @@ pub enum EvalError {
         /// A machine-facing description of why the driver could not lower the write.
         detail: String,
     },
+    /// A `TRANSACTION { … }` block (M6, ticket t62, decision G) contained an **irreversible**
+    /// effect. A transaction promises all-or-nothing rollback, so every effect inside MUST be
+    /// reversible — an irreversible one (a `REMOVE`, an irreversible `CALL`) is rejected here, at
+    /// plan time, *before* anything touches the world (the strongest safety posture; outside a
+    /// transaction the same effect would merely need an extra ack). Carries the offending effect's
+    /// secret-free label so the author (human or AI) can lift it OUT of the block.
+    IrreversibleInTransaction {
+        /// The offending effect's stable label (e.g. `REMOVE`, `CALL`).
+        effect: String,
+    },
 }
 
 impl EvalError {
@@ -226,6 +236,7 @@ impl EvalError {
             EvalError::UnroutedPath { .. } => "unrouted_path",
             EvalError::NonLiteralValues { .. } => "non_literal_values",
             EvalError::DriverWrite { .. } => "driver_write",
+            EvalError::IrreversibleInTransaction { .. } => "irreversible_in_transaction",
         }
     }
 }
@@ -373,10 +384,70 @@ impl<'r> Evaluator<'r> {
                 let inner = env.with(name, rel);
                 self.eval_inner(body, &inner)
             }
+            // A `TRANSACTION { … }` block (M6, t62): lower the body into ONE plan in commit-point
+            // (source) order, then enforce the reversible-only invariant. This is the parse/eval-
+            // time gate — no I/O, fully dry-runnable; an irreversible effect inside is a hard error.
+            Statement::Transaction { body, .. } => {
+                Ok(EvalValue::Plan(self.eval_transaction(body, env)?))
+            }
             // Server DDL desugars to `/server/...` effects in a later epic; here it
             // evaluates to an empty plan (no effect node to construct yet, ticket scope).
             Statement::Ddl(_) => Ok(EvalValue::Plan(Plan::pure())),
         }
+    }
+
+    /// Lower a `TRANSACTION { … }` block (M6, ticket t62, decision G) into ONE effect [`Plan`] and
+    /// enforce the **reversible-only** invariant. Each body statement is an effect (grammar-
+    /// enforced); its sub-plan is sequenced after the previous one with [`Plan::then`], so the
+    /// nodes carry a deterministic **commit-point ordering** (the block's source order) that
+    /// [`topo_order`](qfs_plan::topo_order) recovers for the all-or-nothing apply.
+    ///
+    /// The guard then walks every node: if any is inherently irreversible
+    /// ([`EffectKind::is_inherently_irreversible`] — `REMOVE` always) OR carries the per-node
+    /// [`EffectNode::irreversible`] flag (a driver/proc that declared a `CALL` irreversible at
+    /// plan time), the whole block is rejected with [`EvalError::IrreversibleInTransaction`] and
+    /// **zero** effects are applied — a transaction promises rollback, so it may hold no effect
+    /// that cannot be undone. This is *stricter* than the outside-transaction
+    /// [`IrreversibleGuard`](crate::IrreversibleGuard), which only requires an extra ack.
+    ///
+    /// # Errors
+    /// [`EvalError`] for any unresolvable/ill-typed body effect, or
+    /// [`EvalError::IrreversibleInTransaction`] if any effect inside is irreversible.
+    fn eval_transaction(&self, body: &[Statement], env: &Env) -> Result<Plan, EvalError> {
+        let mut plan = Plan::pure();
+        // Each member plan is built by its own `PlanBuilder` starting node ids at 0, so the ids
+        // would collide when combined. Shift every member into a fresh, contiguous id range before
+        // sequencing so the assembled DAG has unique ids (the `validate`/topo invariant holds).
+        let mut next_base: u32 = 0;
+        for stmt in body {
+            // Each member is an effect (the grammar admits nothing else); fold its plan in. A
+            // non-plan value would be a grammar/invariant break, surfaced structurally not by panic.
+            let member = match self.eval_inner(stmt, env)? {
+                EvalValue::Plan(p) => p,
+                EvalValue::Relation(_) => {
+                    return Err(EvalError::NonLiteralValues {
+                        detail: "a TRANSACTION body holds only effect statements".to_string(),
+                    })
+                }
+            };
+            let (member, used) = relabel_plan(member, next_base);
+            next_base += used;
+            // Sequence: `then` makes every later effect depend on the earlier ones, so the
+            // commit-point order is exactly the block's source order (the topo walk is total).
+            plan = plan.then(member);
+        }
+        // Reversible-only gate (decision G): fire on the inherent classification AND the per-node
+        // flag, so a driver that marks a `CALL` irreversible at plan time is caught too.
+        if let Some(node) = plan
+            .nodes()
+            .iter()
+            .find(|n| n.irreversible || n.kind.is_inherently_irreversible())
+        {
+            return Err(EvalError::IrreversibleInTransaction {
+                effect: node.kind.label().to_string(),
+            });
+        }
+        Ok(plan)
     }
 
     /// Evaluate a `LET` binding's value to its relation [`PlanSource`]. The grammar restricts
@@ -812,6 +883,22 @@ fn source_target(rel: &PlanSource) -> Target {
         PlanSource::SetOp { lhs, .. } | PlanSource::Join { lhs, .. } => source_target(lhs),
         PlanSource::Values { .. } => Target::new(DriverId::new(""), VfsPath::new("")),
     }
+}
+
+/// Shift every [`NodeId`] in `plan` up by `base`, returning the relabelled plan and the number of
+/// ids it consumed (its node count) so the next member can continue the contiguous range. Used to
+/// combine independently-built member plans inside a `TRANSACTION` block (each member's
+/// [`PlanBuilder`] restarts ids at 0, so they must be disjointified before sequencing).
+fn relabel_plan(mut plan: Plan, base: u32) -> (Plan, u32) {
+    let count = plan.nodes.len() as u32;
+    for node in &mut plan.nodes {
+        node.id = NodeId(node.id.index() + base);
+    }
+    for (parent, child) in &mut plan.deps {
+        *parent = NodeId(parent.index() + base);
+        *child = NodeId(child.index() + base);
+    }
+    (plan, count)
 }
 
 /// Render a segment list into a `/seg/seg` mount path string for the router.

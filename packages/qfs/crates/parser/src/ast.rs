@@ -63,12 +63,13 @@ where
 /// semantic phase (E2), never grammar (RFD §3).
 pub type Ident = String;
 
-/// The top-level statement sum type (RFD §3). **Closed core**: exactly these five
+/// The top-level statement sum type (RFD §3). **Closed core**: exactly these six
 /// forms. Not `#[non_exhaustive]` — the governance test locks this variant set so a
-/// later ticket cannot smuggle in a per-driver statement form. The fifth form,
-/// [`Statement::Let`], is the **deliberate** M6 functional-core addition (ticket t60):
-/// it is gated by exactly the same governance tripwire as the keyword freeze (the
-/// variant-count lock in `tests`), updated in step so the addition is reviewed.
+/// later ticket cannot smuggle in a per-driver statement form. The fifth and sixth forms,
+/// [`Statement::Let`] (ticket t60) and [`Statement::Transaction`] (ticket t62), are the
+/// **deliberate** M6 functional-core additions: each is gated by exactly the same governance
+/// tripwire as the keyword freeze (the variant-count lock in `tests`), updated in step so the
+/// addition is reviewed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Statement {
     /// `FROM <source> |> op |> op …` — a pure read pipeline.
@@ -98,6 +99,30 @@ pub enum Statement {
         value: Box<Statement>,
         /// The rest of the program, with `name` in scope.
         body: Box<Statement>,
+    },
+    /// `TRANSACTION { <effect> ; <effect> ; … }` — a reversible-only, all-or-nothing block
+    /// (M6 transactional core, ticket t62, decision G).
+    ///
+    /// The block groups effect statements into ONE atomic unit with a defined **commit-point
+    /// ordering** (source order): the effects apply all-or-nothing via the existing `qfs-txn`
+    /// envelope (single transactional source → ACID `BEGIN…COMMIT`/rollback; cross-source →
+    /// reverse-order saga compensation). Because a transaction promises rollback, every effect
+    /// inside **must be reversible** — an irreversible effect (a `REMOVE`, an irreversible `CALL`)
+    /// is a hard **eval-time error** (`EvalError::IrreversibleInTransaction`), not the milder
+    /// "needs an ack" of the outside-transaction case. The grammar restricts `body` to **effect**
+    /// statements only (no read pipeline, no nested `TRANSACTION`, no `LET`) so the block stays a
+    /// thin wrapper over existing [`EffectStmt`]s and adds NO new effect kind. Kept conservative
+    /// this slice (no nesting) so a later relaxation is non-breaking.
+    Transaction {
+        /// The effect statements in the block, in source (commit-point) order. Each is a
+        /// [`Statement::Effect`] (grammar-enforced).
+        body: Vec<Statement>,
+        /// Source span of the `TRANSACTION { … }` block.
+        #[serde(
+            serialize_with = "serialize_span",
+            deserialize_with = "deserialize_span"
+        )]
+        span: Span,
     },
 }
 

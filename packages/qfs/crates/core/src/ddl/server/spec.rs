@@ -170,6 +170,14 @@ pub fn normalize_spans(stmt: &mut Statement) {
             normalize_spans(value);
             normalize_spans(body);
         }
+        // A `TRANSACTION { … }` block (M6, t62): zero the block span and normalise every member,
+        // so a transaction-carrying body round-trips identically regardless of parse offset.
+        Statement::Transaction { body, span } => {
+            *span = ZERO;
+            for member in body {
+                normalize_spans(member);
+            }
+        }
     }
 }
 

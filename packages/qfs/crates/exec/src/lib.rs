@@ -191,8 +191,10 @@ fn run_oneshot_inner(
             renderer.rows(&rows, streams.out).map_err(io_err)?;
             Ok(ExitCode::Ok)
         }
-        // 5. Effect / DDL path: PREVIEW by default, COMMIT on demand.
-        Statement::Effect(_) | Statement::Ddl(_) => {
+        // 5. Effect / DDL / TRANSACTION path: PREVIEW by default, COMMIT on demand. A
+        // `TRANSACTION { … }` block (M6, t62) lowers to one effect plan (reversible-only,
+        // all-or-nothing), so it routes through the same plan/commit machinery as a plain effect.
+        Statement::Effect(_) | Statement::Ddl(_) | Statement::Transaction { .. } => {
             let plan = build_plan(inner, ctx.engine)?;
             if commit {
                 // The irreversible-effect gate (t37, RFD §6/§10). `qfs run … --commit` is a

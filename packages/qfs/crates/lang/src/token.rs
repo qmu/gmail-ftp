@@ -51,6 +51,14 @@ pub enum Token {
     LParen,
     /// `)`
     RParen,
+    /// `{` — opens a `TRANSACTION { … }` block (M6, ticket t62).
+    LBrace,
+    /// `}` — closes a `TRANSACTION { … }` block (M6, ticket t62).
+    RBrace,
+    /// `;` — separates effect statements inside a `TRANSACTION` block (M6, ticket t62). It is
+    /// **not** a general statement terminator (the program model is `;`-free, RFD §1.2); it is
+    /// structural punctuation that only the transaction grammar consumes.
+    Semicolon,
     /// `,`
     Comma,
     /// `.`

@@ -78,6 +78,12 @@ pub fn bind_params(stmt: &mut Statement, args: &QueryArgs) {
             bind_params(value, args);
             bind_params(body, args);
         }
+        // A `TRANSACTION { … }` block (M6, t62): bind params through every effect member.
+        Statement::Transaction { body, .. } => {
+            for member in body {
+                bind_params(member, args);
+            }
+        }
     }
 }
 
@@ -251,6 +257,12 @@ fn collect_stmt(stmt: &Statement, out: &mut std::collections::BTreeSet<String>) 
             collect_stmt(value, out);
             collect_stmt(body, out);
         }
+        // A `TRANSACTION { … }` block (M6, t62): collect referenced columns from every member.
+        Statement::Transaction { body, .. } => {
+            for member in body {
+                collect_stmt(member, out);
+            }
+        }
     }
 }
 
@@ -395,6 +407,12 @@ fn collect_src_paths_stmt(stmt: &Statement, out: &mut Vec<String>) {
         Statement::Let { value, body, .. } => {
             collect_src_paths_stmt(value, out);
             collect_src_paths_stmt(body, out);
+        }
+        // A `TRANSACTION { … }` block (M6, t62): collect source paths from every member.
+        Statement::Transaction { body, .. } => {
+            for member in body {
+                collect_src_paths_stmt(member, out);
+            }
         }
     }
 }

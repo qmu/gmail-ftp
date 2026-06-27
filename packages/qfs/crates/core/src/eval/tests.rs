@@ -543,3 +543,78 @@ fn shadowing_uses_the_innermost_binding() {
         "the inner /db/users binding (3 cols) shadows the outer /mail/inbox (2 cols)"
     );
 }
+
+// ---- TRANSACTION block (M6, ticket t62): reversible-only + commit-point ordering ----
+
+/// A transaction of two reversible effects lowers to ONE plan whose nodes carry a deterministic
+/// commit-point ordering — the block's source order, recovered by `topo_order`.
+#[test]
+fn transaction_of_reversible_effects_plans_with_source_order() {
+    let plan = eval(
+        "TRANSACTION { \
+           UPSERT INTO /db/users VALUES (1, 'a', true); \
+           INSERT INTO /db/users VALUES (2, 'b', false) \
+         }",
+    )
+    .unwrap()
+    .as_plan()
+    .cloned()
+    .unwrap();
+    assert_eq!(plan.nodes().len(), 2, "two effect nodes, one per member");
+    assert!(
+        !plan.is_irreversible(),
+        "an all-UPSERT/INSERT block is reversible"
+    );
+    plan.validate()
+        .expect("a sequenced transaction is a valid DAG");
+    // Commit-point ordering: the topo walk yields the members in source order (the first
+    // UPSERT before the second INSERT), because `then` made the second depend on the first.
+    let order = qfs_plan::topo_order(&plan).expect("acyclic");
+    let kinds: Vec<&qfs_plan::EffectKind> = order
+        .iter()
+        .map(|id| &plan.node(*id).unwrap().kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![&qfs_plan::EffectKind::Upsert, &qfs_plan::EffectKind::Insert],
+        "commit-point order is the block's source order"
+    );
+    assert_eq!(
+        plan.deps().len(),
+        1,
+        "the second effect depends on the first"
+    );
+}
+
+/// An irreversible effect (`REMOVE`) inside a transaction is rejected at EVAL time with the
+/// structured `IrreversibleInTransaction` error — before anything touches the world (the
+/// `PanicApplier` is never reached, proving zero effects applied / full purity).
+#[test]
+fn irreversible_remove_in_transaction_is_rejected_at_plan_time() {
+    let err = eval(
+        "TRANSACTION { \
+           UPSERT INTO /db/users VALUES (1, 'a', true); \
+           REMOVE /db/users WHERE id == 2 \
+         }",
+    )
+    .unwrap_err();
+    assert_eq!(err.code(), "irreversible_in_transaction");
+    let EvalError::IrreversibleInTransaction { effect } = err else {
+        panic!("expected IrreversibleInTransaction, got {err:?}")
+    };
+    assert_eq!(
+        effect, "REMOVE",
+        "the offending effect is named for recovery"
+    );
+}
+
+/// The reversible-only guard fires on the per-node `irreversible` flag too, not only the inherent
+/// `REMOVE` classification — but note the canonical irreversible `CALL mail.send` lives OUTSIDE a
+/// transaction (it is not an effect statement). A transaction of only reversible writes commits
+/// atomically; the same writes plus an irreversible follow-up keep that follow-up out of the block.
+#[test]
+fn empty_transaction_is_a_reversible_empty_plan() {
+    let plan = eval("TRANSACTION { }").unwrap().as_plan().cloned().unwrap();
+    assert!(plan.nodes().is_empty(), "an empty block has no effects");
+    assert!(!plan.is_irreversible());
+}

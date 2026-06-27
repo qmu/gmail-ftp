@@ -51,6 +51,13 @@ pub enum Keyword {
     Values,
     Returning,
     Call,
+    // -- Transactions (M6, ticket t62) --
+    // `TRANSACTION` is a *deliberate* addition to the frozen RFD §3 vocabulary — the second and
+    // last new keyword the whole roadmap permits (decision G; the first is `LET`, t60). It opens a
+    // reversible-only, all-or-nothing block (`TRANSACTION { … }`); an irreversible effect inside is
+    // a hard eval-time error. The freeze tests below are updated in step (38 → 39) precisely so this
+    // addition is reviewed, not smuggled in.
+    Transaction,
     // -- Codecs (RFD §3) --
     Decode,
     Encode,
@@ -103,6 +110,7 @@ impl Keyword {
             "VALUES" => Self::Values,
             "RETURNING" => Self::Returning,
             "CALL" => Self::Call,
+            "TRANSACTION" => Self::Transaction,
             "DECODE" => Self::Decode,
             "ENCODE" => Self::Encode,
             "PREVIEW" => Self::Preview,
@@ -148,6 +156,7 @@ impl Keyword {
             Self::Values => "VALUES",
             Self::Returning => "RETURNING",
             Self::Call => "CALL",
+            Self::Transaction => "TRANSACTION",
             Self::Decode => "DECODE",
             Self::Encode => "ENCODE",
             Self::Preview => "PREVIEW",
@@ -201,6 +210,8 @@ pub const KEYWORDS: &[&str] = &[
     "VALUES",
     "RETURNING",
     "CALL",
+    // Transactions (M6, ticket t62) — a deliberate vocabulary addition (decision G).
+    "TRANSACTION",
     // Codecs
     "DECODE",
     "ENCODE",
@@ -256,15 +267,18 @@ mod tests {
     /// Locks the exact frozen count. RFD §3 froze 38 reserved keywords; ticket t60
     /// deliberately added `LET` (decision H, the M6 functional core), taking the count to 39;
     /// ticket t73 (decision R) then deliberately *removed* `FROM` (the source position needs no
-    /// keyword — a leading `/path` is the source), taking it back to 38. A diff to this number is
-    /// the tripwire that a keyword was smuggled in or removed — editing it here is the *intended*
-    /// change-control event for the `FROM` removal.
+    /// keyword — a leading `/path` is the source), taking it back to 38; ticket t62 (decision G)
+    /// deliberately added `TRANSACTION` (the reversible-only block — the second and last new
+    /// keyword the roadmap permits), taking it to 39. A diff to this number is the tripwire that a
+    /// keyword was smuggled in or removed — editing it here is the *intended* change-control event
+    /// for the `TRANSACTION` addition.
     #[test]
     fn keyword_count_is_frozen() {
         assert_eq!(
             KEYWORDS.len(),
-            38,
-            "the closed-core keyword set is frozen at 38 entries (RFD §3 + t60 `LET` − t73 `FROM`)"
+            39,
+            "the closed-core keyword set is frozen at 39 entries \
+             (RFD §3 + t60 `LET` − t73 `FROM` + t62 `TRANSACTION`)"
         );
         // No duplicates in the fixture.
         let mut seen = std::collections::BTreeSet::new();
@@ -361,6 +375,7 @@ mod tests {
         Keyword::Values,
         Keyword::Returning,
         Keyword::Call,
+        Keyword::Transaction,
         Keyword::Decode,
         Keyword::Encode,
         Keyword::Preview,

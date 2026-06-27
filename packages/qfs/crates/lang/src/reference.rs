@@ -54,9 +54,18 @@ pub const fn grammar_ebnf() -> &'static str {
 program       = { binding } , statement ;
 binding       = \"LET\" , name , \"=\" , pipeline ;
 
-(* A statement is a pipeline (which may terminate in a write stage, decision Q) or the   *)
-(* source-less verb-leading literal write; an optional plan_op wraps either.              *)
-statement     = ( pipeline | effect_literal ) , [ plan_op ] ;
+(* A statement is a pipeline (which may terminate in a write stage, decision Q), the      *)
+(* source-less verb-leading literal write, or a TRANSACTION block (M6, ticket t62); an     *)
+(* optional plan_op wraps any of them.                                                    *)
+statement     = ( pipeline | effect_literal | transaction ) , [ plan_op ] ;
+
+(* ---- transactions (M6, ticket t62, decision G) ---- *)
+(* A reversible-only, all-or-nothing block: a `;`-separated sequence of effect            *)
+(* statements committed in source order. Every effect inside MUST be reversible —          *)
+(* an irreversible effect (REMOVE, an irreversible CALL) is a hard eval-time error, never  *)
+(* a needs-an-ack prompt — so the block can always roll back. No nesting, no LET inside.    *)
+transaction   = \"TRANSACTION\" , \"{\" , [ effect_stmt , { \";\" , effect_stmt } , [ \";\" ] ] , \"}\" ;
+effect_stmt   = effect_literal | ( pipeline , effect_stage ) ;
 
 (* A pipeline is a source threaded through |> stages. Decision R (t73): the source     *)
 (* position needs no `FROM` — a leading `/path` (or a LET-bound name) IS the source.   *)
@@ -156,8 +165,9 @@ mod tests {
         // keyword smuggled in anywhere fails here too).
         assert_eq!(
             RESERVED_KEYWORDS.len(),
-            38,
-            "the closed-core reserved-word set is frozen at 38 entries (RFD §3 + t60 `LET` − t73 `FROM`)"
+            39,
+            "the closed-core reserved-word set is frozen at 39 entries \
+             (RFD §3 + t60 `LET` − t73 `FROM` + t62 `TRANSACTION`)"
         );
     }
 
