@@ -9,14 +9,26 @@ export default defineConfig({
   title: 'qfs',
   description: 'One query language for every service you use — mail, databases, GitHub, Slack, files, git, the cloud.',
   ignoreDeadLinks: true,
+  // Allow the dev server to be reached through the cloudflared tunnel hostname.
+  vite: {
+    server: {
+      allowedHosts: ['docs-qfs.qmu.dev'],
+    },
+  },
   markdown: {
     // Register the custom qfs highlighter so ```qfs blocks are syntax-highlighted.
     languages: [qfsGrammar as any],
   },
   themeConfig: {
+    // Show H2 + H3 in the right-hand "On this page" outline, so the roadmap's
+    // `## Part N` headers appear with their `### N.M` subsections nested under them
+    // (the default level-2-only outline hid the Part groupings).
+    outline: { level: [2, 3], label: 'On this page' },
     nav: [
       { text: 'Get started', link: '/guide/getting-started' },
       { text: 'Cookbook', link: '/cookbook/' },
+      { text: 'Roadmap', link: '/roadmap' },
+      { text: 'Query cookbook', link: '/query-cookbook' },
       {
         text: 'Reference',
         items: [
@@ -84,6 +96,14 @@ export default defineConfig({
         text: 'Security',
         collapsed: true,
         items: [{ text: 'Threat model', link: '/security/threat-model' }],
+      },
+      {
+        text: 'Roadmap',
+        collapsed: true,
+        items: [
+          { text: 'Where qfs is going', link: '/roadmap' },
+          { text: 'Query cookbook', link: '/query-cookbook' },
+        ],
       },
     ],
     socialLinks: [{ icon: 'github', link: 'https://github.com/qmu/qfs' }],
