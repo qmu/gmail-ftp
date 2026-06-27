@@ -11,12 +11,16 @@
 //! but NEVER qfs-runtime (the apply is the injected [`crate::McpEngine::apply`] closure).
 //!
 //! ## Auth seam (t50) — explicit, untouched by tool logic
-//! The endpoint is UNAUTHENTICATED this milestone and rides the listener's localhost-only default
-//! bind. The [`McpAuthorizer`] trait is the EXPLICIT middleware seam where t50 slots bearer/OAuth
-//! in FRONT of the tool surface: the binding consults `authorize(req)` before any dispatch, and a
-//! `Deny` short-circuits to a JSON-RPC error with NO tool ever invoked. The default
-//! [`AllowLocalhost`] authorizer permits every request (honest: there is no auth yet) — swapping it
-//! for a real one needs no change to a single tool handler.
+//! The [`McpAuthorizer`] trait is the EXPLICIT middleware seam where bearer/OAuth slots in FRONT of
+//! the tool surface: the binding consults `authorize(req)` before any dispatch, and a [`AuthDecision::Deny`]
+//! short-circuits to a `401` with NO tool ever invoked. As of t50 the `qfs` binary injects a real
+//! bearer-verifying authorizer ([`McpBinding::with_authorizer`]) that validates the
+//! `Authorization: Bearer <jwt>` access token (signature + `iss`/`aud`/`exp`) and, on failure,
+//! returns a `WWW-Authenticate: Bearer …` challenge (RFC 9728 — pointing the client at the
+//! protected-resource metadata so it can discover the AS and authorize). The default
+//! [`AllowLocalhost`] authorizer (allow-all, localhost-only) is retained for the inert posture when
+//! no AS is configured; it touches no tool handler either way. The authorizer NEVER logs the token
+//! (the `Authorization` header is in `qfs_http_core::SENSITIVE_HEADERS`).
 
 use std::sync::Arc;
 
@@ -40,8 +44,30 @@ pub const MAX_MCP_BODY_BYTES: usize = 256 * 1024; // 256 KiB
 pub enum AuthDecision {
     /// The request may proceed to tool dispatch.
     Allow,
-    /// The request is refused; the carried reason is surfaced (secret-free) to the client.
-    Deny(String),
+    /// The request is refused (a `401`). Carries a secret-free `reason` (surfaced in the JSON-RPC
+    /// error message) and an optional `challenge` — the verbatim `WWW-Authenticate` header value the
+    /// binding attaches so a spec-compliant client re-discovers the AS (RFC 9728) and re-authorizes.
+    /// The reason NEVER carries the token / a claim value (RFD §10).
+    Deny {
+        /// A secret-free reason (e.g. "missing bearer token", "invalid or expired token").
+        reason: String,
+        /// The `WWW-Authenticate` header value to return (e.g.
+        /// `Bearer resource_metadata="https://…/.well-known/oauth-protected-resource"`), or `None`
+        /// to omit the challenge.
+        challenge: Option<String>,
+    },
+}
+
+impl AuthDecision {
+    /// A convenience constructor for a deny with no `WWW-Authenticate` challenge (e.g. a stub
+    /// authorizer in tests).
+    #[must_use]
+    pub fn deny(reason: impl Into<String>) -> Self {
+        AuthDecision::Deny {
+            reason: reason.into(),
+            challenge: None,
+        }
+    }
 }
 
 /// The middleware seam (t50) where authentication slots in FRONT of the tool surface. The binding
@@ -110,13 +136,19 @@ impl McpBinding {
                 ErrorObject::new(CODE_INVALID_REQUEST, "MCP requires application/json"),
             );
         }
-        // 3. The auth seam (t50): refuse BEFORE any parse/dispatch. No tool runs on a deny.
-        if let AuthDecision::Deny(reason) = self.authorizer.authorize(req) {
+        // 3. The auth seam (t50): refuse BEFORE any parse/dispatch. No tool runs on a deny. The
+        //    `WWW-Authenticate` challenge (when supplied) points the client at the AS discovery
+        //    document so it can re-authorize. The token is never logged (the reason is secret-free).
+        if let AuthDecision::Deny { reason, challenge } = self.authorizer.authorize(req) {
             tracing::warn!(target: "qfs::mcp", "mcp request refused by authorizer");
-            return jsonrpc_error_response(
+            let mut resp = jsonrpc_error_response(
                 401,
                 ErrorObject::new(CODE_INVALID_REQUEST, format!("unauthorized: {reason}")),
             );
+            if let Some(www_authenticate) = challenge {
+                resp = resp.header("WWW-Authenticate", www_authenticate);
+            }
+            return resp;
         }
         // 4. Bounded body (RFD §6). An over-large payload is refused before parse.
         let body = req.body.as_deref().unwrap_or(&[]);
@@ -258,7 +290,7 @@ mod tests {
         struct DenyAll;
         impl McpAuthorizer for DenyAll {
             fn authorize(&self, _req: &HttpRequest) -> AuthDecision {
-                AuthDecision::Deny("no token".to_string())
+                AuthDecision::deny("no token")
             }
         }
         let b = McpBinding::with_authorizer(Arc::new(StubEngine), Arc::new(DenyAll));
@@ -266,5 +298,34 @@ mod tests {
             "jsonrpc":"2.0","id":1,"method":"tools/list","params":{}
         })));
         assert_eq!(resp.status, 401);
+    }
+
+    #[test]
+    fn a_deny_with_a_challenge_attaches_www_authenticate() {
+        struct DenyWithChallenge;
+        impl McpAuthorizer for DenyWithChallenge {
+            fn authorize(&self, _req: &HttpRequest) -> AuthDecision {
+                AuthDecision::Deny {
+                    reason: "missing bearer token".to_string(),
+                    challenge: Some(
+                        "Bearer resource_metadata=\"https://qfs.example/.well-known/oauth-protected-resource\""
+                            .to_string(),
+                    ),
+                }
+            }
+        }
+        let b = McpBinding::with_authorizer(Arc::new(StubEngine), Arc::new(DenyWithChallenge));
+        let resp = b.handle(&post_json(json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/list","params":{}
+        })));
+        assert_eq!(resp.status, 401);
+        let www = resp
+            .header_value("WWW-Authenticate")
+            .expect("challenge header");
+        assert!(www.starts_with("Bearer "));
+        assert!(
+            www.contains("resource_metadata="),
+            "the challenge points at the protected-resource metadata: {www}"
+        );
     }
 }

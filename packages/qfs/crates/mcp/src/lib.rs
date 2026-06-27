@@ -26,11 +26,15 @@
 //! without ack is REFUSED; `connections` returns names/metadata only, redacted, never secrets.
 //! Engine errors are surfaced secret-free (no token/path-secret/stack leak).
 //!
-//! ## Auth gap, stated honestly
-//! The endpoint is UNAUTHENTICATED this milestone (bearer/OAuth is **t50**); it defaults to the
-//! listener's localhost-only bind. The MCP *tool surface* exists, but a remote MCP connection /
-//! "Claude can connect" does NOT work yet — that needs t48–t50. [`McpAuthorizer`] is the explicit
-//! seam where t50 slots auth in front of the tools without touching a single handler.
+//! ## Auth (t50 — the endpoint is gated)
+//! [`McpAuthorizer`] is the explicit seam in FRONT of the tool surface. As of t50 the `qfs` binary
+//! injects a bearer-validating authorizer that verifies the `Authorization: Bearer <jwt>` access
+//! token (signature + `iss`/`aud`/`exp`, against the AS's JWKS) and, on a missing/invalid/expired
+//! token, returns a `401` with a `WWW-Authenticate: Bearer resource_metadata="…"` challenge (RFC
+//! 9728) so a client discovers the AS and authorizes — only a verified token reaches a tool. The
+//! authorizer slots in WITHOUT touching a single handler; the default allow-all [`AllowLocalhost`]
+//! is retained only for the inert, localhost-only posture when no AS is configured. The endpoint
+//! itself never logs the token (the `Authorization` header is in `qfs_http_core::SENSITIVE_HEADERS`).
 //!
 //! ## Topology (the leaf guard)
 //! qfs-mcp depends on qfs-server (the policy gate) + qfs-exec (the plan/preview) — exactly the

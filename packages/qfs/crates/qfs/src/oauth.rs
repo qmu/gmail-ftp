@@ -7,11 +7,15 @@
 //! listener via the SAME `Fallback` seam t47 uses for `POST /mcp`.
 //!
 //! ## What is live (honesty)
-//! The AS now ISSUES tokens via the auth-code + PKCE (S256) grant: a human authenticates at
-//! `/authorize` (t45 password verify → t46 session), consents, receives a short-lived single-use
-//! authorization code, and the client exchanges it at `/token` for a signed ES256 access token (+ a
-//! refresh-token handle stored hashed). The MCP endpoint is **still UNAUTHENTICATED** — guarding it
-//! with the issued bearer token is **t50** (this ticket mints; t50 enforces).
+//! The AS ISSUES tokens via the auth-code + PKCE (S256) grant: a human authenticates at `/authorize`
+//! (t45 password verify → t46 session), consents, receives a short-lived single-use authorization
+//! code, and the client exchanges it at `/token` for a signed ES256 access token (+ a refresh-token
+//! handle stored hashed). As of **t50** the token is also CONSUMED: `/token` additionally serves the
+//! `grant_type=refresh_token` grant (single-use rotation — mint a fresh access token + a new refresh
+//! handle, burn the old; a replay of a rotated handle is `invalid_grant`), and the binary lifts the
+//! [`OauthRoutes::mcp_verification`] material (JWKS + issuer/audience + PRM URL) to bearer-gate the
+//! `POST /mcp` endpoint (a missing/invalid/expired token → `401` + `WWW-Authenticate`). So the full
+//! discover → register → auth-code+PKCE → bearer-gated-MCP handshake is real end-to-end.
 //!
 //! ## Security (RFD §10)
 //! - **PKCE S256 is mandatory**; `plain` is refused; the verifier is checked constant-time at `/token`.
@@ -36,11 +40,12 @@ use qfs_http::{HttpRequest, HttpResponse, Method};
 use qfs_identity::{IdentityStore, PROVIDER_LOCAL};
 use qfs_oauth::{
     access_token_claims, error_json, redirect_uri_is_registered, sign_jws,
-    validate_authorize_request, validate_registration, validate_token_request, verify_jws,
-    verify_pkce_s256, AuthorizationServerMetadata, AuthorizeRequest, ClientRegistrationRequest,
-    ClientRegistrationResponse, Jwk, Jwks, OAuthFlowError, ProtectedResourceMetadata, SigningKey,
-    TokenRequest, TokenResponse, ALG_ES256, AUTHORIZE_PATH, PKCE_METHOD_S256, REGISTER_PATH,
-    TOKEN_PATH,
+    validate_authorize_request, validate_refresh_request, validate_registration,
+    validate_token_request, verify_jws, verify_pkce_s256, AuthorizationServerMetadata,
+    AuthorizeRequest, ClientRegistrationRequest, ClientRegistrationResponse, Jwk, Jwks,
+    OAuthFlowError, ProtectedResourceMetadata, RefreshTokenRequest, SigningKey, TokenRequest,
+    TokenResponse, ALG_ES256, AUTHORIZE_PATH, GRANT_AUTHORIZATION_CODE, GRANT_REFRESH_TOKEN,
+    PKCE_METHOD_S256, REGISTER_PATH, TOKEN_PATH,
 };
 use qfs_secrets::Secret;
 use qfs_session::{
@@ -83,6 +88,26 @@ pub struct OauthRoutes {
     asm: Vec<u8>,
     jwks: Vec<u8>,
     flow: Option<FlowState>,
+    /// The material the binary's MCP middleware needs to validate bearer access tokens (t50): the
+    /// published JWKS + the expected issuer/audience + the PRM URL the `401` challenge points at.
+    /// Present whenever the signing key + discovery documents are ready (independent of the live flow
+    /// stores) — so a server that can VERIFY tokens can gate `/mcp` even if its flow stores are down.
+    verification: McpVerification,
+}
+
+/// The bearer-validation material the binary lifts out of the booted AS to build the MCP authorizer
+/// (t50). Carries only PUBLIC key material (the JWKS) + the issuer/audience/PRM strings — no signing
+/// key, no secret.
+#[derive(Clone)]
+pub struct McpVerification {
+    /// The published JWKS the access-token signature is verified against.
+    pub jwks: Jwks,
+    /// The expected access-token issuer (the AS origin; proxy-aware via `QFS_OAUTH_ISSUER`).
+    pub issuer: String,
+    /// The expected access-token audience (the MCP resource URL `issuer + /mcp`).
+    pub audience: String,
+    /// The Protected-Resource-Metadata URL the `WWW-Authenticate` challenge points a client at.
+    pub prm_url: String,
 }
 
 /// The live authorization-code + PKCE flow state: the retained ES256 signing key (to mint tokens) +
@@ -106,6 +131,14 @@ struct FlowState {
 }
 
 impl OauthRoutes {
+    /// The bearer-validation material the serve composition root uses to build the MCP authorizer
+    /// (t50) — the published JWKS + the expected issuer/audience + the PRM URL for the `401`
+    /// challenge. Always available once the AS booted (the signing key + discovery rendered).
+    #[must_use]
+    pub fn mcp_verification(&self) -> &McpVerification {
+        &self.verification
+    }
+
     /// Serve an OAuth route if `req` matches: the three GET discovery routes (always), and — when the
     /// flow stores are live — `POST /register`, `GET`/`POST /authorize`, and `POST /token`. Returns
     /// `None` (falls through to the next handler / 404) for anything else.
@@ -278,11 +311,22 @@ impl FlowState {
         resp
     }
 
-    /// `POST /token` — exchange a single-use authorization code (verified against its bound client +
-    /// redirect + PKCE verifier) for a signed ES256 access token + a hashed refresh handle.
+    /// `POST /token` — the token endpoint, dispatched on `grant_type`: the auth-code exchange
+    /// ([`handle_authorization_code`](Self::handle_authorization_code)) OR the refresh-token grant
+    /// ([`handle_refresh`](Self::handle_refresh), t50). An unknown grant is `unsupported_grant_type`.
     fn handle_token(&self, req: &HttpRequest) -> HttpResponse {
         let form = parse_form(&req.body);
-        let treq = token_request_from(&form);
+        match form.get("grant_type").map(String::as_str).unwrap_or("") {
+            GRANT_AUTHORIZATION_CODE => self.handle_authorization_code(&form),
+            GRANT_REFRESH_TOKEN => self.handle_refresh(&form),
+            _ => token_error(400, OAuthFlowError::UnsupportedGrantType),
+        }
+    }
+
+    /// The authorization-code exchange: verify a single-use code (against its bound client + redirect
+    /// + PKCE verifier) and mint a signed ES256 access token + a (first-issue) hashed refresh handle.
+    fn handle_authorization_code(&self, form: &BTreeMap<String, String>) -> HttpResponse {
+        let treq = token_request_from(form);
         if let Err(e) = validate_token_request(&treq) {
             return token_error(400, e);
         }
@@ -325,6 +369,60 @@ impl FlowState {
             &redeemed.client_id,
             &redeemed.scope,
             REFRESH_TTL_SECS,
+        );
+        let resp = TokenResponse::bearer(access, ACCESS_TTL_SECS, Some(refresh), redeemed.scope);
+        match serde_json::to_vec(&resp) {
+            Ok(body) => json_response(200, body).with_header("Cache-Control", "no-store"),
+            Err(_) => token_error(500, OAuthFlowError::ServerError),
+        }
+    }
+
+    /// The **refresh-token grant** (t50, OAuth 2.1 §4.3 with refresh-token ROTATION): redeem the
+    /// presented refresh handle by its HASH, single-use BURN it (a replay of a rotated/stale handle
+    /// finds nothing → `invalid_grant`), mint a fresh access token, and issue a NEW refresh handle
+    /// (recording `rotated_from` for lineage). Only stored hashes are compared — the plaintext handle
+    /// exists only in the response that delivers it. The handle is never logged.
+    fn handle_refresh(&self, form: &BTreeMap<String, String>) -> HttpResponse {
+        let rreq = refresh_request_from(form);
+        if let Err(e) = validate_refresh_request(&rreq) {
+            return token_error(400, e);
+        }
+        // Hashed lookup + single-use burn (rotation). An unknown/expired/already-rotated handle is an
+        // `invalid_grant` — the replay of a leaked-but-rotated handle is rejected here.
+        let old_hash = token_hash(&rreq.refresh_token);
+        let redeemed = match self.clients.take_refresh(&old_hash) {
+            Ok(Some(r)) => r,
+            Ok(None) => return token_error(400, OAuthFlowError::InvalidGrant),
+            Err(_) => return token_error(500, OAuthFlowError::ServerError),
+        };
+        // Re-bind: the handle must have been issued to THIS client (defense in depth).
+        if redeemed.client_id != rreq.client_id {
+            return token_error(400, OAuthFlowError::InvalidGrant);
+        }
+        // Mint the fresh access token over the handle's bound user + scope.
+        let now = now_unix();
+        let claims = access_token_claims(
+            &self.issuer,
+            &self.resource,
+            redeemed.user_id,
+            &redeemed.scope,
+            &redeemed.client_id,
+            now,
+            ACCESS_TTL_SECS,
+        );
+        let access = match sign_jws(&claims, &self.signing_key) {
+            Ok(t) => t,
+            Err(_) => return token_error(500, OAuthFlowError::ServerError),
+        };
+        // Rotate: issue a NEW refresh handle (stored hashed) recording the prior handle's hash.
+        let (refresh, refresh_hash) = random_opaque_with_hash();
+        let _ = self.clients.insert_refresh_rotated(
+            &refresh_hash,
+            redeemed.user_id,
+            &redeemed.client_id,
+            &redeemed.scope,
+            REFRESH_TTL_SECS,
+            &old_hash,
         );
         let resp = TokenResponse::bearer(access, ACCESS_TTL_SECS, Some(refresh), redeemed.scope);
         match serde_json::to_vec(&resp) {
@@ -484,6 +582,15 @@ fn build_routes_from_store(store: &OauthKeyStore, issuer: &str) -> Result<OauthR
     let jwks = published_jwks(store)?;
     let discovery = build_discovery(issuer, &jwks)?;
 
+    // The bearer-validation material (t50): the resource server can VERIFY tokens as soon as the
+    // JWKS + issuer are known, independently of whether the live flow stores opened.
+    let verification = McpVerification {
+        jwks,
+        issuer: issuer.to_string(),
+        audience: format!("{issuer}{}", qfs_mcp::MCP_PATH),
+        prm_url: format!("{issuer}{PRM_PATH}"),
+    };
+
     let flow = match build_flow(issuer, key) {
         Ok(f) => Some(f),
         Err(e) => {
@@ -496,6 +603,7 @@ fn build_routes_from_store(store: &OauthKeyStore, issuer: &str) -> Result<OauthR
         asm: discovery.asm,
         jwks: discovery.jwks,
         flow,
+        verification,
     })
 }
 
@@ -692,6 +800,16 @@ fn token_request_from(map: &BTreeMap<String, String>) -> TokenRequest {
         redirect_uri: get("redirect_uri"),
         client_id: get("client_id"),
         code_verifier: get("code_verifier"),
+    }
+}
+
+/// Extract a [`RefreshTokenRequest`] from the POST form map (the refresh-token grant, t50).
+fn refresh_request_from(map: &BTreeMap<String, String>) -> RefreshTokenRequest {
+    let get = |k: &str| map.get(k).cloned().unwrap_or_default();
+    RefreshTokenRequest {
+        grant_type: get("grant_type"),
+        refresh_token: get("refresh_token"),
+        client_id: get("client_id"),
     }
 }
 
@@ -1053,6 +1171,211 @@ mod tests {
         assert_eq!(replay.status, 400);
         let replay_json: serde_json::Value = serde_json::from_slice(&replay.body).unwrap();
         assert_eq!(replay_json["error"], "invalid_grant");
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    /// Run register → authorize (sign-in) → token over `routes` for `email`/`password`, returning
+    /// `(client_id, access_token, refresh_token)`. Factors the happy path so the refresh + MCP-gating
+    /// tests can start from a freshly minted token pair.
+    fn run_to_token(routes: &OauthRoutes, email: &str, password: &str) -> (String, String, String) {
+        let reg = get(
+            routes,
+            &HttpRequest {
+                method: Method::Post,
+                path: REGISTER_PATH.to_string(),
+                query: BTreeMap::new(),
+                headers: BTreeMap::new(),
+                body: br#"{"redirect_uris":["https://app.example/cb"]}"#.to_vec(),
+            },
+        );
+        let client_id = serde_json::from_slice::<serde_json::Value>(&reg.body).unwrap()
+            ["client_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let verifier = "a-high-entropy-pkce-verifier-0123456789-abcdefghijklmnop";
+        let challenge = pkce_challenge_s256(verifier);
+        let form = format!(
+            "response_type=code&client_id={cid}&redirect_uri={ru}&scope=mcp%3Aread&state=st\
+             &code_challenge={ch}&code_challenge_method=S256&email={em}&password={pw}&decision=approve",
+            cid = client_id,
+            ru = "https%3A%2F%2Fapp.example%2Fcb",
+            ch = challenge,
+            em = urlencode(email),
+            pw = urlencode(password),
+        );
+        let authz = get(
+            routes,
+            &HttpRequest {
+                method: Method::Post,
+                path: AUTHORIZE_PATH.to_string(),
+                query: BTreeMap::new(),
+                headers: BTreeMap::new(),
+                body: form.into_bytes(),
+            },
+        );
+        let location = header(&authz, "Location").unwrap();
+        let code = location
+            .split(['?', '&'])
+            .find_map(|kv| kv.strip_prefix("code="))
+            .unwrap()
+            .to_string();
+        let token_form = format!(
+            "grant_type=authorization_code&code={code}&redirect_uri={ru}&client_id={cid}&code_verifier={ver}",
+            ru = "https%3A%2F%2Fapp.example%2Fcb",
+            cid = client_id,
+            ver = verifier,
+        );
+        let tok = get(
+            routes,
+            &HttpRequest {
+                method: Method::Post,
+                path: TOKEN_PATH.to_string(),
+                query: BTreeMap::new(),
+                headers: BTreeMap::new(),
+                body: token_form.into_bytes(),
+            },
+        );
+        assert_eq!(tok.status, 200, "token issued: {}", tok.body_text());
+        let tj: serde_json::Value = serde_json::from_slice(&tok.body).unwrap();
+        (
+            client_id,
+            tj["access_token"].as_str().unwrap().to_string(),
+            tj["refresh_token"].as_str().unwrap().to_string(),
+        )
+    }
+
+    fn token_post(routes: &OauthRoutes, form: String) -> HttpResponse {
+        get(
+            routes,
+            &HttpRequest {
+                method: Method::Post,
+                path: TOKEN_PATH.to_string(),
+                query: BTreeMap::new(),
+                headers: BTreeMap::new(),
+                body: form.into_bytes(),
+            },
+        )
+    }
+
+    #[test]
+    fn refresh_grant_rotates_the_handle_and_mints_a_fresh_access_token() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = point_config_home(dir.path());
+        let (routes, _uid) = routes_with_user(&path, "ref@x.io", "password1234");
+        let (client_id, _access, refresh) = run_to_token(&routes, "ref@x.io", "password1234");
+
+        // Exchange the refresh handle for a new access token + a ROTATED refresh handle.
+        let resp = token_post(
+            &routes,
+            format!(
+                "grant_type=refresh_token&refresh_token={r}&client_id={c}",
+                r = refresh,
+                c = client_id
+            ),
+        );
+        assert_eq!(resp.status, 200, "refresh minted: {}", resp.body_text());
+        let rj: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(rj["token_type"], "Bearer");
+        let new_access = rj["access_token"].as_str().unwrap();
+        let new_refresh = rj["refresh_token"].as_str().unwrap();
+        assert_ne!(new_refresh, refresh, "the refresh handle was rotated");
+
+        // The freshly minted access token verifies against the JWKS and binds the user/audience.
+        let jwks: Jwks =
+            serde_json::from_slice(&get(&routes, &HttpRequest::new(Method::Get, JWKS_PATH)).body)
+                .unwrap();
+        let claims = verify_jws(new_access, &jwks).unwrap();
+        assert_eq!(claims["aud"], "http://localhost:8787/mcp");
+        assert_eq!(claims["scope"], "mcp:read");
+
+        // The NEW refresh handle works (rotation chain continues).
+        let again = token_post(
+            &routes,
+            format!(
+                "grant_type=refresh_token&refresh_token={r}&client_id={c}",
+                r = new_refresh,
+                c = client_id
+            ),
+        );
+        assert_eq!(again.status, 200, "the rotated handle is usable");
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn a_reused_refresh_handle_is_rejected_invalid_grant() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = point_config_home(dir.path());
+        let (routes, _uid) = routes_with_user(&path, "reuse@x.io", "password1234");
+        let (client_id, _access, refresh) = run_to_token(&routes, "reuse@x.io", "password1234");
+
+        // First use rotates (burns) the handle.
+        let first = token_post(
+            &routes,
+            format!("grant_type=refresh_token&refresh_token={refresh}&client_id={client_id}"),
+        );
+        assert_eq!(first.status, 200);
+
+        // Replaying the SAME (now-rotated) handle is rejected — single-use.
+        let replay = token_post(
+            &routes,
+            format!("grant_type=refresh_token&refresh_token={refresh}&client_id={client_id}"),
+        );
+        assert_eq!(replay.status, 400);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&replay.body).unwrap()["error"],
+            "invalid_grant"
+        );
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn an_unknown_grant_type_is_unsupported() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = point_config_home(dir.path());
+        let (routes, _uid) = routes_with_user(&path, "g@x.io", "password1234");
+        let resp = token_post(&routes, "grant_type=client_credentials".to_string());
+        assert_eq!(resp.status, 400);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&resp.body).unwrap()["error"],
+            "unsupported_grant_type"
+        );
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn the_minted_access_token_gates_the_mcp_endpoint_end_to_end() {
+        use qfs_oauth::verify_access_token;
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = point_config_home(dir.path());
+        let (routes, uid) = routes_with_user(&path, "mcp@x.io", "password1234");
+        let (_client_id, access, _refresh) = run_to_token(&routes, "mcp@x.io", "password1234");
+
+        // The bearer-validation material the binary lifts to gate /mcp.
+        let v = routes.mcp_verification();
+        assert_eq!(v.issuer, "http://localhost:8787");
+        assert_eq!(v.audience, "http://localhost:8787/mcp");
+        assert!(v.prm_url.ends_with("/.well-known/oauth-protected-resource"));
+
+        // The freshly minted token verifies through the SAME pure primitive the authorizer uses.
+        let now = now_unix();
+        let verified = verify_access_token(&access, &v.jwks, &v.issuer, &v.audience, now)
+            .expect("valid token");
+        assert_eq!(verified.subject, uid.to_string());
+
+        // A token for a DIFFERENT audience is rejected (audience-confusion guard).
+        assert!(verify_access_token(
+            &access,
+            &v.jwks,
+            &v.issuer,
+            "http://localhost:8787/other",
+            now
+        )
+        .is_err());
         std::env::remove_var("XDG_CONFIG_HOME");
     }
 

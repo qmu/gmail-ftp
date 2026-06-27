@@ -106,23 +106,45 @@ pub fn run_serve(config: &Path) -> i32 {
     let wt_triggers = wt_binding.triggers_handle();
     let wt_audit = Arc::new(qfs_watchtower::AuditSink::new());
 
-    // t47 MCP composition: build the MCP serving binding (qfs-mcp, the MCP sibling of
-    // qfs-http/qfs-cron/qfs-watchtower) over the injected ServeMcpEngine, and compose its pure
-    // `POST /mcp` handler into the qfs-http listener via the SAME Fallback seam the watchtower
-    // webhook ingest uses — so qfs-mcp serves no HTTP itself and needs no tokio. The endpoint is
-    // UNAUTHENTICATED this milestone (auth is t50) and rides the listener's localhost-only default
-    // bind. The combined fallback tries the MCP path first, then the watchtower ingest, then 404.
-    let mcp_engine: Arc<dyn qfs_mcp::McpEngine> =
-        Arc::new(crate::mcp::ServeMcpEngine::new(Arc::clone(&engine)));
-    let mcp_binding = Arc::new(qfs_mcp::McpBinding::new(mcp_engine));
-
     // t48 OAuth-AS composition: load/generate the active ES256 signing key over the System DB
     // (unlocked via QFS_PASSPHRASE) and pre-render the three public discovery documents
     // (`/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`,
-    // `/jwks.json`) for the listener's issuer. Best-effort + INERT this milestone — no tokens are
-    // issued (t49/t50) and no endpoint is gated; without a passphrase / System DB the routes are
-    // simply not served. The handler is composed into the SAME Fallback seam as `POST /mcp`.
+    // `/jwks.json`) for the listener's issuer. As of t49 it also serves the live auth-code + PKCE
+    // flow + token endpoint; as of t50 it yields the bearer-validation material that gates `/mcp`.
+    // Without a passphrase / System DB the routes are simply not served. The handler is composed into
+    // the SAME Fallback seam as `POST /mcp`.
     let oauth_routes = crate::oauth::boot_oauth(addr);
+
+    // t47/t50 MCP composition: build the MCP serving binding (qfs-mcp, the MCP sibling of
+    // qfs-http/qfs-cron/qfs-watchtower) over the injected ServeMcpEngine, and compose its pure
+    // `POST /mcp` handler into the qfs-http listener via the SAME Fallback seam the watchtower
+    // webhook ingest uses — so qfs-mcp serves no HTTP itself and needs no tokio. t50: when the OAuth
+    // AS booted, the endpoint is GUARDED by a bearer-validating authorizer (verify the
+    // `Authorization: Bearer <jwt>` access token against the JWKS + iss/aud/exp; a missing/invalid/
+    // expired token is a 401 with a `WWW-Authenticate: Bearer` challenge pointing at the PRM). When
+    // the AS is NOT configured (no passphrase / System DB) the endpoint falls back to the inert
+    // allow-all, localhost-only posture (no tokens can be minted OR verified without the AS). The
+    // combined fallback tries the OAuth routes, then the MCP path, then the watchtower ingest, then 404.
+    let mcp_engine: Arc<dyn qfs_mcp::McpEngine> =
+        Arc::new(crate::mcp::ServeMcpEngine::new(Arc::clone(&engine)));
+    let mcp_binding = Arc::new(match &oauth_routes {
+        Some(routes) => {
+            let v = routes.mcp_verification();
+            let authorizer: Arc<dyn qfs_mcp::McpAuthorizer> =
+                Arc::new(crate::mcp::BearerAuthorizer::new(
+                    v.jwks.clone(),
+                    v.issuer.clone(),
+                    v.audience.clone(),
+                    &v.prm_url,
+                ));
+            tracing::info!(target: "qfs::serve", issuer = %v.issuer, audience = %v.audience, "t50 MCP endpoint is bearer-gated (Authorization: Bearer required; 401 + WWW-Authenticate otherwise)");
+            qfs_mcp::McpBinding::with_authorizer(mcp_engine, authorizer)
+        }
+        None => {
+            tracing::warn!(target: "qfs::serve", "t50 MCP endpoint UNAUTHENTICATED (no OAuth AS: set QFS_PASSPHRASE + System DB to enable bearer gating); relying on the localhost-only bind");
+            qfs_mcp::McpBinding::new(mcp_engine)
+        }
+    });
 
     let combined_fallback: qfs_http::Fallback = {
         let mcp = Arc::clone(&mcp_binding);

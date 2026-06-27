@@ -48,7 +48,7 @@ mod oauth_key_store;
 pub use oauth_key_store::{OauthKeyStore, StoredSigningKey};
 
 mod oauth_store;
-pub use oauth_store::{RedeemedCode, RegisteredClient, SqliteOauthFlowStore};
+pub use oauth_store::{RedeemedCode, RedeemedRefresh, RegisteredClient, SqliteOauthFlowStore};
 
 mod migrate;
 pub use migrate::{applied_migrations, migrate, AppliedMigration, Migration, MigrationError};

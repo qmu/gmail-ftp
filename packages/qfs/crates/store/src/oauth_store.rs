@@ -46,6 +46,15 @@ pub struct RedeemedCode {
     pub scope: String,
 }
 
+/// A redeemed refresh-token handle's bound context, returned by [`SqliteOauthFlowStore::take_refresh`].
+/// Carries everything the refresh grant re-mints an access token for: the `user_id` the token is for,
+/// the exact `client_id` it was issued to (re-checked at the token endpoint), and the granted `scope`.
+pub struct RedeemedRefresh {
+    pub user_id: i64,
+    pub client_id: String,
+    pub scope: String,
+}
+
 /// The redirect-URI list field separator (newline). A redirect URI never contains a newline, so a
 /// newline-joined column round-trips the exact allowlist without pulling a JSON dependency into this
 /// sync leaf.
@@ -245,8 +254,9 @@ impl SqliteOauthFlowStore {
         Ok(redeemed)
     }
 
-    /// Insert a refresh-token handle (issued at the token endpoint; ENFORCED/ROTATED in t50). Keyed by
-    /// `handle_hash` (`sha256_hex(handle)` — never the plaintext). `ttl_secs` is the refresh lifetime.
+    /// Insert a refresh-token handle (issued at the auth-code token exchange; ROTATED on refresh in
+    /// t50). Keyed by `handle_hash` (`sha256_hex(handle)` — never the plaintext). `ttl_secs` is the
+    /// refresh lifetime. `rotated_from` is `NULL` for a first-issue handle (the initial code exchange).
     ///
     /// # Errors
     /// [`StoreError::Sqlite`] on a DB failure.
@@ -267,6 +277,105 @@ impl SqliteOauthFlowStore {
         )
         .map_err(StoreError::from)?;
         Ok(())
+    }
+
+    /// Insert a ROTATED refresh-token handle: the successor minted when a refresh grant burns the
+    /// presented handle. Identical to [`insert_refresh`](Self::insert_refresh) but records
+    /// `rotated_from` (the prior handle's hash) so the rotation lineage is auditable. Never carries the
+    /// plaintext of either handle.
+    ///
+    /// # Errors
+    /// [`StoreError::Sqlite`] on a DB failure.
+    pub fn insert_refresh_rotated(
+        &self,
+        handle_hash: &str,
+        user_id: i64,
+        client_id: &str,
+        scope: &str,
+        ttl_secs: i64,
+        rotated_from: &str,
+    ) -> Result<(), StoreError> {
+        let modifier = format!("+{ttl_secs} seconds");
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO oauth_refresh_tokens \
+             (handle_hash, user_id, client_id, scope, expires_at, rotated_from) \
+             VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%SZ','now', ?5), ?6)",
+            rusqlite::params![
+                handle_hash,
+                user_id,
+                client_id,
+                scope,
+                modifier,
+                rotated_from
+            ],
+        )
+        .map_err(StoreError::from)?;
+        Ok(())
+    }
+
+    /// Atomically REDEEM a refresh-token handle for rotation: read its bound context and DELETE it in
+    /// ONE transaction (single-use — the presented handle is burned so a replay finds nothing). Returns
+    /// `None` if the handle is unknown, already rotated/redeemed, or expired (expired rows are also
+    /// reaped). The row is deleted on EVERY match regardless of expiry, so a presented-but-expired
+    /// handle is still burned.
+    ///
+    /// ## Single-use rotation (the security property)
+    /// The caller mints a NEW handle (via [`insert_refresh_rotated`](Self::insert_refresh_rotated))
+    /// on a successful redeem and returns it to the client; the OLD handle no longer exists, so
+    /// presenting it again (a leaked/stale handle replay) resolves to `None` → `invalid_grant`. Full
+    /// reuse-detection that REVOKES the whole token family on a replay (rather than just rejecting the
+    /// one handle) would require retaining burned rows behind a `revoked_at` column — a documented
+    /// follow-up (it needs a new migration); the single-use burn already rejects every replay.
+    ///
+    /// # Errors
+    /// [`StoreError::Sqlite`] on a DB failure.
+    pub fn take_refresh(&self, handle_hash: &str) -> Result<Option<RedeemedRefresh>, StoreError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(StoreError::from)?;
+        // Lazily reap every OTHER expired handle so the table self-prunes.
+        tx.execute(
+            &format!(
+                "DELETE FROM oauth_refresh_tokens WHERE expires_at <= {NOW_SQL} AND handle_hash <> ?1"
+            ),
+            rusqlite::params![handle_hash],
+        )
+        .map_err(StoreError::from)?;
+        // Read this handle's bound context (whether or not it is expired — we burn it either way).
+        let row: Option<(i64, String, String, String)> = tx
+            .query_row(
+                "SELECT user_id, client_id, scope, expires_at \
+                 FROM oauth_refresh_tokens WHERE handle_hash = ?1",
+                rusqlite::params![handle_hash],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+            .map_err(StoreError::from)?;
+        // Burn the row (single-use) and decide whether it was still live.
+        let redeemed = match row {
+            None => None,
+            Some((user_id, client_id, scope, expires_at)) => {
+                tx.execute(
+                    "DELETE FROM oauth_refresh_tokens WHERE handle_hash = ?1",
+                    rusqlite::params![handle_hash],
+                )
+                .map_err(StoreError::from)?;
+                let now: String = tx
+                    .query_row(&format!("SELECT {NOW_SQL}"), [], |r| r.get(0))
+                    .map_err(StoreError::from)?;
+                if expires_at.as_str() > now.as_str() {
+                    Some(RedeemedRefresh {
+                        user_id,
+                        client_id,
+                        scope,
+                    })
+                } else {
+                    None
+                }
+            }
+        };
+        tx.commit().map_err(StoreError::from)?;
+        Ok(redeemed)
     }
 }
 
@@ -404,5 +513,61 @@ mod tests {
     fn the_unknown_code_is_a_plain_none_not_an_error() {
         let (store, _uid) = store_with_user();
         assert!(store.take_code("never-issued").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_refresh_handle_is_single_use_and_replay_finds_nothing() {
+        let (store, uid) = store_with_user();
+        register(&store);
+        store
+            .insert_refresh("rh-A", uid, "client-1", "mcp:read", 3600)
+            .unwrap();
+        let first = store.take_refresh("rh-A").unwrap().expect("first redeem");
+        assert_eq!(first.user_id, uid);
+        assert_eq!(first.client_id, "client-1");
+        assert_eq!(first.scope, "mcp:read");
+        // Replay: the handle was burned on first redemption (single-use rotation).
+        assert!(
+            store.take_refresh("rh-A").unwrap().is_none(),
+            "a rotated/replayed refresh handle must not redeem"
+        );
+    }
+
+    #[test]
+    fn an_expired_refresh_handle_does_not_redeem_but_is_still_burned() {
+        let (store, uid) = store_with_user();
+        register(&store);
+        store
+            .insert_refresh("rh-exp", uid, "client-1", "", 0)
+            .unwrap();
+        assert!(
+            store.take_refresh("rh-exp").unwrap().is_none(),
+            "an expired refresh handle must not redeem"
+        );
+        let conn = store.lock().unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM oauth_refresh_tokens", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 0, "the expired refresh handle row was burned");
+    }
+
+    #[test]
+    fn a_rotated_handle_records_its_lineage() {
+        let (store, uid) = store_with_user();
+        register(&store);
+        store
+            .insert_refresh_rotated("rh-new", uid, "client-1", "mcp:read", 3600, "rh-old")
+            .unwrap();
+        let conn = store.lock().unwrap();
+        let from: String = conn
+            .query_row(
+                "SELECT rotated_from FROM oauth_refresh_tokens WHERE handle_hash = 'rh-new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(from, "rh-old");
     }
 }

@@ -48,6 +48,7 @@ mod key;
 mod metadata;
 mod pkce;
 mod sign;
+mod verify;
 
 pub use client_reg::{
     validate_registration, ClientRegistrationRequest, ClientRegistrationResponse,
@@ -55,14 +56,16 @@ pub use client_reg::{
 };
 pub use flow::{
     access_token_claims, error_json, redirect_uri_is_registered, validate_authorize_request,
-    validate_token_request, AuthorizeRequest, OAuthFlowError, TokenRequest, TokenResponse,
-    GRANT_AUTHORIZATION_CODE,
+    validate_refresh_request, validate_token_request, AuthorizeRequest, OAuthFlowError,
+    RefreshTokenRequest, TokenRequest, TokenResponse, GRANT_AUTHORIZATION_CODE,
+    GRANT_REFRESH_TOKEN,
 };
 pub use jwks::{Jwk, Jwks};
 pub use key::{OauthError, SigningKey};
 pub use metadata::{AuthorizationServerMetadata, ProtectedResourceMetadata};
 pub use pkce::{pkce_challenge_s256, verify_pkce_s256, PKCE_METHOD_S256};
 pub use sign::{sign_jws, verify_jws, Claims};
+pub use verify::{verify_access_token, AccessTokenError, VerifiedAccessToken};
 
 /// The fixed JWS/JWK algorithm this AS signs with: **ES256** (ECDSA using NIST P-256 + SHA-256).
 /// A single, vetted choice (decision C: smaller keys + simpler encoding than RS256, pure-Rust

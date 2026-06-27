@@ -159,6 +159,39 @@ pub fn validate_token_request(req: &TokenRequest) -> Result<(), OAuthFlowError> 
     Ok(())
 }
 
+/// A parsed `POST /token` request body for the **refresh-token grant** (RFC 6749 §6 / OAuth 2.1 §4.3).
+/// Owned so validation is pure. The presented `refresh_token` is the opaque handle the client received
+/// at the prior exchange — the binary looks it up by its HASH (never the plaintext) and rotates it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshTokenRequest {
+    /// `grant_type` — MUST be `refresh_token`.
+    pub grant_type: String,
+    /// The opaque refresh-token handle to redeem (hashed-looked-up + rotated by the binary).
+    pub refresh_token: String,
+    /// The client id presented (re-checked against the stored handle's bound client).
+    pub client_id: String,
+}
+
+/// The refresh-token grant type the token endpoint also serves (single-use rotation, t50).
+pub const GRANT_REFRESH_TOKEN: &str = "refresh_token";
+
+/// Validate a refresh-token request's SHAPE (required parameters present + grant type is the refresh
+/// grant) before the binary looks the handle up against the store. A missing `refresh_token` /
+/// `client_id` is an `invalid_request`; a wrong `grant_type` is `unsupported_grant_type`. The handle
+/// itself is validated (hashed lookup, expiry, single-use) by the binary's store, not here.
+///
+/// # Errors
+/// The most specific [`OAuthFlowError`] for the first failing check.
+pub fn validate_refresh_request(req: &RefreshTokenRequest) -> Result<(), OAuthFlowError> {
+    if req.grant_type != GRANT_REFRESH_TOKEN {
+        return Err(OAuthFlowError::UnsupportedGrantType);
+    }
+    if req.refresh_token.is_empty() || req.client_id.is_empty() {
+        return Err(OAuthFlowError::InvalidRequest);
+    }
+    Ok(())
+}
+
 /// Build the signed access-token claim set (RFC 9068-style): `iss` (the AS issuer), `aud` (the MCP
 /// resource the token is good for), `sub` (the authenticated user id), `scope`, `client_id`, and the
 /// `iat`/`exp` window (`now_unix` .. `now_unix + ttl_secs`). The binary signs this via
@@ -356,6 +389,37 @@ mod tests {
         assert_eq!(claims["client_id"], "client-1");
         assert_eq!(claims["iat"], 1_000);
         assert_eq!(claims["exp"], 4_600);
+    }
+
+    #[test]
+    fn refresh_request_requires_the_refresh_grant_and_all_params() {
+        let good = RefreshTokenRequest {
+            grant_type: "refresh_token".to_string(),
+            refresh_token: "opaque-handle".to_string(),
+            client_id: "client-1".to_string(),
+        };
+        assert!(validate_refresh_request(&good).is_ok());
+
+        let mut bad = good.clone();
+        bad.grant_type = "authorization_code".to_string();
+        assert_eq!(
+            validate_refresh_request(&bad).unwrap_err(),
+            OAuthFlowError::UnsupportedGrantType
+        );
+
+        let mut bad = good.clone();
+        bad.refresh_token = String::new();
+        assert_eq!(
+            validate_refresh_request(&bad).unwrap_err(),
+            OAuthFlowError::InvalidRequest
+        );
+
+        let mut bad = good;
+        bad.client_id = String::new();
+        assert_eq!(
+            validate_refresh_request(&bad).unwrap_err(),
+            OAuthFlowError::InvalidRequest
+        );
     }
 
     #[test]

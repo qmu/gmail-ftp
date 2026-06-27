@@ -414,18 +414,25 @@ The connection follows the standard remote-MCP authorization handshake — no qf
 4. The client calls MCP tools with a **bearer token**; a **refresh token** keeps the session alive — the
    "recurring authentication" a managed identity is meant to provide.
 
-> **Implementation status (t49).** Steps 1–3 are live: a qfs server serves its **Protected Resource
-> Metadata** (`/.well-known/oauth-protected-resource`), its **AS metadata**
-> (`/.well-known/oauth-authorization-server`, now advertising `authorization_endpoint` / `token_endpoint`
-> / `registration_endpoint` + `grant_types_supported` including `authorization_code`, alongside
+> **Implementation status (t50 — M2 complete).** All four steps are live end-to-end: a qfs server serves
+> its **Protected Resource Metadata** (`/.well-known/oauth-protected-resource`), its **AS metadata**
+> (`/.well-known/oauth-authorization-server`, advertising `authorization_endpoint` / `token_endpoint`
+> / `registration_endpoint` + `grant_types_supported` = `authorization_code` + `refresh_token`, alongside
 > `code_challenge_methods_supported=["S256"]`), and its **JWKS** (`/jwks.json`) backed by an
-> envelope-encrypted ES256 signing key. A client now **registers dynamically** (`POST /register`, RFC
-> 7591), runs the **authorization-code flow with PKCE (S256)** — the human signs in to the qfs identity
-> (t45) over a t46 session and consents at `/authorize` — and **exchanges the code for a signed ES256
-> access token** at `POST /token` (plus a refresh-token handle, stored hashed). So **the AS issues tokens
-> now.** What remains: the MCP endpoint is **still UNAUTHENTICATED** — guarding it with the issued bearer
-> token (so Claude's tool calls actually require the token) is **t50**. Until then the handshake completes
-> and a token is minted, but the resource server does not yet require it.
+> envelope-encrypted ES256 signing key. A client **registers dynamically** (`POST /register`, RFC 7591),
+> runs the **authorization-code flow with PKCE (S256)** — the human signs in to the qfs identity (t45)
+> over a t46 session and consents at `/authorize` — and **exchanges the code for a signed ES256 access
+> token** at `POST /token`. **Step 4 is now real:** the `POST /mcp` endpoint **requires** that bearer
+> access token — a request with no / a malformed / a bad-signature / a wrong-`aud`-or-`iss` / an expired
+> token is rejected with **`401` + `WWW-Authenticate: Bearer resource_metadata="…"`** (RFC 9728), so a
+> spec-compliant client discovers the AS and authorizes without bespoke qfs knowledge; only a verified
+> token reaches a tool. The **refresh-token grant** (`grant_type=refresh_token`) keeps the session alive:
+> it rotates the handle single-use (mints a fresh access token + a new refresh handle, burns the old),
+> and a replay of a rotated handle is an `invalid_grant`. So **Claude can now connect to qfs over
+> MCP+OAuth and drive every service qfs fronts.** Caveats kept honest: the MCP `commit` gate is still the
+> default-deny policy (a per-user/scope ACL is **decision I / t57**); irreversible MCP commits still
+> require explicit `ack` until the selectable safety mode (**t59**); and binding off localhost (now safe
+> because the endpoint authenticates) sits behind the trusted reverse proxy of decision F.
 
 **text-to-SQL is client-side (decision K).** qfs does **not** host or call a model. The MCP tools it
 exposes *are* the surface a client LLM uses to turn natural language into qfs:
