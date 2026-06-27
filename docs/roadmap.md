@@ -35,6 +35,14 @@ Before any feature, two rules decide whether it is allowed to exist.
    dashboard, a line in the terminal, and a tool call from Claude are the same operation rendered three
    ways. That sameness is the product.
 
+   > **Implementation status (t51 — the second face begins).** The CLI ✅ and the MCP endpoint ✅ are
+   > live; the **web dashboard** now has a shipped ✅ **read-only shell** — a static SPA embedded in the
+   > binary (`GET /`, `GET /assets/*`) that the in-house listener serves over loopback, plus a thin JSON
+   > bridge (`POST /api/describe`, `POST /api/run`) that drives the **same** injected engine the MCP face
+   > uses. It serves **describe + preview only** (pure introspection and a zero-effect dry-run); there is
+   > **no commit path in the shell yet** — the preview→commit approval cards 🧭 (t52) and the `/sys/*`
+   > admin views 🧭 (t53) are still proposed. The shell is loopback-only and not yet session-gated.
+
 ## The confirmed architecture (decision ledger)
 
 The plan rests on these decisions. Later sections expand each.

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<!--
+  qfs dashboard — the embedded SPA SHELL (ticket t51).
+
+  This page is one of the "three faces" of the one qfs engine: it composes a qfs statement in
+  the browser and drives it through the SAME describe -> preview engine path the CLI and the MCP
+  face already use (POST /api/describe, POST /api/run). It is the SHELL only — the preview/commit
+  approval cards (t52) and the /sys admin views (t53) are later tickets, so this slice serves
+  describe + preview (read/dry-run) ONLY. There is no commit button here by design: the one-engine
+  rule forbids the dashboard exposing a capability the CLI/MCP lack.
+
+  Self-contained: NO external CDN, font, or script (the published binary is the deliverable, and
+  `qfs serve` must stay offline-clean). Every asset is embedded in the binary via include_str!.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>qfs dashboard</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>qfs <span class="muted">dashboard</span></h1>
+      <p class="muted">
+        the second face of one engine — describe and preview run through the same
+        <code>qfs_exec</code> path the CLI and MCP use. preview-only shell (commit is t52).
+      </p>
+    </header>
+
+    <main class="grid">
+      <section class="panel">
+        <h2>describe</h2>
+        <p class="muted">inspect a path's shape before writing to it (pure: no creds, no I/O).</p>
+        <form id="describe-form">
+          <label for="describe-path">path</label>
+          <input
+            id="describe-path"
+            name="path"
+            type="text"
+            value="/status"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <button type="submit">describe</button>
+        </form>
+        <pre id="describe-out" class="output" aria-live="polite"></pre>
+      </section>
+
+      <section class="panel">
+        <h2>preview</h2>
+        <p class="muted">dry-run a statement: builds the plan, applies ZERO effects.</p>
+        <form id="run-form">
+          <label for="run-statement">statement</label>
+          <textarea
+            id="run-statement"
+            name="statement"
+            rows="4"
+            spellcheck="false"
+            autocomplete="off"
+          >SELECT ok, service FROM /status</textarea>
+          <button type="submit">preview</button>
+        </form>
+        <pre id="run-out" class="output" aria-live="polite"></pre>
+      </section>
+    </main>
+
+    <footer class="muted">
+      qfs serve · loopback-only shell · no secret material is served to the browser
+    </footer>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

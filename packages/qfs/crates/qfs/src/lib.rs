@@ -23,6 +23,7 @@ pub mod catalog;
 pub mod commit;
 pub mod connection;
 pub mod cron;
+pub mod dashboard;
 pub mod describe;
 pub mod docs;
 pub mod git;

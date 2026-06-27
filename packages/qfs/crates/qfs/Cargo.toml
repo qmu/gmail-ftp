@@ -151,6 +151,10 @@ qfs-host = { path = "../host", features = ["host-daemon"] }
 # t47: the MCP composition serializes the cred-free describe report to the JSON value the
 # `describe` tool returns (the binary owns the describe registry; qfs-mcp owns the protocol).
 serde_json = { workspace = true }
+# t51: the embedded dashboard bridge derives `Deserialize` for its two thin request bodies
+# (`{ path }`, `{ statement, mode? }`) decoded from the browser-posted JSON. Decode only — no secret
+# material crosses this seam.
+serde = { workspace = true }
 # The serve composition builds a tokio runtime to drive the async listener + supervised wait.
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "signal", "macros"] }
 async-trait = { workspace = true }

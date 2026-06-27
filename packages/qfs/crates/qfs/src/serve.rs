@@ -127,6 +127,9 @@ pub fn run_serve(config: &Path) -> i32 {
     // combined fallback tries the OAuth routes, then the MCP path, then the watchtower ingest, then 404.
     let mcp_engine: Arc<dyn qfs_mcp::McpEngine> =
         Arc::new(crate::mcp::ServeMcpEngine::new(Arc::clone(&engine)));
+    // t51: the dashboard bridge drives the SAME injected engine — clone the handle BEFORE the MCP
+    // binding takes ownership of `mcp_engine` below (so both faces share one statement path).
+    let dashboard_engine = Arc::clone(&mcp_engine);
     let mcp_binding = Arc::new(match &oauth_routes {
         Some(routes) => {
             let v = routes.mcp_verification();
@@ -146,10 +149,16 @@ pub fn run_serve(config: &Path) -> i32 {
         }
     });
 
+    // t51 dashboard shell composition: the embedded SPA + its thin `describe`/`preview` JSON bridge
+    // ride the SAME Fallback seam as `POST /mcp`, driving the SAME injected `McpEngine` (so the
+    // dashboard and MCP faces share ONE statement-execution path — no second executor). The shell is
+    // preview/read only this slice (no commit path; commit cards are t52) and served loopback-only
+    // (no session gate yet — t46/t50 wiring is a documented follow-up in `crate::dashboard`).
     let combined_fallback: qfs_http::Fallback = {
         let mcp = Arc::clone(&mcp_binding);
         let wt = wt_fallback;
         let oauth = oauth_routes.clone();
+        let dashboard = dashboard_engine;
         Arc::new(move |req: &qfs_http::HttpRequest| {
             // The three read-only OAuth discovery routes win first (public, cacheable, no creds).
             if let Some(routes) = &oauth {
@@ -159,6 +168,11 @@ pub fn run_serve(config: &Path) -> i32 {
             }
             if req.path == qfs_mcp::MCP_PATH {
                 return Some(crate::mcp::serve_mcp_request(&mcp, req));
+            }
+            // The dashboard shell + bridge (`GET /`, `GET /assets/*`, `POST /api/*`). Returns None
+            // for any non-dashboard path, so the watchtower webhook ingest still gets its chance.
+            if let Some(resp) = crate::dashboard::serve_dashboard(dashboard.as_ref(), req) {
+                return Some(resp);
             }
             wt(req)
         })
