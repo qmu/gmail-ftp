@@ -308,6 +308,21 @@ fn live_registry() -> DriverRegistry {
         );
     }
 
+    // Claude (t64): the `/claude/...` AI-sessions applier — `INSERT INTO /claude/sessions/<id>/
+    // instructions` appends a steering instruction (a REVERSIBLE append; steering an agent never
+    // removes state). Wired only when a session source is configured (QFS_CLAUDE_SESSIONS, opt-in);
+    // an unconfigured `/claude` commit fails closed (no driver) rather than silently steering
+    // nothing. The on-disk SessionSource lives in the binary (src/claude.rs); the driver crate stays
+    // tokio-free, with its applier bridged here like every other runtime leaf. Decision K: this
+    // appends a message the agent reads — qfs never hosts or calls the LLM.
+    if let Some(source) = crate::claude::DirSessionSource::open_default() {
+        let applier = qfs_driver_claude::ClaudeApplier::new(std::sync::Arc::new(source));
+        reg = reg.with(
+            DriverId::new("claude"),
+            Arc::new(qfs_driver_claude::claude_apply_driver(&applier)),
+        );
+    }
+
     // Slack: same shape (the shared reqwest transport, Slack's body-error rule on). Slack is a CLOUD
     // driver too — gated on the same sign-in + recorded-consent bind rule as github (t54 / M4).
     if let Some((sl_store, sl_cred)) = networked_credential("slack") {

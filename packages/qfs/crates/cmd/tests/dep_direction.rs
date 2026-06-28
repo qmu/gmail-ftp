@@ -294,6 +294,13 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         // LEAF — only the terminal binary may depend on it — so the production rusqlite-backed
         // SysBackend lives IN the binary (src/sys.rs) and dead-ends here like the SQL backend.
         "qfs-driver-sys",
+        // t64 AI-sessions: the binary wires the `/claude/...` session driver (describe + the live
+        // read facet + the policy-gated instruction append). qfs-driver-claude is a qfs-runtime
+        // consumer that must stay a LEAF — only the terminal binary may depend on it — so the on-disk
+        // SessionSource (Claude Code's session state, opt-in via QFS_CLAUDE_SESSIONS) lives IN the
+        // binary (src/claude.rs) and its std::fs reads/append dead-end here. Decision K: a path façade
+        // over session metadata + an append-log, never an LLM/inference dependency.
+        "qfs-driver-claude",
         // t58 identity directory: the binary wraps qfs-driver-directory's in-memory
         // `DirectorySource` into a t57 `MembershipResolver` so `member_of('/directories/...')`
         // resolves against the directory (src/directory.rs). `/directories` is a RESERVED SCOPE
@@ -592,6 +599,10 @@ fn runtime_is_confined_to_plan_and_types() {
         // qfs-runtime's PlanApplierBridge (like every other driver leaf). It is a leaf — only the
         // terminal binary depends on it — so tokio still dead-ends in the binary.
         "qfs-driver-sys",
+        // t64: the `/claude/...` AI-sessions driver bridges its ClaudeApplier into the runtime via
+        // qfs-runtime's PlanApplierBridge (like every other driver leaf). It is a leaf — only the
+        // terminal binary depends on it — so tokio still dead-ends in the binary.
+        "qfs-driver-claude",
         "qfs",
     ];
     for consumer in &runtime_consumers {

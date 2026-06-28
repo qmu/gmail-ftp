@@ -9,6 +9,31 @@ The verbs are always `select` / `insert` / `upsert` / `update` / `remove` (plus 
 
 ## Drivers
 
+### `/claude` — RelationalTable
+
+- example node: `/claude/sessions`
+- native verbs: SELECT JOIN INSERT UPDATE UPSERT
+
+Universal verbs (✓ supported / ✗ rejected at parse time):
+
+| verb | supported |
+|------|-----------|
+| `select` | ✓ |
+| `insert` | ✗ |
+| `upsert` | ✗ |
+| `update` | ✗ |
+| `remove` | ✗ |
+| `ls` | ✗ |
+| `cp` | ✗ |
+| `mv` | ✗ |
+| `rm` | ✗ |
+
+Procedures: _none_
+
+Prelude aliases: _none_
+
+Pushdown: where=false project=false limit=false order=false join=false aggregate=false distinct=false group_by=false
+
 ### `/drive` — BlobNamespace
 
 - example node: `/drive/my/Reports/report.pdf`

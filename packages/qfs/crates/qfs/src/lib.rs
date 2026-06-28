@@ -20,6 +20,7 @@
 
 pub mod audit;
 pub mod catalog;
+pub mod claude;
 pub mod commit;
 pub mod connection;
 pub mod dashboard;

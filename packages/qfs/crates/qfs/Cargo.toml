@@ -143,6 +143,14 @@ qfs-driver-git = { path = "../driver-git" }
 # (rusqlite over the System DB + the Project DB's connection registry) lives in the binary
 # (src/sys.rs); rusqlite dead-ends HERE like the SQL backend. qfs-cmd/qfs-exec stay off it.
 qfs-driver-sys = { path = "../driver-sys" }
+# t64 AI-sessions driver (roadmap M7): the binary wires the `/claude/...` session surface (describe +
+# the live local read facet + the policy-gated instruction append). qfs-driver-claude is the
+# vendor-free driver (pure introspective half + the ClaudeApplier over the SessionSource seam) and a
+# qfs-runtime consumer, so the dep-direction guard requires it be a LEAF — only the terminal binary
+# may depend on it. The on-disk SessionSource (Claude Code's session state, opt-in / fail-closed via
+# QFS_CLAUDE_SESSIONS) lives in the binary (src/claude.rs); its std::fs reads/append dead-end HERE.
+# Decision K: qfs NEVER hosts or calls an LLM — this is a path façade + an append-log, no inference.
+qfs-driver-claude = { path = "../driver-claude" }
 # The real in-process SQLite engine, confined to this terminal binary. `bundled` compiles
 # libsqlite3 from source (no system-lib dependency) — the same dep+feature qfs-driver-sql uses for
 # its in-memory test backend, so the artifact already builds in this workspace.

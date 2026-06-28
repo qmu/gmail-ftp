@@ -81,6 +81,11 @@ fn representative_path(mount: &str) -> String {
         // (the read source + applier are injected; describe is pure), so the `/sys` mount folds
         // into the generated driver catalog like any other introspective facet.
         "/sys" => "/sys/users".to_string(),
+        // t64 AI-sessions: a representative session relation. `/claude/sessions` describes cred-free
+        // (the read source + applier are injected; describe is pure), so the `/claude` mount folds
+        // into the generated driver catalog like any other introspective facet. Decision K: a path
+        // façade over session metadata, never an LLM call.
+        "/claude" => "/claude/sessions".to_string(),
         // Any future mount: describe its root; if that is not describable the entry is skipped.
         other => other.to_string(),
     }

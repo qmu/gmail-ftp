@@ -96,6 +96,13 @@ pub fn describe_registry() -> MountRegistry {
         // describes `/sys/users`, `/sys/audit`, … cred-free, exactly like the other introspective
         // facets. This is what makes `/sys/*` appear in the generated `docs/drivers.md`.
         Arc::new(qfs_driver_sys::SysDriver::new()),
+        // t64 AI-sessions (roadmap M7): the `/claude/...` session surface. DESCRIBE is PURE —
+        // ClaudeDriver owns NO session source and NO creds (its read source + applier are injected
+        // from the binary), so it describes `/claude/sessions` + `.../instructions` cred-free,
+        // exactly like the other introspective facets. Decision K: this is a path façade over
+        // session metadata + an append-log, NOT qfs calling an LLM. This is what makes `/claude/*`
+        // appear in the generated `docs/drivers.md`.
+        Arc::new(qfs_driver_claude::ClaudeDriver::new()),
         // NOTE (t58): the `/directories/...` identity-directory driver is deliberately NOT
         // registered here. `/directories` is a RESERVED SCOPE REALM (decision P / §1.3 —
         // `RESERVED_REALMS`), not a driver-backed mount like `/sys`, so `MountRegistry::register`

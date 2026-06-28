@@ -1227,6 +1227,7 @@ dependencies = [
  "async-trait",
  "qfs-cmd",
  "qfs-core",
+ "qfs-driver-claude",
  "qfs-driver-directory",
  "qfs-driver-fs",
  "qfs-driver-ga",
@@ -1340,6 +1341,17 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "qfs-driver-claude"
+version = "0.0.0"
+dependencies = [
+ "qfs-driver",
+ "qfs-plan",
+ "qfs-runtime",
+ "qfs-types",
+ "thiserror",
 ]
 
 [[package]]

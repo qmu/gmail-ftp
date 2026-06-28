@@ -633,8 +633,21 @@ or hand to Claude over MCP — same statement, same preview, same commit.
   > shared HTTP DTOs (no token crosses a frame's log/`Debug` in cleartext). The **live outbound TCP/TLS
   > dial** to a running qfs Cloud relay — and the relay's own hosting, node addressing/discovery, and
   > reconnect/backoff — are a **documented seam** (the `qfs` binary's composition root), not yet wired
-  > to a socket; there is no live two-node tunnel yet, and the `/hosts/<host>/claude/...` driver that
-  > rides it is still ahead.
+  > to a socket; there is no live two-node tunnel yet.
+  >
+  > The **`/hosts/<host>/claude/...` AI-sessions driver** has now landed as a *local* slice (t64): the
+  > pure, credential-free describe surface (`/claude/sessions` is a read-only `RelationalTable`;
+  > `/claude/sessions/<id>/instructions` is an append-only `AppendLog`) is registered and catalogued,
+  > and the binary wires a **fail-closed, opt-in** on-disk session source (`QFS_CLAUDE_SESSIONS`) so a
+  > local `FROM /claude/sessions |> WHERE status='running'` read and a gated
+  > `INSERT INTO /claude/sessions/<id>/instructions` append both work against real session state.
+  > Steering is a **reversible append** (an explicit COMMIT); `DESCRIBE`/`PREVIEW` touch nothing; the
+  > schema carries no token/transcript column. Honouring **decision K, qfs never hosts or calls an
+  > LLM** — this is a path façade over session metadata + an instruction log, not an inference call.
+  > The model itself runs elsewhere. What is still ahead: the *cross-machine* hop — resolving
+  > `/hosts/<remote>/claude/...` over the t63 tunnel and re-checking `POLICY` at the destination — is a
+  > **documented seam**, and the exact coupling to Claude Code's on-disk session format is flagged as
+  > an open product decision behind the injected `SessionSource` seam.
 - **Scheduled jobs** (decision M) are **externalized**: OS `cron` (individual) or Cloudflare Cron
   Triggers (managed) fire a `qfs run` / saved plan on schedule — qfs runs no scheduler of its own, so
   exactly-once and distribution are the platform's job, not a qfs leader election.

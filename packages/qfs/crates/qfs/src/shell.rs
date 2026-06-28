@@ -183,12 +183,29 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
     let _ = engine
         .mounts
         .register(Arc::new(qfs_driver_sys::SysDriver::new()));
+    // Claude (t64): register the `/claude/...` AI-sessions mount (its PURE describe/capabilities/
+    // pushdown facet, so `/claude/sessions |> WHERE status='running'` and `INSERT INTO
+    // /claude/sessions/<id>/instructions …` resolve + plan + gate). The live read facet is wired
+    // only when a session source is configured (QFS_CLAUDE_SESSIONS, opt-in / fail-closed); with
+    // none, the mount still plans (describe is cred-free) but a `/claude` scan returns no source.
+    // Decision K: a path façade over session metadata + an append-log, never an LLM call.
+    let _ = engine
+        .mounts
+        .register(Arc::new(qfs_driver_claude::ClaudeDriver::new()));
+    let mut reads = reads;
     if let Some(backend) = crate::sys::SystemDbBackend::open_default() {
-        let reads = reads.with(
+        reads = reads.with(
             DriverId::new("sys"),
             Arc::new(crate::sys::SysReadDriver::new(std::sync::Arc::new(backend))),
         );
-        return (engine, reads, safety_mode);
+    }
+    if let Some(source) = crate::claude::DirSessionSource::open_default() {
+        reads = reads.with(
+            DriverId::new("claude"),
+            Arc::new(crate::claude::ClaudeReadDriver::new(std::sync::Arc::new(
+                source,
+            ))),
+        );
     }
     (engine, reads, safety_mode)
 }
