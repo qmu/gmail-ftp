@@ -3,9 +3,9 @@ created_at: 2026-06-27T12:08:00+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [Domain, DB]
-effort:
-commit_hash:
-category:
+effort: L
+commit_hash: 8989c14
+category: Added
 depends_on: [20260626100100-t43-envelope-encryption-sqlite-secret-store.md, 20260626100200-t44-accounts-to-connections-rename.md, 20260626101500-t57-extended-policy-acl.md, 20260626103100-t71-path-expression-scope-realms.md]
 ---
 
