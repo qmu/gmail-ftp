@@ -23,8 +23,9 @@
 use std::sync::Mutex;
 
 use qfs_secrets::{
-    derive_kek, generate_dek, generate_salt, open, seal, unwrap_dek, wrap_dek, ConnectionId,
-    ConnectionRecord, CredentialKey, DriverId, OwnerScope, Secret, SecretError, Secrets,
+    derive_kek, generate_dek, generate_salt, open, rewrap_dek, seal, unwrap_dek, wrap_dek,
+    ConnectionId, ConnectionRecord, CredentialKey, DriverId, OwnerScope, Secret, SecretError,
+    Secrets,
 };
 use rusqlite::{Connection, OptionalExtension};
 use time::format_description::well_known::Rfc3339;
@@ -98,21 +99,131 @@ impl SqliteSecrets {
             .lock()
             .map_err(|_| SecretError::Backend("secret store lock poisoned".into()))
     }
+
+    /// **Rotate (re-mint)** the secret for `key` (t79, §4.5): re-seal a NEW credential value under
+    /// the SAME data-key, stamp `last_rotated`, and CLEAR any revocation. This is the offboarding /
+    /// compromise answer — the secret the departing member could have copied is *replaced*, so the
+    /// old value stops working while the connection keeps working for the team under the new value.
+    ///
+    /// Atomic: a single UPSERT swaps the sealed value, sets `last_rotated = now`, and resets
+    /// `revoked_at = NULL` in one statement. The new value arrives via the credential-input path
+    /// (stdin), never a query literal (§4.5); it is consumed into the seal and never logged.
+    ///
+    /// # Errors
+    /// [`SecretError::Backend`] on a seal/DB failure (secret-free message).
+    pub fn rotate(&self, key: &CredentialKey, value: Secret) -> Result<(), SecretError> {
+        let conn = self.lock()?;
+        let (nonce, ciphertext) = seal(&self.dek, value.expose())
+            .map_err(|_| SecretError::Backend("sealing credential".into()))?;
+        conn.execute(
+            "INSERT INTO secret_store (driver, connection, nonce, ciphertext, last_rotated, revoked_at) \
+             VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%SZ','now'), NULL) \
+             ON CONFLICT(driver, connection) DO UPDATE SET \
+                 nonce = excluded.nonce, \
+                 ciphertext = excluded.ciphertext, \
+                 last_rotated = strftime('%Y-%m-%dT%H:%M:%SZ','now'), \
+                 revoked_at = NULL",
+            rusqlite::params![
+                key.driver.as_str(),
+                key.connection.as_str(),
+                nonce.as_slice(),
+                ciphertext
+            ],
+        )
+        .map_err(|e| SecretError::Backend(format!("rotating credential: {e}")))?;
+        Ok(())
+    }
+
+    /// **Revoke** the credential for `key` (t79): mark the connection unresolvable by stamping
+    /// `revoked_at`. After this, [`Secrets::get`] refuses the connection with
+    /// [`SecretError::Revoked`] — the secret is never decrypted or returned (default-deny). The
+    /// ciphertext is left in place (a later `rotate` re-mints + clears the mark); revocation changes
+    /// WHETHER the secret resolves, never the at-rest crypto. Selectors only — no secret touched.
+    ///
+    /// # Errors
+    /// [`SecretError::NotFound`] if no credential exists for `key` (there is nothing to revoke);
+    /// [`SecretError::Backend`] on a DB failure (secret-free message).
+    pub fn revoke(&self, key: &CredentialKey) -> Result<(), SecretError> {
+        let conn = self.lock()?;
+        let affected = conn
+            .execute(
+                "UPDATE secret_store SET revoked_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') \
+                 WHERE driver = ?1 AND connection = ?2",
+                rusqlite::params![key.driver.as_str(), key.connection.as_str()],
+            )
+            .map_err(|e| SecretError::Backend(format!("revoking credential: {e}")))?;
+        if affected == 0 {
+            return Err(SecretError::NotFound(key.clone()));
+        }
+        Ok(())
+    }
+
+    /// **DEK re-wrap on a passphrase change** (t79, §4.2): rotate the key-encryption-key WITHOUT
+    /// re-encrypting a single secret column. Unwrap the data-key under the KEK derived from
+    /// `old_pass`, then re-wrap the SAME DEK under a KEK derived from `new_pass` + a fresh salt, and
+    /// persist `(wrapped_dek, kdf_salt)` in the single `secret_meta` row. Because the DEK is
+    /// unchanged, every existing secret still decrypts; because the salt + wrapped-DEK change, the
+    /// OLD passphrase no longer unwraps the store on the next open.
+    ///
+    /// A **wrong** `old_pass` fails to unwrap and returns [`SecretError::Locked`] BEFORE any write —
+    /// there is no silent re-key under a wrong old passphrase. No DEK/KEK/passphrase is ever logged.
+    ///
+    /// # Errors
+    /// [`SecretError::Locked`] if `old_pass` cannot unwrap the stored DEK (wrong passphrase /
+    /// tampered metadata) or the store has no metadata row; [`SecretError::Backend`] on a DB failure.
+    pub fn rewrap_passphrase(
+        &self,
+        old_pass: &Secret,
+        new_pass: &Secret,
+    ) -> Result<(), SecretError> {
+        let conn = self.lock()?;
+        let meta: Option<(Vec<u8>, Vec<u8>)> = conn
+            .query_row(
+                "SELECT wrapped_dek, kdf_salt FROM secret_meta WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| SecretError::Backend(format!("reading secret metadata: {e}")))?;
+        let (wrapped, salt) = meta.ok_or(SecretError::Locked)?;
+
+        // Derive the OLD KEK from the supplied old passphrase + the stored salt, then re-wrap the
+        // DEK under a NEW KEK derived from the new passphrase + a FRESH salt. `rewrap_dek` unwraps
+        // under the old KEK first, so a wrong old passphrase fails authentication -> Locked.
+        let old_kek = derive_kek(old_pass.expose(), &salt).map_err(|_| SecretError::Locked)?;
+        let new_salt = generate_salt();
+        let new_kek = derive_kek(new_pass.expose(), &new_salt).map_err(|_| SecretError::Locked)?;
+        let new_wrapped =
+            rewrap_dek(&old_kek, &new_kek, &wrapped).map_err(|_| SecretError::Locked)?;
+
+        conn.execute(
+            "UPDATE secret_meta SET wrapped_dek = ?1, kdf_salt = ?2 WHERE id = 1",
+            rusqlite::params![new_wrapped, new_salt.as_slice()],
+        )
+        .map_err(|e| SecretError::Backend(format!("re-wrapping the data key: {e}")))?;
+        Ok(())
+    }
 }
 
 impl Secrets for SqliteSecrets {
     fn get(&self, key: &CredentialKey) -> Result<Secret, SecretError> {
         let conn = self.lock()?;
-        let row: Option<(Vec<u8>, Vec<u8>)> = conn
+        // t79: SELECT `revoked_at` alongside the sealed value so REVOCATION is enforced BEFORE any
+        // decrypt. A revoked connection short-circuits to `SecretError::Revoked` — the DEK is never
+        // applied and the secret is NEVER returned (default-deny on offboarding / compromise).
+        let row: Option<(Vec<u8>, Vec<u8>, Option<String>)> = conn
             .query_row(
-                "SELECT nonce, ciphertext FROM secret_store WHERE driver = ?1 AND connection = ?2",
+                "SELECT nonce, ciphertext, revoked_at FROM secret_store \
+                 WHERE driver = ?1 AND connection = ?2",
                 rusqlite::params![key.driver.as_str(), key.connection.as_str()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(|e| SecretError::Backend(format!("reading credential: {e}")))?;
         match row {
-            Some((nonce, ciphertext)) => {
+            // Revoked: refuse to resolve. We never touch the ciphertext — the secret cannot leak.
+            Some((_, _, Some(_revoked_at))) => Err(SecretError::Revoked(key.clone())),
+            Some((nonce, ciphertext, None)) => {
                 // Decrypt straight into a Secret; a failed open is a backend error (the DEK is
                 // valid — we unwrapped it on open — so this means a corrupt/tampered column).
                 let plaintext = open(&self.dek, &nonce, &ciphertext)
@@ -528,6 +639,130 @@ mod tests {
             Err(err) => assert_eq!(err.code(), "secret_locked"),
             Ok(_) => panic!("a wrong passphrase must fail to unwrap the data key"),
         }
+    }
+
+    #[test]
+    fn rotate_re_mints_the_secret_atomically() {
+        // t79: rotate replaces the stored value under the same DEK — the prior secret no longer
+        // resolves, the new one does. Re-mint is the offboarding answer (replace, not un-grant).
+        let store = SqliteSecrets::open_or_init(migrated_conn(), &Secret::from("pass")).unwrap();
+        let k = ckey("github", "team");
+        store.put(&k, Secret::from("ghp_old")).unwrap();
+        assert_eq!(store.get(&k).unwrap().expose_str(), Some("ghp_old"));
+
+        store.rotate(&k, Secret::from("ghp_new")).unwrap();
+        assert_eq!(
+            store.get(&k).unwrap().expose_str(),
+            Some("ghp_new"),
+            "rotate installs the new secret"
+        );
+        // `last_rotated` is stamped on rotation (plaintext metadata).
+        let conn = store.lock().unwrap();
+        let rotated: Option<String> = conn
+            .query_row(
+                "SELECT last_rotated FROM secret_store WHERE driver = 'github' AND connection = 'team'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(rotated.is_some(), "rotate stamps last_rotated");
+    }
+
+    #[test]
+    fn revoke_makes_a_connection_unresolvable_and_never_returns_the_secret() {
+        // t79: after revoke, the bind (get) fails closed with a clear `Revoked` error and the
+        // secret is NEVER returned. Other connections keep working (revoke is per-connection).
+        let store = SqliteSecrets::open_or_init(migrated_conn(), &Secret::from("pass")).unwrap();
+        let revoked = ckey("github", "leaver");
+        let kept = ckey("github", "team");
+        store
+            .put(&revoked, Secret::from("ghp_LEAKED_CANARY"))
+            .unwrap();
+        store.put(&kept, Secret::from("ghp_team")).unwrap();
+
+        store.revoke(&revoked).unwrap();
+        let err = store.get(&revoked).unwrap_err();
+        assert_eq!(err.code(), "secret_revoked", "a revoked bind fails closed");
+        // The refusal carries the selectors, never the secret value.
+        assert!(!format!("{err:?} {err}").contains("ghp_LEAKED_CANARY"));
+
+        // A different connection is unaffected — revoke is scoped to the one (driver, connection).
+        assert_eq!(store.get(&kept).unwrap().expose_str(), Some("ghp_team"));
+
+        // Revoking an absent connection is a clear NotFound (nothing to revoke).
+        assert_eq!(
+            store.revoke(&ckey("github", "ghost")).unwrap_err().code(),
+            "secret_not_found"
+        );
+
+        // Re-minting the revoked connection CLEARS the revocation and restores use.
+        store
+            .rotate(&revoked, Secret::from("ghp_reissued"))
+            .unwrap();
+        assert_eq!(
+            store.get(&revoked).unwrap().expose_str(),
+            Some("ghp_reissued"),
+            "rotate clears the revocation"
+        );
+    }
+
+    #[test]
+    fn dek_rewrap_under_a_new_passphrase_keeps_secrets_and_locks_out_the_old() {
+        // t79: a DEK re-wrap on a passphrase change re-wraps the wrapped-DEK only — existing secrets
+        // still decrypt under the new passphrase, while the old passphrase no longer unlocks.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.db");
+        let open = || {
+            ProjectDb::open(&qfs_store::FileSource::new(&path))
+                .unwrap()
+                .into_db()
+                .into_connection()
+        };
+        {
+            let store = SqliteSecrets::open_or_init(open(), &Secret::from("old-pass")).unwrap();
+            store
+                .put(&ckey("gh", "main"), Secret::from("ghp_persisted"))
+                .unwrap();
+            // Re-wrap the DEK from the old passphrase to a new one (no re-seal of the value).
+            store
+                .rewrap_passphrase(&Secret::from("old-pass"), &Secret::from("new-pass"))
+                .unwrap();
+            // The SAME open store still decrypts the value (the DEK is unchanged).
+            assert_eq!(
+                store.get(&ckey("gh", "main")).unwrap().expose_str(),
+                Some("ghp_persisted")
+            );
+        }
+        // Reopen with the NEW passphrase: the DEK unwraps and the value decrypts.
+        let store = SqliteSecrets::open_or_init(open(), &Secret::from("new-pass")).unwrap();
+        assert_eq!(
+            store.get(&ckey("gh", "main")).unwrap().expose_str(),
+            Some("ghp_persisted")
+        );
+        // Reopen with the OLD passphrase now FAILS — the re-wrap rotated the KEK.
+        match SqliteSecrets::open_or_init(open(), &Secret::from("old-pass")) {
+            Err(e) => assert_eq!(e.code(), "secret_locked"),
+            Ok(_) => panic!("the old passphrase must no longer unlock after a re-wrap"),
+        }
+    }
+
+    #[test]
+    fn dek_rewrap_under_a_wrong_old_passphrase_is_refused() {
+        // t79 non-negotiable: a wrong old passphrase must NOT silently re-key the store.
+        let store =
+            SqliteSecrets::open_or_init(migrated_conn(), &Secret::from("right-old")).unwrap();
+        store
+            .put(&ckey("gh", "main"), Secret::from("ghp_x"))
+            .unwrap();
+        match store.rewrap_passphrase(&Secret::from("WRONG-old"), &Secret::from("new")) {
+            Err(e) => assert_eq!(e.code(), "secret_locked"),
+            Ok(()) => panic!("a wrong old passphrase must refuse to re-wrap the DEK"),
+        }
+        // The store still decrypts under the unchanged DEK (no torn re-key happened).
+        assert_eq!(
+            store.get(&ckey("gh", "main")).unwrap().expose_str(),
+            Some("ghp_x")
+        );
     }
 
     #[test]

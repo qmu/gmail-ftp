@@ -347,6 +347,18 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
         name: "project_shared_connection",
         sql: include_str!("schema/project_shared_connections.sql"),
     },
+    // t79 (roadmap M5, decision U / §4.5): credential ROTATION & REVOCATION columns on
+    // `secret_store` (`last_rotated`, `revoked_at`). A rotation re-mints the secret + re-wraps the
+    // DEK; a revocation marks the connection unresolvable (the bind refuses to decrypt it). Appended
+    // as a NEW version (#5) that ALTERs the table forward — migrations #1–#4 stay frozen (the
+    // checksum guard forbids editing a shipped migration). Plaintext metadata columns only; the
+    // at-rest envelope crypto is unchanged. The rotation/revocation I/O that fills these columns
+    // lives in the binary (`crates/qfs/src/secret_store.rs`); this declares the shape.
+    Migration {
+        version: 5,
+        name: "project_rotation_revocation",
+        sql: include_str!("schema/project_rotation.sql"),
+    },
 ];
 
 /// Structured, secret-free persistence errors (AI-consumable; a DB path is infra, not a secret, but
@@ -384,6 +396,20 @@ mod tests {
             .query_row(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
                 [name],
+                |_| Ok(true),
+            )
+            .optional()
+            .unwrap()
+            .unwrap_or(false)
+    }
+
+    /// Whether `table` has a column named `column` (via `pragma_table_info`). Used to assert an
+    /// `ALTER TABLE ADD COLUMN` migration landed (t79).
+    fn column_exists(db: &Db, table: &str, column: &str) -> bool {
+        db.conn()
+            .query_row(
+                "SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2",
+                [table, column],
                 |_| Ok(true),
             )
             .optional()
@@ -529,8 +555,11 @@ mod tests {
         assert!(table_exists(proj.db(), "connection_consent"));
         // t81 migration #4: the project/team-owned (shared) connection registry.
         assert!(table_exists(proj.db(), "shared_connection"));
-        // All four project migrations are recorded.
-        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 4);
+        // t79 migration #5: rotation/revocation columns on secret_store (last_rotated, revoked_at).
+        assert!(column_exists(proj.db(), "secret_store", "last_rotated"));
+        assert!(column_exists(proj.db(), "secret_store", "revoked_at"));
+        // All five project migrations are recorded.
+        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 5);
     }
 
     #[test]

@@ -70,7 +70,8 @@ pub use consent::{bind_gate, is_cloud_driver, ConsentError, CLOUD_DRIVERS};
 // (see the `mod envelope` gate above); Workers never need it.
 #[cfg(not(target_arch = "wasm32"))]
 pub use envelope::{
-    derive_kek, generate_dek, generate_salt, open, seal, unwrap_dek, wrap_dek, EnvelopeError,
+    derive_kek, generate_dek, generate_salt, open, rewrap_dek, seal, unwrap_dek, wrap_dek,
+    EnvelopeError,
 };
 pub use key::{
     ConnectionId, ConnectionIdError, ConnectionRecord, CredentialKey, DriverId, OwnerScope,
@@ -116,6 +117,7 @@ mod tests {
 
         let backend = SecretError::Backend("reading credential blob".into());
         let locked = SecretError::Locked;
+        let revoked = SecretError::Revoked(key.clone());
         let scope =
             grant_scopes(&["mail.send".to_string()], &["mail.read".to_string()]).unwrap_err();
         let ambiguous = {
@@ -144,6 +146,8 @@ mod tests {
         all.push(backend.to_string());
         all.push(format!("{locked:?}"));
         all.push(locked.to_string());
+        all.push(format!("{revoked:?}"));
+        all.push(revoked.to_string());
         all.push(format!("{scope:?}"));
         all.push(scope.to_string());
         all.push(format!("{ambiguous:?}"));

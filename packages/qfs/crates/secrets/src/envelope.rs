@@ -124,6 +124,29 @@ pub fn unwrap_dek(kek: &[u8; KEY_LEN], wrapped: &[u8]) -> Result<[u8; KEY_LEN], 
     Ok(dek)
 }
 
+/// **Re-wrap** a [`wrap_dek`]ped DEK from the old KEK to a new KEK WITHOUT re-encrypting a single
+/// secret value (t79 — credential rotation / passphrase change). Unwrap the DEK under `old_kek`, then
+/// wrap the SAME DEK under `new_kek` with a fresh nonce. This is the whole point of envelope
+/// encryption: a passphrase change (or a scheduled key rotation) is ONE re-wrap of the single
+/// `secret_meta.wrapped_dek`, not N re-seals of every secret column — and because the DEK is
+/// unchanged, every value sealed under it ([`seal`]) still [`open`]s afterwards.
+///
+/// A **wrong** `old_kek` fails authentication in [`unwrap_dek`] and returns [`EnvelopeError`] BEFORE
+/// any re-wrap happens — there is no silent re-key under a wrong old passphrase. The raw DEK lives
+/// only transiently on the stack here and never touches storage or a log.
+///
+/// # Errors
+/// [`EnvelopeError`] if `old_kek` cannot unwrap `wrapped` (wrong key / tampered / unknown format) or
+/// the re-wrap seal fails. The error names no key material (the three causes are indistinguishable).
+pub fn rewrap_dek(
+    old_kek: &[u8; KEY_LEN],
+    new_kek: &[u8; KEY_LEN],
+    wrapped: &[u8],
+) -> Result<Vec<u8>, EnvelopeError> {
+    let dek = unwrap_dek(old_kek, wrapped)?;
+    wrap_dek(new_kek, &dek)
+}
+
 /// AEAD-seal one secret value under the DEK with a **fresh random nonce**. Returns the nonce
 /// (stored beside the ciphertext) and the ciphertext (the `secret_store` columns). Per-value
 /// nonces mean two equal plaintexts never share ciphertext.
@@ -205,6 +228,49 @@ mod tests {
         // Both still open to the same value.
         assert_eq!(open(&dek, &n1, &c1).unwrap(), b"same");
         assert_eq!(open(&dek, &n2, &c2).unwrap(), b"same");
+    }
+
+    /// A DEK re-wrap (t79) rotates the KEK without re-encrypting any value: a value sealed under
+    /// the DEK, then a re-wrap of that DEK from the old KEK to a NEW KEK, still opens the value;
+    /// the old KEK no longer unwraps the new wrapped-DEK, and the new KEK does.
+    #[test]
+    fn rewrap_rotates_the_kek_but_keeps_values_decryptable() {
+        let salt = generate_salt();
+        let old_kek = derive_kek(b"old passphrase", &salt).unwrap();
+        let dek = generate_dek();
+        let wrapped = wrap_dek(&old_kek, &dek).unwrap();
+
+        // A value sealed under the DEK (the DEK never changes across a re-wrap).
+        let (nonce, ct) = seal(&dek, b"ghp_rotme").unwrap();
+
+        // Re-wrap the DEK under a NEW KEK (a fresh salt — a passphrase change).
+        let new_salt = generate_salt();
+        let new_kek = derive_kek(b"new passphrase", &new_salt).unwrap();
+        let rewrapped = rewrap_dek(&old_kek, &new_kek, &wrapped).unwrap();
+
+        // The NEW KEK unwraps the re-wrapped DEK, and it is byte-identical (the same DEK).
+        let recovered = unwrap_dek(&new_kek, &rewrapped).unwrap();
+        assert_eq!(recovered, dek, "the re-wrapped DEK is the same data-key");
+        // The value sealed before the re-wrap still opens (no re-seal needed).
+        assert_eq!(open(&recovered, &nonce, &ct).unwrap(), b"ghp_rotme");
+        // The OLD KEK no longer unwraps the new wrapped-DEK.
+        assert!(unwrap_dek(&old_kek, &rewrapped).is_err());
+    }
+
+    /// A wrong OLD KEK refuses the re-wrap (no silent re-key) — authentication fails first.
+    #[test]
+    fn rewrap_under_a_wrong_old_kek_is_refused() {
+        let salt = generate_salt();
+        let old_kek = derive_kek(b"right", &salt).unwrap();
+        let dek = generate_dek();
+        let wrapped = wrap_dek(&old_kek, &dek).unwrap();
+
+        let wrong_old = derive_kek(b"wrong", &salt).unwrap();
+        let new_kek = derive_kek(b"new", &generate_salt()).unwrap();
+        assert!(
+            rewrap_dek(&wrong_old, &new_kek, &wrapped).is_err(),
+            "a wrong old KEK must not re-wrap the DEK"
+        );
     }
 
     /// A wrong KEK fails to unwrap the DEK — authentication fails, no bytes leak.

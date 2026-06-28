@@ -67,6 +67,14 @@ pub enum SecretError {
     #[error("secret store is locked (no decryption key available)")]
     Locked,
 
+    /// The credential for this `(driver, connection)` was **revoked** (t79 — offboarding /
+    /// compromise). The connection is marked revoked and the bind path REFUSES to resolve it: the
+    /// secret is NEVER decrypted or returned (default-deny). Carries the *key* (selectors), never
+    /// the value. Actionable: re-mint it with `qfs connection rotate <driver> <connection>`, which
+    /// replaces the secret and clears the revocation.
+    #[error("credential for {}/{} is revoked", .0.driver.as_str(), .0.connection.as_str())]
+    Revoked(CredentialKey),
+
     /// A backend operation failed. The string describes the *operation* (e.g. "reading
     /// credential blob", "permission check"), **never** the credential value.
     #[error("secret backend error: {0}")]
@@ -80,6 +88,7 @@ impl SecretError {
         match self {
             SecretError::NotFound(_) => "secret_not_found",
             SecretError::Locked => "secret_locked",
+            SecretError::Revoked(_) => "secret_revoked",
             SecretError::Backend(_) => "secret_backend",
         }
     }
@@ -164,6 +173,12 @@ mod tests {
         assert_eq!(nf.to_string(), "no credential for mail/work");
 
         assert_eq!(SecretError::Locked.code(), "secret_locked");
+
+        let revoked = SecretError::Revoked(key("github", "team"));
+        assert_eq!(revoked.code(), "secret_revoked");
+        // The revoked error names the (driver, connection) selectors only — never a credential.
+        assert_eq!(revoked.to_string(), "credential for github/team is revoked");
+
         let be = SecretError::Backend("reading credential blob".into());
         assert_eq!(be.code(), "secret_backend");
         // The backend message describes the operation, not any credential.

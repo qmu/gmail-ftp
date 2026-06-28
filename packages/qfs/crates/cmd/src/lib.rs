@@ -74,6 +74,14 @@ pub enum ConnectionAction {
     Use { driver: String, connection: String },
     /// `connection remove <driver> <connection>` — delete (idempotent).
     Remove { driver: String, connection: String },
+    /// `connection rotate <driver> <connection>` — re-mint the secret (read from stdin) + clear
+    /// revocation (t79). The value is NEVER carried here; the launcher reads it from stdin.
+    Rotate { driver: String, connection: String },
+    /// `connection revoke <driver> <connection>` — mark the connection unresolvable (t79).
+    Revoke { driver: String, connection: String },
+    /// `connection rekey` — re-wrap the store's data-key under a new passphrase (t79). The new
+    /// passphrase is NEVER carried here; the launcher reads it from stdin (old = `QFS_PASSPHRASE`).
+    Rekey,
 }
 
 /// The injected **connection launcher**: the binary supplies the credential-store I/O (it depends on
@@ -298,6 +306,26 @@ enum ConnectionVerb {
         /// The connection to remove.
         connection: String,
     },
+    /// Rotate (re-mint) the credential for a driver's named connection (t79): read a NEW secret from
+    /// stdin, re-seal it, and clear any revocation. The offboarding answer — replace, not un-grant.
+    Rotate {
+        /// The driver this connection belongs to.
+        driver: String,
+        /// The connection to re-mint.
+        connection: String,
+    },
+    /// Revoke a driver's named connection (t79): mark it unresolvable so a later bind fails closed
+    /// and the secret is never returned (offboarding / compromise). Other connections keep working.
+    Revoke {
+        /// The driver this connection belongs to.
+        driver: String,
+        /// The connection to revoke.
+        connection: String,
+    },
+    /// Re-wrap the credential store's data-key under a NEW passphrase (t79): read the new passphrase
+    /// from stdin; the current `QFS_PASSPHRASE` is the old one. Existing secrets stay decryptable; the
+    /// old passphrase stops unlocking. One re-wrap, never an N-way re-encryption of every secret.
+    Rekey,
 }
 
 /// `qfs identity <verb>` — the local-identity verbs (t45). Maps onto the injected
@@ -704,6 +732,15 @@ fn connection_action(verb: &ConnectionVerb) -> ConnectionAction {
             driver: driver.clone(),
             connection: connection.clone(),
         },
+        ConnectionVerb::Rotate { driver, connection } => ConnectionAction::Rotate {
+            driver: driver.clone(),
+            connection: connection.clone(),
+        },
+        ConnectionVerb::Revoke { driver, connection } => ConnectionAction::Revoke {
+            driver: driver.clone(),
+            connection: connection.clone(),
+        },
+        ConnectionVerb::Rekey => ConnectionAction::Rekey,
     }
 }
 

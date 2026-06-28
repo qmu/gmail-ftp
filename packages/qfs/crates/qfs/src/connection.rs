@@ -19,6 +19,7 @@ use std::io::Read;
 use qfs_cmd::ConnectionAction;
 use qfs_identity::{IdentityStore, SoleUser};
 use qfs_secrets::{is_cloud_driver, ConnectionId, CredentialKey, DriverId, Secret, Secrets};
+use qfs_store::audit::AuditEvent;
 use rusqlite::Connection;
 
 use crate::secret_store::{self, SqliteSecrets};
@@ -138,6 +139,63 @@ fn consent_scope(driver: &str) -> &'static str {
     }
 }
 
+/// The t76 audit event a rotation / revocation / re-key emits — metadata ONLY (the verb, the
+/// `<driver>/<connection>` selector, the `/sys/connections` surface, a timestamp), **never** a
+/// secret. Kept as a pure builder so the emitted shape is unit-testable over an explicit System DB.
+fn connection_audit_event(verb: &str, connection: &str) -> AuditEvent {
+    AuditEvent {
+        actor: "cli".to_string(),
+        connection: connection.to_string(),
+        verb: verb.to_string(),
+        path: "/sys/connections".to_string(),
+        committed: true,
+        ts: now_rfc3339(),
+    }
+}
+
+/// Append a connection rotation/revocation event onto the t76 hash chain (best-effort, exactly like
+/// the commit path's `emit_audit`): a missing/unavailable System DB is logged at debug and never
+/// breaks the operation. Secret-free — the event carries selectors + metadata only.
+fn emit_connection_audit(verb: &str, connection: &str) {
+    let event = connection_audit_event(verb, connection);
+    match crate::store::open_system_db() {
+        Ok(Some(sys)) => {
+            if let Err(e) = crate::audit::append_event(&sys, event) {
+                tracing::debug!(target: "qfs::audit", "connection audit append failed (continuing): {e}");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::debug!(target: "qfs::audit", "connection audit skipped (system DB unavailable): {e}");
+        }
+    }
+}
+
+/// The current UTC time as an RFC3339 string for an audit event's `ts` (mirrors `commit::now_rfc3339`
+/// — a clock read can fail to format only on an impossible date; fall back to the epoch, never panic).
+fn now_rfc3339() -> String {
+    use time::format_description::well_known::Rfc3339;
+    time::OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+/// Read a single secret value from stdin (never argv — argv leaks into shell history and `ps`),
+/// trimming the trailing newline. Used by `connection add`/`rotate`/`rekey` for the credential-input
+/// path (§4.5 — a secret never enters a qfs statement). `what` names the value for the empty-input
+/// error so the operator knows what to pipe.
+fn read_secret_from_stdin(what: &str, example: &str) -> Result<String, String> {
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .map_err(|e| format!("reading the {what} from stdin: {e}"))?;
+    let value = buf.trim_end_matches(['\n', '\r']).to_string();
+    if value.is_empty() {
+        return Err(format!("no {what} on stdin — pipe it, e.g. `{example}`"));
+    }
+    Ok(value)
+}
+
 fn run_inner(action: &ConnectionAction) -> Result<String, String> {
     match action {
         ConnectionAction::Add { driver, connection } => {
@@ -212,6 +270,58 @@ fn run_inner(action: &ConnectionAction) -> Result<String, String> {
                 .map_err(|e| format!("removing the credential: {e}"))?;
             Ok(format!("removed {driver}/{connection} (idempotent)"))
         }
+        ConnectionAction::Rotate { driver, connection } => {
+            // t79 — re-mint the secret. Cloud drivers carry the same sign-in gate as `add` (a cloud
+            // connection is unusable for an unauthenticated operator); resolve identity BEFORE stdin.
+            if is_cloud_driver(&DriverId(driver.clone())) {
+                let _ = require_signed_in(driver)?;
+            }
+            let store = open_store()?;
+            let key = cred_key(driver, connection)?;
+            // The NEW credential value comes from stdin — never argv (§4.5).
+            let value = read_secret_from_stdin(
+                "new secret",
+                &format!("printf %s \"$TOKEN\" | qfs connection rotate {driver} {connection}"),
+            )?;
+            store
+                .rotate(&key, Secret::from(value))
+                .map_err(|e| format!("rotating the credential: {e}"))?;
+            emit_connection_audit("ROTATE", &format!("{driver}/{connection}"));
+            Ok(format!(
+                "rotated {driver}/{connection} (secret re-minted; any revocation cleared)"
+            ))
+        }
+        ConnectionAction::Revoke { driver, connection } => {
+            // t79 — mark the connection unresolvable. A later bind fails closed (the secret is never
+            // returned); other connections keep working. Re-minting (`rotate`) restores use.
+            let store = open_store()?;
+            let key = cred_key(driver, connection)?;
+            store
+                .revoke(&key)
+                .map_err(|e| format!("revoking the connection: {e}"))?;
+            emit_connection_audit("REVOKE", &format!("{driver}/{connection}"));
+            Ok(format!(
+                "revoked {driver}/{connection} (it can no longer resolve until re-minted with `qfs connection rotate`)"
+            ))
+        }
+        ConnectionAction::Rekey => {
+            // t79 — DEK re-wrap on a passphrase change. The OLD passphrase is `QFS_PASSPHRASE` (the
+            // one that opened the store); the NEW passphrase comes from stdin (never argv). One
+            // re-wrap of the wrapped-DEK — existing secrets stay decryptable, the old passphrase
+            // stops unlocking. A wrong old passphrase cannot reach here (the store would not open).
+            let store = open_store()?;
+            let old = std::env::var("QFS_PASSPHRASE")
+                .map_err(|_| "QFS_PASSPHRASE is not set".to_string())?;
+            let new = read_secret_from_stdin(
+                "new passphrase",
+                "printf %s \"$NEWPASS\" | qfs connection rekey",
+            )?;
+            store
+                .rewrap_passphrase(&Secret::from(old), &Secret::from(new))
+                .map_err(|e| format!("re-wrapping the data key: {e}"))?;
+            emit_connection_audit("REKEY", "store");
+            Ok("re-wrapped the credential store under the new passphrase — set QFS_PASSPHRASE to the new value for the next run".into())
+        }
         ConnectionAction::Use { driver, connection } => {
             // Validate the names, then persist the active selection into the Project DB's
             // `active_account` table (selectors only — no passphrase needed). The commit resolver
@@ -270,5 +380,33 @@ mod tests {
             secret_store::db_get_active(&conn, "s3").as_deref(),
             Some("prod")
         );
+    }
+
+    /// t79: a rotation and a revocation each append a t76 audit row carrying selectors + metadata
+    /// ONLY (the verb, the `<driver>/<connection>` selector, the `/sys/connections` surface) — never
+    /// a secret. Exercised over an explicit System DB (hermetic) using the exact event the handlers
+    /// emit (`connection_audit_event` + `append_event`).
+    #[test]
+    fn rotation_and_revocation_append_an_audit_row() {
+        use qfs_store::{FileSource, SystemDb};
+        let dir = tempfile::tempdir().unwrap();
+        let sys = SystemDb::open(&FileSource::new(dir.path().join("system.db"))).unwrap();
+
+        crate::audit::append_event(&sys, connection_audit_event("ROTATE", "github/team")).unwrap();
+        crate::audit::append_event(&sys, connection_audit_event("REVOKE", "github/leaver"))
+            .unwrap();
+
+        let tail = crate::audit::recent_tail(&sys).unwrap();
+        assert_eq!(tail.len(), 2, "both events landed on the chain");
+        assert_eq!(tail[0].event.verb, "ROTATE");
+        assert_eq!(tail[0].event.connection, "github/team");
+        assert_eq!(tail[0].event.path, "/sys/connections");
+        assert_eq!(tail[1].event.verb, "REVOKE");
+        assert_eq!(tail[1].event.connection, "github/leaver");
+        // The chain links the two events (the second's prev is the first's hash).
+        assert_eq!(tail[1].prev_hash, tail[0].hash);
+        // The audit rows carry no secret material — selectors + metadata only.
+        let dump = format!("{tail:?}");
+        assert!(!dump.contains("ghp_") && !dump.contains("token"));
     }
 }
