@@ -141,8 +141,16 @@ pub fn block_on_read(
 /// # Errors
 /// [`ExecError`] if resolution / capability gating / plan construction fails.
 pub fn build_plan(stmt: &Statement, engine: &Engine) -> Result<Plan, ExecError> {
-    use qfs_core::{EvalValue, Evaluator};
-    let evaluator = Evaluator::new(&engine.mounts);
+    use qfs_core::{EvalValue, Evaluator, StdlibRegistry};
+    // Wire the core function registry so the plan pass runs the **static primitive type
+    // checker** at plan time (decision T, ticket t75): a mismatched `SET … WHERE` / `REMOVE …
+    // WHERE` filter comparison, a built-in handed a bad argument type, or a lambda applied to
+    // the wrong element type is a structured plan-time error here — before any effect node is
+    // applied, so a type-failing plan can never reach commit. `Evaluator::new` (late-bound)
+    // would leave the checker inert; the stdlib-wired evaluator is what makes it ACTIVE on the
+    // production effect path.
+    let stdlib = StdlibRegistry::with_core();
+    let evaluator = Evaluator::with_stdlib(&engine.mounts, &stdlib);
     match evaluator.eval(stmt).map_err(map_eval_error)? {
         EvalValue::Plan(plan) => Ok(plan),
         // A pure query has no effect plan; the read path handles it. Treat as an empty plan

@@ -373,6 +373,23 @@ impl<'r> Evaluator<'r> {
         Ok(builtin.sig.returns.clone())
     }
 
+    /// Type-check a filter/predicate expression at **plan time** against `schema` (decision T,
+    /// ticket t75). The static primitive type checker is the **stdlib-wired tightening** —
+    /// mirroring t08's `fn(...)` return typing: without a function registry the expression stays
+    /// late-bound (the t07 behaviour, so `Evaluator::new` is unchanged); with one wired, the plan
+    /// pass enforces the primitive type lattice (comparisons, built-in argument types, lambda
+    /// parameters/bodies) before any effect node is constructed. Pure — no I/O.
+    ///
+    /// # Errors
+    /// [`EvalError::Type`] for an incomparable comparison / predicate operand, or
+    /// [`EvalError::Fn`] for a call typed against a bad argument / aggregate context.
+    fn typecheck_predicate(&self, expr: &Expr, schema: &Schema) -> Result<(), EvalError> {
+        if let Some(stdlib) = self.stdlib {
+            crate::typeck::check_expr(expr, &crate::typeck::TyEnv::new(), schema, Some(stdlib))?;
+        }
+        Ok(())
+    }
+
     /// Evaluate a statement to its [`EvalValue`] (RFD §3 entry point). Resolution (the
     /// t06 capability/procedure gate) runs **first**, so a denied verb or unknown
     /// procedure never reaches a plan; then the pure fold builds the relation/plan.
@@ -536,10 +553,18 @@ impl<'r> Evaluator<'r> {
     /// Fold one pipe op onto the current relation, computing its output schema (RFD §3).
     fn fold_op(&self, input: PlanSource, op: &PipeOp, env: &Env) -> Result<PlanSource, EvalError> {
         match op {
-            // Schema-preserving filter.
-            PipeOp::Where(_) => Ok(PlanSource::Filter {
-                input: Box::new(input),
-            }),
+            // Schema-preserving filter. The filter predicate is **type-checked at plan time**
+            // against the input schema (decision T, ticket t75) when the function registry is
+            // wired: a mismatched comparison (`WHERE total == 'paid'` over an `i64` column), a
+            // built-in handed a bad argument type, or a lambda applied to the wrong element
+            // type is a structured plan-time error here — before any I/O, so a type-failing
+            // pipeline never reaches preview/commit.
+            PipeOp::Where(predicate) => {
+                self.typecheck_predicate(predicate, input.schema())?;
+                Ok(PlanSource::Filter {
+                    input: Box::new(input),
+                })
+            }
             // Projection narrows to the named columns (t05 `project` is the source of truth).
             // `SELECT` types `fn(...)` projections as scalars; `AGGREGATE` types them under
             // the aggregate-context rule (t08 dispatch).
@@ -636,6 +661,22 @@ impl<'r> Evaluator<'r> {
     /// `INSERT … FROM <query>` body), `REMOVE` is flagged inherently irreversible, and the
     /// optional `RETURNING` projection schema is attached.
     fn eval_write(&self, effect: &EffectStmt, env: &Env) -> Result<Plan, EvalError> {
+        // Plan-time type check of an `UPDATE … SET … WHERE` / `REMOVE … WHERE` filter (decision T,
+        // ticket t75): the filter predicate is checked against the target's described schema before
+        // any effect node is built, so a mismatched key comparison fails at plan time, never at
+        // commit. Skipped for an unrouted target (no schema to check against — late-bound).
+        if self.stdlib.is_some() {
+            if let EffectBody::SetWhere {
+                filter: Some(filter),
+                ..
+            } = &effect.body
+            {
+                if let Ok(schema) = self.effect_input_schema(effect, env) {
+                    self.typecheck_predicate(filter, &schema)?;
+                }
+            }
+        }
+
         let full = render_path(
             &effect
                 .target

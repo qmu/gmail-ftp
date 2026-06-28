@@ -334,3 +334,42 @@ fn golden_insert_plan_preview_json() {
     assert_eq!(rows[0]["verb"], "INSERT");
     assert_eq!(v["preview"]["is_pure"], false);
 }
+
+// ---- t75: the static type checker is ACTIVE on the PRODUCTION plan path ----
+
+#[test]
+fn build_plan_rejects_mismatched_set_where_at_plan_time() {
+    // The headline t75 guarantee proven through the REAL production plan builder
+    // (`qfs_exec::build_plan`, which `qfs run`, the server, and MCP all funnel through), NOT a
+    // `with_stdlib` unit fixture. `subject` is a `Text` column (FakeMail's describe schema), so
+    // `REMOVE /mail/inbox WHERE subject == 1` compares `Text` to an `Int` literal — an
+    // incomparable-types error that must surface at PLAN TIME, before any effect node is applied.
+    let engine = engine_with_mail();
+    let stmt = parse("REMOVE /mail/inbox WHERE subject == 1").unwrap();
+    let err = qfs_exec::build_plan(&stmt, &engine)
+        .expect_err("a mismatched WHERE comparison must fail at plan time");
+    assert_eq!(err.code, "incomparable_types");
+    assert_eq!(err.kind, qfs_exec::ErrorKind::Usage);
+
+    // The same REMOVE with a correctly-typed key column (`id` is `Int`) plans cleanly — the
+    // checker accepts the well-typed program.
+    let ok = parse("REMOVE /mail/inbox WHERE id == 1").unwrap();
+    let plan = qfs_exec::build_plan(&ok, &engine).expect("a well-typed plan builds");
+    assert!(!plan.nodes().is_empty(), "REMOVE yields an effect plan");
+}
+
+#[test]
+fn oneshot_commit_of_mistyped_where_fails_before_apply() {
+    // End-to-end through the one-shot COMMIT path: a `--commit` of a type-failing destructive
+    // effect must fail at plan time (exit 2, usage) and apply ZERO effects — the type error is
+    // caught before the applier is ever reached, so `committed` never becomes true.
+    let (code, _out, err) = run_with_ack(
+        "COMMIT REMOVE /mail/inbox WHERE subject == 1",
+        OutputFormat::Json,
+        true,
+        true,
+    );
+    assert_eq!(code, 2, "a plan-time type error is a usage-class failure");
+    let e: serde_json::Value = serde_json::from_str(err.trim()).unwrap();
+    assert_eq!(e["error"]["code"], "incomparable_types");
+}

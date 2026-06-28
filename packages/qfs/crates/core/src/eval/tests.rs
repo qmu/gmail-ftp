@@ -478,6 +478,51 @@ fn unwired_evaluator_keeps_functions_late_bound() {
     assert_eq!(schema.column("u").unwrap().ty, ColumnType::Unknown);
 }
 
+// ---- t75: plan-time static primitive type checking ------------------------
+
+/// A well-typed `WHERE` comparison type-checks at plan time and folds to a filtered relation.
+#[test]
+fn well_typed_where_checks_and_folds() {
+    let v = eval_with_stdlib("/db/users |> WHERE id == 1 |> SELECT id").unwrap();
+    assert!(v.as_relation().is_some(), "a well-typed pipeline folds");
+}
+
+/// A mismatched comparison (`name` is `Text`, compared to an `Int` literal) is a structured
+/// **plan-time** error — surfaced from the pure fold, before any effect/relation is built.
+#[test]
+fn mismatched_where_comparison_is_a_plan_time_error() {
+    let err = eval_with_stdlib("/db/users |> WHERE name == 1").unwrap_err();
+    assert_eq!(err.code(), "incomparable_types");
+    assert!(matches!(
+        err,
+        EvalError::Type(qfs_types::TypeError::IncomparableTypes { .. })
+    ));
+}
+
+/// A built-in handed a statically-wrong argument type (`UPPER` of the `Int` column `id`) is a
+/// structured plan-time error, not a runtime surprise.
+#[test]
+fn builtin_bad_arg_type_in_where_is_a_plan_time_error() {
+    let err = eval_with_stdlib("/db/users |> WHERE UPPER(id) == 'x'").unwrap_err();
+    assert_eq!(err.code(), "fn_type");
+}
+
+/// A type-failing plan **never reaches commit**: `COMMIT REMOVE … WHERE name == 1` compares a
+/// `Text` key column to an `Int`, so evaluation fails at plan time and the `PanicApplier` (which
+/// would fire on any I/O) is never reached — zero effects applied.
+#[test]
+fn type_failing_plan_never_reaches_commit() {
+    let err = eval_with_stdlib("COMMIT REMOVE /db/users WHERE name == 1").unwrap_err();
+    assert_eq!(err.code(), "incomparable_types");
+    // The same REMOVE with a correctly-typed key plans (and would commit) cleanly.
+    let plan = eval_with_stdlib("REMOVE /db/users WHERE id == 1")
+        .unwrap()
+        .as_plan()
+        .cloned()
+        .unwrap();
+    assert_eq!(plan.nodes()[0].kind, EffectKind::Remove);
+}
+
 // ---- LET binding evaluation (M6, ticket t60) ------------------------------
 
 /// A `LET`-bound name substitutes its folded relation in the body: the bound scan's real

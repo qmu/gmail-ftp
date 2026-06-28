@@ -33,6 +33,7 @@ mod registry;
 mod resolve;
 mod security;
 mod stdlib;
+mod typeck;
 
 pub use ddl::server::{
     binding_config_row, config_row_batch, desugar_to_insert, from_server_ddl, normalize_spans,
@@ -58,6 +59,9 @@ pub use stdlib::{
     EvalCtx, FnError, FnSig, HigherOrderKind, MapEnv, NoEnv, PlanNode, PlanNodeKind, Prelude,
     PreludeError, ResolvedAlias, StdlibRegistry,
 };
+// The plan-time static primitive type checker (decision T, ticket t75): a pure pass over the
+// parser `Expr` that the evaluator runs at plan/preview time so a type error never reaches commit.
+pub use typeck::{check_expr, Ty, TyEnv};
 
 // Re-export the trait seams and shared types so consumers depend on `qfs-core` only.
 pub use qfs_codec::Codec;
