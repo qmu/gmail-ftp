@@ -40,6 +40,9 @@
 
 mod active;
 mod backends;
+// t54 (roadmap M4): the PURE cloud-driver consent / sign-in decision (no I/O, no Secret), so it
+// builds on both native and wasm. The binary wires the real identity + consent state into it.
+mod consent;
 // t43 envelope crypto: native-only (its CSPRNG has no default Workers backend; the SQLite store
 // that consumes it lives in the native binary). Keeps qfs-secrets wasm-buildable.
 #[cfg(not(target_arch = "wasm32"))]
@@ -56,6 +59,9 @@ mod worker;
 
 pub use active::ActiveConnections;
 pub use backends::{EnvStore, InMemoryStore};
+// t54 (roadmap M4): the cloud-driver consent / sign-in decision. The binary's `connection add`/`use`
+// gate and its commit-time bind both consult these to fail closed for an unauthenticated operator.
+pub use consent::{bind_gate, is_cloud_driver, ConsentError, CLOUD_DRIVERS};
 // The envelope-encryption primitive (t43): the SQLite credential store (in the binary) builds on
 // these — a passphrase-derived KEK wraps a random DEK that seals each secret value. Native-only
 // (see the `mod envelope` gate above); Workers never need it.

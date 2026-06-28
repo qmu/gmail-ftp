@@ -239,17 +239,23 @@ fn live_registry() -> DriverRegistry {
     );
 
     // GitHub: the real REST client over the production reqwest transport + the resolved credential.
+    // t54 / M4 — github is a CLOUD driver: it only binds when a signed-in operator has recorded
+    // consent for the selected connection (`cloud_bind_allowed`). Otherwise it is left UNREGISTERED
+    // (fail closed) and the refusal reason is logged secret-free, so a `/github` commit fails with a
+    // clear cause rather than silently acting without consent.
     if let Some((gh_store, gh_cred)) = networked_credential("github") {
-        let gh_client = Arc::new(qfs_driver_github::RestGitHubClient::new(
-            crate::transport::github_transport(),
-            gh_store,
-            gh_cred,
-        ));
-        let gh_driver = qfs_driver_github::GitHubDriver::new(gh_client);
-        reg = reg.with(
-            DriverId::new("github"),
-            Arc::new(qfs_driver_github::github_apply_driver(&gh_driver)),
-        );
+        if cloud_bind_allowed("github", gh_cred.connection.as_str()) {
+            let gh_client = Arc::new(qfs_driver_github::RestGitHubClient::new(
+                crate::transport::github_transport(),
+                gh_store,
+                gh_cred,
+            ));
+            let gh_driver = qfs_driver_github::GitHubDriver::new(gh_client);
+            reg = reg.with(
+                DriverId::new("github"),
+                Arc::new(qfs_driver_github::github_apply_driver(&gh_driver)),
+            );
+        }
     }
 
     // SQL: the real SQLite-backed driver, when at least one `QFS_SQL_<conn>` is configured. Real
@@ -288,22 +294,83 @@ fn live_registry() -> DriverRegistry {
         );
     }
 
-    // Slack: same shape (the shared reqwest transport, Slack's body-error rule on).
+    // Slack: same shape (the shared reqwest transport, Slack's body-error rule on). Slack is a CLOUD
+    // driver too — gated on the same sign-in + recorded-consent bind rule as github (t54 / M4).
     if let Some((sl_store, sl_cred)) = networked_credential("slack") {
-        let sl_client = Arc::new(qfs_driver_slack::RestSlackClient::new(
-            crate::transport::slack_transport(),
-            sl_store,
-            sl_cred,
-            qfs_driver_slack::BodyErrorRule::On,
-        ));
-        let sl_driver = qfs_driver_slack::SlackDriver::new(sl_client);
-        reg = reg.with(
-            DriverId::new("slack"),
-            Arc::new(qfs_driver_slack::slack_apply_driver(&sl_driver)),
-        );
+        if cloud_bind_allowed("slack", sl_cred.connection.as_str()) {
+            let sl_client = Arc::new(qfs_driver_slack::RestSlackClient::new(
+                crate::transport::slack_transport(),
+                sl_store,
+                sl_cred,
+                qfs_driver_slack::BodyErrorRule::On,
+            ));
+            let sl_driver = qfs_driver_slack::SlackDriver::new(sl_client);
+            reg = reg.with(
+                DriverId::new("slack"),
+                Arc::new(qfs_driver_slack::slack_apply_driver(&sl_driver)),
+            );
+        }
     }
 
     reg
+}
+
+/// t54 / M4 — the commit-time **bind gate** for a cloud driver: may a credential for
+/// `driver`/`connection` bind into the live registry? Consults the SAME pure
+/// [`qfs_secrets::bind_gate`] decision the `connection add`/`use` path uses, wiring in the two real
+/// state reads:
+///
+/// - **signed in?** — does a signed-up identity exist on this host (the System-DB identity store, t45;
+///   sessions t46 are not yet wired into the one-shot CLI, so presence of an identity is the proxy)?
+/// - **consent recorded?** — is there a `connection_consent` row for this `(driver, connection)`
+///   (the Project-DB ledger `connection add` writes)?
+///
+/// Returns `true` to bind. On refusal returns `false` and logs the structured, secret-free
+/// [`qfs_secrets::ConsentError`] code so the operator can see WHY a cloud commit fell back to "no
+/// driver" (fail closed). A local (non-cloud) driver is never gated — `bind_gate` short-circuits to
+/// `Ok` — so this is a no-op for `local`/`git`/`sql`/`sys`. Best-effort + secret-free: it reads only
+/// metadata (an identity's existence, a consent row), never a token.
+fn cloud_bind_allowed(driver: &str, connection: &str) -> bool {
+    let did = DriverId::new(driver);
+    if !qfs_secrets::is_cloud_driver(&did) {
+        return true;
+    }
+    let signed_in = operator_signed_in();
+    let has_consent = consent_recorded(driver, connection);
+    match qfs_secrets::bind_gate(&did, connection, signed_in, has_consent) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                target: "qfs::consent",
+                "cloud driver '{driver}' not bound for connection '{connection}': {} ({})",
+                e,
+                e.code()
+            );
+            false
+        }
+    }
+}
+
+/// Is an operator signed in? Best-effort proxy: at least one signed-up identity exists in the
+/// System-DB identity store (t45). A missing/unreadable System DB (no config home) reads as NOT
+/// signed in, so a cloud driver fails closed rather than open. Reads identity METADATA only.
+fn operator_signed_in() -> bool {
+    use qfs_identity::{IdentityStore, SoleUser};
+    let Ok(store) = crate::identity::open_identity_store() else {
+        return false;
+    };
+    matches!(store.sole_user(), Ok(SoleUser::One(_) | SoleUser::Many))
+}
+
+/// Is consent recorded for this cloud `(driver, connection)` in the Project-DB consent ledger
+/// (`connection_consent`, written by `connection add`)? Best-effort + passphrase-free (the row carries
+/// no key material); an unreadable Project DB reads as NO consent (fail closed).
+fn consent_recorded(driver: &str, connection: &str) -> bool {
+    let Some(proj) = crate::store::open_project_db().ok().flatten() else {
+        return false;
+    };
+    let conn = proj.into_db().into_connection();
+    crate::secret_store::db_get_consent(&conn, driver, connection).is_some()
 }
 
 /// Resolve the `(store, credential key)` a networked driver applies with. Reads the **same**

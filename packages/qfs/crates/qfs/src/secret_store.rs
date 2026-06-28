@@ -221,6 +221,66 @@ pub fn db_get_active(conn: &Connection, driver: &str) -> Option<String> {
     .flatten()
 }
 
+/// A recorded cloud-connection consent grant — selectors + metadata ONLY (subject, scope, time),
+/// **never** a secret. This is what [`db_get_consent`] reads back so the commit-time bind gate can
+/// confirm a signed-in operator granted this `(driver, connection)` explicit consent (t54 / M4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsentRow {
+    /// The identity (email / user label, t45) that granted consent. Metadata, never a credential.
+    pub subject: String,
+    /// The OAuth scope the consent was granted for (a §10 hint, never a token).
+    pub scope: String,
+    /// When consent was granted (RFC 3339).
+    pub granted_at: String,
+}
+
+/// Record (UPSERT) that the `subject` granted consent for the cloud `driver`/`connection` with
+/// `scope`. Last-writer-wins per `(driver, connection)`. Selectors + metadata only — the refresh
+/// token itself is sealed separately in `secret_store`; this row carries no key material, so it needs
+/// no passphrase (the same passphrase-free path as `active_account`).
+///
+/// # Errors
+/// [`SecretError::Backend`] on a DB failure (secret-free message).
+pub fn db_record_consent(
+    conn: &Connection,
+    driver: &str,
+    connection: &str,
+    subject: &str,
+    scope: &str,
+) -> Result<(), SecretError> {
+    conn.execute(
+        "INSERT INTO connection_consent (driver, connection, subject, scope) VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(driver, connection) DO UPDATE SET \
+             subject = excluded.subject, \
+             scope = excluded.scope, \
+             granted_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+        rusqlite::params![driver, connection, subject, scope],
+    )
+    .map_err(|e| SecretError::Backend(format!("recording consent: {e}")))?;
+    Ok(())
+}
+
+/// Read the recorded consent for `driver`/`connection`, or `None` if no consent was granted /
+/// unreadable. Best-effort (selectors + metadata only; no passphrase) so the commit resolver can
+/// consult it on the passphrase-free path.
+#[must_use]
+pub fn db_get_consent(conn: &Connection, driver: &str, connection: &str) -> Option<ConsentRow> {
+    conn.query_row(
+        "SELECT subject, scope, granted_at FROM connection_consent WHERE driver = ?1 AND connection = ?2",
+        rusqlite::params![driver, connection],
+        |r| {
+            Ok(ConsentRow {
+                subject: r.get(0)?,
+                scope: r.get(1)?,
+                granted_at: r.get(2)?,
+            })
+        },
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +395,52 @@ mod tests {
             Err(err) => assert_eq!(err.code(), "secret_locked"),
             Ok(_) => panic!("a wrong passphrase must fail to unwrap the data key"),
         }
+    }
+
+    #[test]
+    fn consent_is_recorded_against_the_connection_and_carries_no_secret() {
+        // t54 / M4: granting consent records a row against the (driver, connection) — selectors +
+        // metadata only. No passphrase is needed (the row holds no key material), and the recorded
+        // value is the consent fact (subject + scope + time), never a credential.
+        let conn = migrated_conn();
+        assert!(db_get_consent(&conn, "gmail", "work").is_none());
+
+        db_record_consent(&conn, "gmail", "work", "a@b.com", "gmail.readonly").unwrap();
+        let row = db_get_consent(&conn, "gmail", "work").expect("consent recorded");
+        assert_eq!(row.subject, "a@b.com");
+        assert_eq!(row.scope, "gmail.readonly");
+        assert!(!row.granted_at.is_empty());
+
+        // The consent ledger is independent per connection and per driver.
+        assert!(db_get_consent(&conn, "gmail", "personal").is_none());
+        assert!(db_get_consent(&conn, "github", "work").is_none());
+
+        // Last-writer-wins on re-consent (e.g. a re-grant with a wider scope).
+        db_record_consent(&conn, "gmail", "work", "a@b.com", "gmail.modify").unwrap();
+        assert_eq!(
+            db_get_consent(&conn, "gmail", "work").unwrap().scope,
+            "gmail.modify"
+        );
+
+        // The consent table stores NO credential material — only the metadata columns exist.
+        let cols: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT name FROM pragma_table_info('connection_consent')")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows
+        };
+        assert!(
+            !cols.iter().any(|c| c.contains("secret")
+                || c.contains("token")
+                || c.contains("ciphertext")
+                || c.contains("nonce")),
+            "the consent ledger must carry no secret column, got {cols:?}"
+        );
     }
 
     #[test]

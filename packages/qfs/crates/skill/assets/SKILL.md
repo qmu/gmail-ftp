@@ -68,6 +68,15 @@ The four archetypes (RFD §5):
    contract bug to fix in the driver, never prose to bolt onto this skill. DESCRIBE is the only
    thing you read.
 
+6. **Cloud connections require sign-in (M4).** A driver that reaches an external service over OAuth
+   (gmail, gdrive, ga, github, slack, objstore, cf) is a **cloud** driver: it is unusable until you
+   have signed in to qfs identity (`qfs identity signup <email>`) **and** added a connection for it
+   (`qfs connection add <driver> <name>`), which records your consent against that connection. An
+   unauthenticated operator fails closed — a cloud driver will not bind a credential at COMMIT
+   without a consented, signed-in connection. Local drivers (`local`, `git`, `sql`, `sys`) are
+   ungated. (DESCRIBE/PREVIEW stay pure — sign-in and consent happen only at bind/commit time, never
+   from a `preview`.)
+
 ---
 
 ## Worked examples (one per driver — identical four steps)

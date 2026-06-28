@@ -17,7 +17,8 @@
 use std::io::Read;
 
 use qfs_cmd::ConnectionAction;
-use qfs_secrets::{ConnectionId, CredentialKey, DriverId, Secret, Secrets};
+use qfs_identity::{IdentityStore, SoleUser};
+use qfs_secrets::{is_cloud_driver, ConnectionId, CredentialKey, DriverId, Secret, Secrets};
 use rusqlite::Connection;
 
 use crate::secret_store::{self, SqliteSecrets};
@@ -88,12 +89,73 @@ fn cred_key(driver: &str, connection: &str) -> Result<CredentialKey, String> {
     Ok(CredentialKey::new(DriverId(driver.to_string()), conn_id))
 }
 
+/// t54 / M4 — the **sign-in mandatory** gate for a cloud driver. A cloud connection is unusable for
+/// an unauthenticated operator (decision B/C: fail closed), so `connection add`/`use` for a cloud
+/// driver first resolves the signed-in identity from the System-DB identity store (t45). Returns the
+/// operator's identity (their primary email) to record on the consent grant, or a structured,
+/// secret-free error naming the remedy.
+///
+/// Sessions (t46) are not yet wired into the CLI, so "signed in" today means **a signed-up identity
+/// exists on this host**: exactly one user resolves unambiguously; many users without a session can't
+/// be attributed, so we fail closed and ask for an explicit identity rather than guessing.
+///
+/// OPEN PRODUCT DECISION (flagged, not guessed — roadmap §3.1 talks teams, not the solo case): does a
+/// solo single-user laptop still need to sign in for a cloud connection? Today we apply the rule
+/// uniformly (fail closed) — the safe default — and leave relaxing it for the solo case to a product
+/// call rather than baking an implicit exception here.
+fn require_signed_in(driver: &str) -> Result<String, String> {
+    let store = crate::identity::open_identity_store()?;
+    match store
+        .sole_user()
+        .map_err(|e| format!("checking sign-in status: {e}"))?
+    {
+        SoleUser::One(u) => Ok(u.primary_email),
+        SoleUser::None => Err(format!(
+            "cloud driver '{driver}' requires sign-in — run `qfs identity signup <email>` first \
+             (cloud connections are unusable for an unauthenticated operator)"
+        )),
+        SoleUser::Many => Err(format!(
+            "cloud driver '{driver}' requires a signed-in identity, but this host has multiple users \
+             and no session yet — sign in as a specific identity before adding a cloud connection"
+        )),
+    }
+}
+
+/// The OAuth scope a cloud connection's consent is recorded against — the driver's minimum scope set
+/// (metadata, a §10 hint, never a token). Recorded on the consent grant so a later under-scoped use
+/// is diagnosable; the live token negotiation that actually obtains these scopes is the driver's
+/// OAuth client (`crates/google-auth`), out of band of this metadata.
+fn consent_scope(driver: &str) -> &'static str {
+    match driver {
+        "gmail" => "gmail.readonly",
+        "gdrive" => "drive.readonly",
+        "ga" => "analytics.readonly",
+        "github" => "repo",
+        "slack" => "channels:read",
+        "objstore" => "storage.read",
+        "cf" => "account.read",
+        _ => "",
+    }
+}
+
 fn run_inner(action: &ConnectionAction) -> Result<String, String> {
     match action {
         ConnectionAction::Add { driver, connection } => {
+            // t54 / M4 — sign-in MANDATORY for a cloud driver. Resolve (and require) the signed-in
+            // identity BEFORE touching the secret store or stdin, so an unauthenticated operator
+            // fails closed up front (decision B/C). Local drivers are ungated (the M4 rule is a
+            // cloud-tier concern only); `subject` is `None` for them.
+            let subject = if is_cloud_driver(&DriverId(driver.clone())) {
+                Some(require_signed_in(driver)?)
+            } else {
+                None
+            };
             let store = open_store()?;
             let key = cred_key(driver, connection)?;
-            // The credential value comes from stdin — never argv.
+            // The credential value comes from stdin — never argv. For a cloud driver this is the
+            // refresh token provisioned out of band (the wasm/refresh-only path the OAuth client
+            // also feeds); the interactive loopback consent flow is the driver's native-only
+            // `crates/google-auth` `authorize()` and is not exercised here (no network in this path).
             let mut buf = String::new();
             std::io::stdin()
                 .read_to_string(&mut buf)
@@ -108,6 +170,23 @@ fn run_inner(action: &ConnectionAction) -> Result<String, String> {
             store
                 .put(&key, Secret::from(value))
                 .map_err(|e| format!("storing the credential: {e}"))?;
+            // For a cloud driver, RECORD the consent against the connection (selectors + metadata
+            // only — never the token, which the store sealed above). This is the load-bearing M4
+            // state the commit-time bind gate consults to let the driver proceed.
+            if let Some(subject) = subject {
+                let proj = open_project_conn()?;
+                secret_store::db_record_consent(
+                    &proj,
+                    driver,
+                    connection,
+                    &subject,
+                    consent_scope(driver),
+                )
+                .map_err(|e| format!("recording consent: {e}"))?;
+                return Ok(format!(
+                    "stored credential and recorded consent for {driver}/{connection} (granted by {subject})"
+                ));
+            }
             Ok(format!("stored credential for {driver}/{connection}"))
         }
         ConnectionAction::List { driver } => {
@@ -138,6 +217,11 @@ fn run_inner(action: &ConnectionAction) -> Result<String, String> {
             // `active_account` table (selectors only — no passphrase needed). The commit resolver
             // reads it back via `active_connection()`.
             let _ = cred_key(driver, connection)?;
+            // t54 / M4 — selecting a cloud connection is gated on sign-in too: an unauthenticated
+            // operator may not make a cloud connection active (fail closed).
+            if is_cloud_driver(&DriverId(driver.clone())) {
+                let _ = require_signed_in(driver)?;
+            }
             let conn = open_project_conn()?;
             secret_store::db_set_active(&conn, driver, connection)
                 .map_err(|e| format!("setting the active connection: {e}"))?;

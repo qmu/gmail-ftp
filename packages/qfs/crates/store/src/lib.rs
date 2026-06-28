@@ -282,6 +282,16 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
         name: "project_secret_store",
         sql: include_str!("schema/project_secrets.sql"),
     },
+    // t54 (roadmap M4): the cloud-connection consent ledger (`connection_consent`) — selectors +
+    // metadata only, recording that a signed-in operator granted a cloud connection explicit
+    // consent. Appended as a NEW version (#3) — migrations #1–#2 stay frozen (the checksum guard
+    // forbids editing a shipped migration). The passphrase-free read/write that fills these columns
+    // lives in the binary (`crates/qfs/src/secret_store.rs`); this declares the shape.
+    Migration {
+        version: 3,
+        name: "project_connection_consent",
+        sql: include_str!("schema/project_consent.sql"),
+    },
 ];
 
 /// Structured, secret-free persistence errors (AI-consumable; a DB path is infra, not a secret, but
@@ -452,8 +462,10 @@ mod tests {
         assert!(table_exists(proj.db(), "secret_store"));
         assert!(table_exists(proj.db(), "secret_meta"));
         assert!(table_exists(proj.db(), "active_account"));
-        // Both project migrations are recorded.
-        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 2);
+        // t54 migration #3: the cloud-connection consent ledger.
+        assert!(table_exists(proj.db(), "connection_consent"));
+        // All three project migrations are recorded.
+        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 3);
     }
 
     #[test]

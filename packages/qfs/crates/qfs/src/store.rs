@@ -141,8 +141,8 @@ mod tests {
         let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
         std::env::set_var("XDG_CONFIG_HOME", dir.path());
         let proj = open_project_db().unwrap().expect("config home resolves");
-        // Both project migrations applied (skeleton + t43 secret store).
-        assert_eq!(qfs_store::applied_migrations(proj.db()).unwrap().len(), 2);
+        // All project migrations applied (skeleton + t43 secret store + t54 consent ledger).
+        assert_eq!(qfs_store::applied_migrations(proj.db()).unwrap().len(), 3);
         match prev_xdg {
             Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
             None => std::env::remove_var("XDG_CONFIG_HOME"),
