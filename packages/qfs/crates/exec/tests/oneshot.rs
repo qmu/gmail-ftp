@@ -163,12 +163,29 @@ fn run_with_ack(
     commit: bool,
     irreversible_ack: bool,
 ) -> (i32, String, String) {
+    run_full(
+        src,
+        fmt,
+        commit,
+        irreversible_ack,
+        qfs_core::SafetyMode::default(),
+    )
+}
+
+fn run_full(
+    src: &str,
+    fmt: OutputFormat,
+    commit: bool,
+    irreversible_ack: bool,
+    safety_mode: qfs_core::SafetyMode,
+) -> (i32, String, String) {
     let engine = engine_with_mail();
     let reads = reads_with_mail();
     let ctx = ExecCtx {
         engine: &engine,
         reads: &reads,
         world_apply: None,
+        safety_mode,
     };
     let source = StmtSource::Expr(src.to_string());
     let mut out: Vec<u8> = Vec::new();
@@ -372,4 +389,69 @@ fn oneshot_commit_of_mistyped_where_fails_before_apply() {
     assert_eq!(code, 2, "a plan-time type error is a usage-class failure");
     let e: serde_json::Value = serde_json::from_str(err.trim()).unwrap();
     assert_eq!(e["error"]["code"], "incomparable_types");
+}
+
+// ---- t59: the selectable safety modes govern the REAL one-shot commit path ----
+
+#[test]
+fn t59_approve_everything_refuses_a_reversible_commit_autonomous_applies() {
+    use qfs_core::SafetyMode;
+    // Baseline: under the default Autonomous-in-policy mode, a reversible single-row INSERT commits
+    // with no ack (exit 0, committed via the in-memory engine).
+    let (code, out, _err) = run_full(
+        "INSERT INTO /mail/inbox VALUES (9, 'x')",
+        OutputFormat::Json,
+        true,
+        false,
+        SafetyMode::AutonomousInPolicy,
+    );
+    assert_eq!(code, 0, "autonomous auto-commits a reversible write");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(out.trim()).unwrap()["committed"],
+        true
+    );
+
+    // Same statement under Approve-everything: the most restrictive preset HOLDS even this
+    // reversible write — fail closed (exit 4, approval_required), ZERO effects applied.
+    let (code, out, err) = run_full(
+        "INSERT INTO /mail/inbox VALUES (9, 'x')",
+        OutputFormat::Json,
+        true,
+        false,
+        SafetyMode::ApproveEverything,
+    );
+    assert_eq!(
+        code, 4,
+        "approve-everything refuses a write autonomous would apply"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(out.trim()).unwrap()["committed"],
+        false
+    );
+    let e: serde_json::Value = serde_json::from_str(err.trim()).unwrap();
+    assert_eq!(e["error"]["kind"], "commit_required");
+    assert_eq!(e["error"]["code"], "approval_required");
+}
+
+#[test]
+fn t59_policy_only_auto_commits_an_irreversible_write_without_the_ack() {
+    use qfs_core::SafetyMode;
+    // Under Policy-only (unattended CI), an irreversible REMOVE auto-commits with NO ack — the
+    // write Autonomous-in-policy would have held. The policy floor still applies (the capability
+    // set allows REMOVE here, the CLI one-shot's within-policy posture).
+    let (code, out, _err) = run_full(
+        "REMOVE /mail/inbox",
+        OutputFormat::Json,
+        true,
+        false,
+        SafetyMode::PolicyOnly,
+    );
+    assert_eq!(
+        code, 0,
+        "policy-only auto-commits an irreversible write unattended"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(out.trim()).unwrap()["committed"],
+        true
+    );
 }

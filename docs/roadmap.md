@@ -44,7 +44,12 @@ Before any feature, two rules decide whether it is allowed to exist.
    > policy gate + irreversible-effect guard the CLI/MCP use — a reversible in-policy plan auto-commits,
    > an out-of-policy plan is refused with the decision, and an **irreversible** plan (REMOVE / CALL) is
    > never auto-applied: it raises a distinct one-time confirm that posts the explicit ack (the same
-   > acknowledgement `--commit-irreversible` drives). The *selectable* commit modes (§2.4) remain 🧭 t59.
+   > acknowledgement `--commit-irreversible` drives). The *selectable* commit modes (§2.4) ✅ (t59) have
+   > landed: the three presets are an operator setting stored as data (`/sys/settings` `safety_mode`,
+   > resolved with an env fallback to the safe default), and they govern the **real** commit path —
+   > `qfs_mcp::commit_plan` (MCP + dashboard) and the CLI one-shot — so e.g. *Approve-everything* refuses a
+   > reversible write *Autonomous-in-policy* would auto-apply, while the policy gate + irreversible-ack
+   > floor hold in every mode (an out-of-policy plan is denied regardless of mode).
    > The first `/sys/*` admin views ✅ (t53) have landed: the deployment's own state (`/sys/users`,
    > `/sys/projects`, `/sys/audit`, `/sys/connections`, `/sys/policies`) is now an ordinary set of qfs
    > paths backed by the System DB, readable from every face and writable via a gated
@@ -491,9 +496,11 @@ The preview reports *"reads only, 0 effects"* — pure, so it runs freely. Actin
 *Sending* those drafts is irreversible, so in the default mode (§2.4) a `CALL mail.send` over the same
 set is the step that waits for a human's approval — the reversible drafting above does not.
 
-### 2.4 The commit boundary is selectable 🧭 (decision J)
+### 2.4 The commit boundary is selectable ✅ (decision J)
 
-How much an agent may do on its own is an operator setting, not a fixed rule. Three presets:
+How much an agent may do on its own is an operator setting, not a fixed rule — stored as data in
+`/sys/settings` (`safety_mode`) and consulted live on the real commit path (MCP / dashboard / CLI).
+Three presets:
 
 | Mode | Reversible effects | Irreversible effects (send mail, merge PR, delete) |
 | --- | --- | --- |

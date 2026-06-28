@@ -163,6 +163,17 @@ impl SysBackend for SystemDbBackend {
                     ])
                 })
                 .collect(),
+            // t59: the deployment settings key/value (the safety-mode home). Metadata only.
+            SysNode::Settings => self.scan_system(
+                "SELECT key, value, updated_at FROM sys_settings ORDER BY key",
+                |r| {
+                    Ok(Row::new(vec![
+                        text(r, 0)?,
+                        text(r, 1)?,
+                        nullable_text(r, 2)?,
+                    ]))
+                },
+            )?,
         };
         Ok(RowBatch::new(schema, rows))
     }
@@ -200,6 +211,95 @@ impl SysBackend for SystemDbBackend {
 
         tx.commit().map_err(backend)?;
         Ok(1)
+    }
+
+    fn set_setting(&self, row: &RowBatch) -> Result<u64, SysError> {
+        let key = required_text(row, "key")?;
+        let value = required_text(row, "value")?;
+
+        let conn = self.system.lock().map_err(poisoned)?;
+        let tx = conn.unchecked_transaction().map_err(backend)?;
+
+        // Upsert on `key`: a setting is single-valued, so re-setting it replaces the prior value
+        // (and bumps `updated_at`). The safety mode is one such row (`key = 'safety_mode'`).
+        tx.execute(
+            "INSERT INTO sys_settings (key, value, updated_at) \
+             VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%SZ','now')) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            rusqlite::params![key, value],
+        )
+        .map_err(backend)?;
+
+        // Administration observes itself: append the t76 audit row in the SAME transaction (a torn
+        // write can never leave the setting un-audited). Metadata only (verb + path), never the
+        // value — the boundary `describe` enforces.
+        append_audit_tx(
+            &tx,
+            AuditEvent {
+                actor: ACTOR_CLI.to_string(),
+                connection: "default".to_string(),
+                verb: "INSERT".to_string(),
+                path: SysNode::Settings.path(),
+                committed: true,
+                ts: now_rfc3339(),
+            },
+        )
+        .map_err(backend)?;
+
+        tx.commit().map_err(backend)?;
+        Ok(1)
+    }
+}
+
+impl SystemDbBackend {
+    /// Read a single setting `value` by `key` from the System DB (best-effort: a missing row or a
+    /// read error yields `None`). The READ side of the `/sys/settings` round-trip.
+    #[must_use]
+    pub fn get_setting(&self, key: &str) -> Option<String> {
+        let conn = self.system.lock().ok()?;
+        conn.query_row(
+            "SELECT value FROM sys_settings WHERE key = ?1",
+            rusqlite::params![key],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    }
+
+    /// Resolve the active selectable **safety mode** (t59) from the persisted `/sys/settings` row,
+    /// **failing safe** to the default ([`SafetyMode::AutonomousInPolicy`](qfs_core::SafetyMode)) on
+    /// a missing/garbled value (decision: an unset/misconfigured mode falls to the safest sensible
+    /// default — irreversible needs approval — never to Policy-only-auto).
+    #[must_use]
+    pub fn resolve_safety_mode(&self) -> qfs_core::SafetyMode {
+        self.get_setting(SAFETY_MODE_KEY)
+            .map_or_else(qfs_core::SafetyMode::default, |v| {
+                qfs_core::SafetyMode::from_label_or_default(&v)
+            })
+    }
+}
+
+/// The `/sys/settings` key under which the selectable safety mode (t59) is stored.
+pub const SAFETY_MODE_KEY: &str = "safety_mode";
+
+/// Resolve the deployment's active selectable **safety mode** (t59) for the binary's commit faces
+/// (the CLI one-shot run context + the serve MCP/dashboard engine). Precedence, most-authoritative
+/// first, **failing safe** at every step (an unset/garbled source never opens the floor):
+///   1. the persisted `/sys/settings` `safety_mode` row (the operator's stored choice, surfaced as
+///      data and set via `INSERT INTO /sys/settings`);
+///   2. the `QFS_SAFETY_MODE` env (the unattended / no-System-DB config path — CI, agents);
+///   3. the safe default [`SafetyMode::AutonomousInPolicy`](qfs_core::SafetyMode).
+#[must_use]
+pub fn resolve_active_safety_mode() -> qfs_core::SafetyMode {
+    if let Some(backend) = SystemDbBackend::open_default() {
+        if let Some(value) = backend.get_setting(SAFETY_MODE_KEY) {
+            return qfs_core::SafetyMode::from_label_or_default(&value);
+        }
+    }
+    match std::env::var("QFS_SAFETY_MODE") {
+        Ok(value) => qfs_core::SafetyMode::from_label_or_default(&value),
+        Err(_) => qfs_core::SafetyMode::default(),
     }
 }
 
@@ -545,6 +645,77 @@ mod tests {
         let tail = crate::audit::recent_tail(&view).unwrap();
         assert_eq!(tail.len(), 1);
         assert_eq!(verify_chain(&tail, GENESIS_PREV_HASH), None);
+    }
+
+    fn settings_payload(key: &str, value: &str) -> RowBatch {
+        let schema = Schema::new(vec![
+            Column::new("key", ColumnType::Text, false),
+            Column::new("value", ColumnType::Text, false),
+        ]);
+        RowBatch::new(
+            schema,
+            vec![Row::new(vec![
+                Value::Text(key.into()),
+                Value::Text(value.into()),
+            ])],
+        )
+    }
+
+    /// t59: the selectable safety mode round-trips through `/sys/settings` — `set_setting` (the
+    /// `INSERT INTO /sys/settings` backend) persists it, `get_setting` / `resolve_safety_mode` read
+    /// it back, the upsert REPLACES on a re-set, and an unset/garbled value resolves SAFE.
+    #[test]
+    fn safety_mode_round_trips_through_sys_settings() {
+        let (_d, backend) = fixture_backend();
+
+        // Unset ⇒ the safe default (autonomous-in-policy).
+        assert_eq!(backend.get_setting(SAFETY_MODE_KEY), None);
+        assert_eq!(
+            backend.resolve_safety_mode(),
+            qfs_core::SafetyMode::AutonomousInPolicy
+        );
+
+        // Set policy-only, read it back as both the raw value and the resolved mode.
+        let n = backend
+            .set_setting(&settings_payload(SAFETY_MODE_KEY, "policy-only"))
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(
+            backend.get_setting(SAFETY_MODE_KEY).as_deref(),
+            Some("policy-only")
+        );
+        assert_eq!(
+            backend.resolve_safety_mode(),
+            qfs_core::SafetyMode::PolicyOnly
+        );
+        // The mutation is visible as DATA through the /sys/settings relation (one-engine-three-faces).
+        let settings = backend.scan(SysNode::Settings).unwrap();
+        assert_eq!(texts(&settings, "key"), vec!["safety_mode"]);
+        assert_eq!(texts(&settings, "value"), vec!["policy-only"]);
+
+        // Upsert REPLACES (a setting is single-valued) — re-set to approve-everything.
+        backend
+            .set_setting(&settings_payload(SAFETY_MODE_KEY, "approve-everything"))
+            .unwrap();
+        assert_eq!(
+            backend.resolve_safety_mode(),
+            qfs_core::SafetyMode::ApproveEverything
+        );
+        let settings = backend.scan(SysNode::Settings).unwrap();
+        assert_eq!(settings.rows.len(), 1, "upsert replaces, never duplicates");
+
+        // A garbled persisted value fails SAFE to the default (never Policy-only-auto).
+        backend
+            .set_setting(&settings_payload(SAFETY_MODE_KEY, "nonsense"))
+            .unwrap();
+        assert_eq!(
+            backend.resolve_safety_mode(),
+            qfs_core::SafetyMode::AutonomousInPolicy
+        );
+
+        // Each set self-audited (administration observes itself): 3 INSERT audit rows on /sys/settings.
+        let audit = backend.scan(SysNode::Audit).unwrap();
+        assert_eq!(texts(&audit, "path"), vec!["/sys/settings"; 3]);
     }
 
     #[test]

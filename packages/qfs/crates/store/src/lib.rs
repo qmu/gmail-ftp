@@ -297,6 +297,18 @@ pub const SYSTEM_MIGRATIONS: &[Migration] = &[
         name: "system_oidc_providers",
         sql: include_str!("schema/system_oidc_providers.sql"),
     },
+    // t59 (roadmap §2.4 / M5): the deployment SETTINGS key/value the `/sys/settings` admin path
+    // reads and (gated) writes — the home of the selectable AI safety mode (decision J), stored as
+    // data so it is describable / committable through one-engine-three-faces. Appended as a NEW
+    // version (#10) — migrations #1–#9 stay frozen (the checksum guard forbids editing a shipped
+    // migration). The rusqlite read/write that fills these columns lives in the binary-injected
+    // `SysBackend` (`crates/qfs/src/sys.rs`); this declares the shape. The setting CONFIGURES the
+    // safety floor, it never lowers it (an unset/garbled value resolves to the safe default).
+    Migration {
+        version: 10,
+        name: "system_settings",
+        sql: include_str!("schema/system_settings.sql"),
+    },
 ];
 
 /// The Project DB's ordered migration set (forward-only; append, never edit a shipped entry).
@@ -378,7 +390,7 @@ mod tests {
         let applied = migrate(&mut db, SYSTEM_MIGRATIONS).unwrap();
         assert_eq!(
             applied,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             "first migrate applies every pending version"
         );
         // Second call on the SAME db is a verified no-op (re-verifies the checksum, re-applies none).
@@ -486,7 +498,9 @@ mod tests {
         // t56 migration #9: the upstream OIDC federation provider registry + its envelope meta.
         assert!(table_exists(sys.db(), "oidc_providers"));
         assert!(table_exists(sys.db(), "oidc_provider_meta"));
-        assert_eq!(applied_migrations(sys.db()).unwrap().len(), 9);
+        // t59 migration #10: the /sys/settings deployment key/value (the safety-mode home).
+        assert!(table_exists(sys.db(), "sys_settings"));
+        assert_eq!(applied_migrations(sys.db()).unwrap().len(), 10);
     }
 
     #[test]
@@ -557,7 +571,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1, "data persisted across reopen");
-        assert_eq!(applied_migrations(sys2.db()).unwrap().len(), 9);
+        assert_eq!(applied_migrations(sys2.db()).unwrap().len(), 10);
     }
 
     #[test]

@@ -260,6 +260,7 @@ mod read_path {
             engine: &eng,
             reads: &rd,
             world_apply: None,
+            safety_mode: qfs_core::SafetyMode::default(),
         };
         let src = StmtSource::Expr("/mail/inbox |> WHERE id > 2".to_string());
         let (mut out, mut err) = (Vec::new(), Vec::new());

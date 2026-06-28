@@ -42,8 +42,12 @@ impl SysApplier {
         })?;
 
         match (&node.kind, sys_node) {
-            // The one gated write: a policy grant lands in the System DB + the audit chain.
+            // The gated writes: a policy grant, or a deployment setting (the safety mode — t59,
+            // upsert-on-`key`). Both land in the System DB + append a t76 audit row in one txn.
             (EffectKind::Insert, SysNode::Policies) => self.backend.insert_policy(&node.args),
+            (EffectKind::Insert | EffectKind::Upsert, SysNode::Settings) => {
+                self.backend.set_setting(&node.args)
+            }
             // /sys/audit is append-only; the other admin views are read-only. Reject every other
             // write at the applier too (so even a hand-built plan that bypassed the parse-time
             // capability gate cannot mutate them).
@@ -114,6 +118,10 @@ mod tests {
             self.inserted.lock().unwrap().push(row.clone());
             Ok(1)
         }
+        fn set_setting(&self, row: &RowBatch) -> Result<u64, SysError> {
+            self.inserted.lock().unwrap().push(row.clone());
+            Ok(1)
+        }
     }
 
     fn policy_row() -> RowBatch {
@@ -147,6 +155,34 @@ mod tests {
         let applier = SysApplier::new(backend.clone());
         let node = effect(EffectKind::Insert, "/sys/policies", policy_row());
         let out = applier.apply_shared(&node).expect("policy insert applies");
+        assert_eq!(out.affected, 1);
+        assert_eq!(
+            backend.inserted.lock().unwrap().len(),
+            1,
+            "row reached backend"
+        );
+    }
+
+    #[test]
+    fn insert_into_sys_settings_routes_to_the_backend() {
+        // t59: `INSERT INTO /sys/settings` (the safety-mode setter) routes to set_setting.
+        let backend = Arc::new(FakeBackend::default());
+        let applier = SysApplier::new(backend.clone());
+        let schema = Schema::new(vec![
+            Column::new("key", ColumnType::Text, false),
+            Column::new("value", ColumnType::Text, false),
+        ]);
+        let row = RowBatch::new(
+            schema,
+            vec![Row::new(vec![
+                Value::Text("safety_mode".into()),
+                Value::Text("policy-only".into()),
+            ])],
+        );
+        let node = effect(EffectKind::Insert, "/sys/settings", row);
+        let out = applier
+            .apply_shared(&node)
+            .expect("settings upsert applies");
         assert_eq!(out.affected, 1);
         assert_eq!(
             backend.inserted.lock().unwrap().len(),

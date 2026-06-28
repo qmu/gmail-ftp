@@ -147,13 +147,16 @@ pub enum InviteAction {
 /// launcher. Returns the process exit code.
 pub type InviteLauncher<'a> = dyn Fn(&InviteAction) -> i32 + 'a;
 
-/// The injected **run-context provider**: the binary supplies the `(Engine, ReadRegistry)` for
-/// `qfs run` — the [`Engine`] whose mount registry has the real drivers (so a `/path …` source
-/// resolves + plans + pushes down) and the [`qfs_exec::ReadRegistry`] of `ReadDriver` scan facets
-/// that execute the read. Both live in the binary (which owns the runtime-coupled local adapter) —
-/// NOT in qfs-cmd, which stays off qfs-driver-local. Mirrors the describe / shell / commit
-/// injections.
-pub type RunContextProvider<'a> = dyn Fn() -> (Engine, qfs_exec::ReadRegistry) + 'a;
+/// The injected **run-context provider**: the binary supplies the
+/// `(Engine, ReadRegistry, SafetyMode)` for `qfs run` — the [`Engine`] whose mount registry has the
+/// real drivers (so a `/path …` source resolves + plans + pushes down), the
+/// [`qfs_exec::ReadRegistry`] of `ReadDriver` scan facets that execute the read, and the resolved
+/// selectable **safety mode** (t59) that governs the one-shot commit gate (the deployment setting
+/// from `/sys/settings`, falling back to the safe default). All live in the binary (which owns the
+/// runtime-coupled local adapter + the System DB) — NOT in qfs-cmd, which stays off qfs-driver-local.
+/// Mirrors the describe / shell / commit injections.
+pub type RunContextProvider<'a> =
+    dyn Fn() -> (Engine, qfs_exec::ReadRegistry, qfs_core::SafetyMode) + 'a;
 
 /// qfs — one binary that is both a CLI and a server, exposing every external
 /// service through one uniform, filesystem-shaped, pipe-SQL DSL (RFD-0001 §1).
@@ -572,12 +575,14 @@ fn dispatch_run(opts: RunOpts, apply: &qfs_exec::WorldApply, run_ctx: &RunContex
     // The run context: the binary supplies the Engine (mounts with the real drivers, so a `FROM`
     // source resolves + plans + pushes down) and the ReadRegistry (the scan facets). With no
     // driver for a mount, a `/x` resolves to a structured capability error (exit 3).
-    let (engine, reads) = run_ctx();
+    let (engine, reads, safety_mode) = run_ctx();
     let ctx = qfs_exec::ExecCtx {
         engine: &engine,
         reads: &reads,
         // The binary injects the real interpreter-backed commit; qfs-cmd stays off qfs-runtime.
         world_apply: Some(apply),
+        // The resolved selectable safety mode (t59) governs the one-shot commit gate.
+        safety_mode,
     };
 
     let _ = opts.quiet; // `--quiet` suppresses progress; the renderers emit no progress yet.
@@ -891,8 +896,12 @@ mod tests {
 
     /// A stub run-context: an empty engine + empty read registry (read tests use the qfs-exec
     /// black-box API; the binary supplies the real local-driver context).
-    fn stub_run_ctx() -> (Engine, qfs_exec::ReadRegistry) {
-        (Engine::new(), qfs_exec::ReadRegistry::new())
+    fn stub_run_ctx() -> (Engine, qfs_exec::ReadRegistry, qfs_core::SafetyMode) {
+        (
+            Engine::new(),
+            qfs_exec::ReadRegistry::new(),
+            qfs_core::SafetyMode::default(),
+        )
     }
 
     /// Run with the no-op shell + serve launchers + empty describe + stub skill + stub connection

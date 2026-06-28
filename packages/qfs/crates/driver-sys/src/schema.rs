@@ -38,6 +38,10 @@ pub enum SysNode {
     /// does not store the stream (decision V); this is the bounded in-process snapshot, not a
     /// durable time series (retention is the consumer's, via the sink).
     Metrics,
+    /// `/sys/settings` — the deployment SETTINGS key/value (t59): the home of the selectable AI
+    /// safety mode (`key`/`value`/`updated_at`). The second gated WRITE in this surface: SELECT to
+    /// review, an upsert-on-`key` `INSERT INTO /sys/settings` to set a value (super-admin only).
+    Settings,
 }
 
 impl SysNode {
@@ -51,6 +55,7 @@ impl SysNode {
             "connections" => Some(Self::Connections),
             "policies" => Some(Self::Policies),
             "metrics" => Some(Self::Metrics),
+            "settings" => Some(Self::Settings),
             _ => None,
         }
     }
@@ -65,6 +70,7 @@ impl SysNode {
             Self::Connections => "connections",
             Self::Policies => "policies",
             Self::Metrics => "metrics",
+            Self::Settings => "settings",
         }
     }
 
@@ -153,6 +159,13 @@ pub fn sys_node_schema(node: SysNode) -> Schema {
             col("name", ColumnType::Text, false),
             col("kind", ColumnType::Text, false),
             col("value", ColumnType::Int, false),
+        ]),
+        // t59 deployment settings: a generic key/value (the safety-mode home). Metadata only — a
+        // setting name + its value + when it changed; no secret, no row payload.
+        SysNode::Settings => Schema::new(vec![
+            col("key", ColumnType::Text, false),
+            col("value", ColumnType::Text, false),
+            col("updated_at", ColumnType::Text, true),
         ]),
     }
 }

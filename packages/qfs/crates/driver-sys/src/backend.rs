@@ -33,6 +33,17 @@ pub trait SysBackend: Send + Sync {
     /// [`SysError::Backend`] on an I/O failure, or [`SysError::MalformedEffect`] if the row does
     /// not carry the policy columns.
     fn insert_policy(&self, row: &RowBatch) -> Result<u64, SysError>;
+
+    /// Apply a single-row `INSERT INTO /sys/settings` (t59) to the System DB **transactionally** —
+    /// an **upsert on `key`** (a setting is single-valued, so re-setting it replaces the value) —
+    /// appending the corresponding t76 audit row in the SAME transaction (administration observes
+    /// itself). Returns the affected row count (1 on success). This is how the selectable safety
+    /// mode is changed as a qfs statement (`INSERT INTO /sys/settings VALUES ('safety_mode', …)`).
+    ///
+    /// # Errors
+    /// [`SysError::Backend`] on an I/O failure, or [`SysError::MalformedEffect`] if the row does
+    /// not carry a non-empty `key` and `value`.
+    fn set_setting(&self, row: &RowBatch) -> Result<u64, SysError>;
 }
 
 /// A structured, **secret-free** error from the `/sys` backend (RFD §5, AI-consumable). Names a

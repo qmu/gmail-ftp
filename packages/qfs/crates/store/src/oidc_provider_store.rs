@@ -526,8 +526,8 @@ mod tests {
             .unwrap()
             .unwrap_or(false);
         assert!(idx_exists, "the issuer index was created");
-        // v9 is the last migration in the ledger.
+        // v9 (this migration) is in the applied ledger.
         let ledger = applied_migrations(&db).unwrap();
-        assert_eq!(ledger.last().unwrap().version, 9);
+        assert!(ledger.iter().any(|m| m.version == 9));
     }
 }

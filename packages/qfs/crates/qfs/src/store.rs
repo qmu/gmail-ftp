@@ -157,13 +157,13 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", dir.path());
         // First open creates + migrates (v1 skeleton + v2 audit chain t76 + v3 identity t45 + v4
         // sessions t46 + v5 oauth keys t48 + v6 oauth flow clients/codes t49 + v7 /sys/policies t53 +
-        // v8 invites/memberships t55 + v9 oidc providers t56).
+        // v8 invites/memberships t55 + v9 oidc providers t56 + v10 /sys/settings t59).
         let sys = open_system_db().unwrap().expect("config home resolves");
-        assert_eq!(qfs_store::applied_migrations(sys.db()).unwrap().len(), 9);
+        assert_eq!(qfs_store::applied_migrations(sys.db()).unwrap().len(), 10);
         drop(sys);
         // Second open is a verified no-op (still the same applied migrations).
         let sys2 = open_system_db().unwrap().expect("config home resolves");
-        assert_eq!(qfs_store::applied_migrations(sys2.db()).unwrap().len(), 9);
+        assert_eq!(qfs_store::applied_migrations(sys2.db()).unwrap().len(), 10);
         match prev_xdg {
             Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
             None => std::env::remove_var("XDG_CONFIG_HOME"),

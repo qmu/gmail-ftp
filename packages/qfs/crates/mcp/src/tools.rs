@@ -124,6 +124,15 @@ pub trait McpEngine: Send + Sync {
     /// # Errors
     /// An [`EngineError`] if the connection store cannot be listed.
     fn connections(&self) -> Result<Vec<ConnectionInfo>, EngineError>;
+
+    /// The active selectable **safety mode** (t59) this commit path is governed by — resolved by
+    /// the binary from the deployment setting (`/sys/settings`, falling back to the env config, then
+    /// the safe default). Default impl is [`SafetyMode::AutonomousInPolicy`](qfs_core::SafetyMode):
+    /// the safest sensible fallback, so an engine that does not (yet) resolve a mode behaves exactly
+    /// as the historical `RunMode::Server` posture (reversible-in-policy auto, irreversible held).
+    fn safety_mode(&self) -> qfs_core::SafetyMode {
+        qfs_core::SafetyMode::default()
+    }
 }
 
 /// A single MCP tool descriptor (`tools/list` entry): a name, a prescriptive `when to call`
@@ -341,9 +350,10 @@ pub enum CommitOutcome {
         /// The secret-free per-effect summaries (`"<VERB> <driver>:<path>"`).
         effects: Vec<String>,
     },
-    /// The irreversible-effect guard REFUSED the plan: it carries an irreversible effect (REMOVE /
-    /// CALL) and no explicit `ack` was supplied. This is the legible "needs human approval" signal
-    /// the dashboard maps to its one-time approval card. NOTHING was applied.
+    /// The active safety mode (t59) HELD the plan pending an explicit human `ack`: either it carries
+    /// an irreversible effect (REMOVE / CALL) under a holding mode, or the *approve-everything* mode
+    /// holds even a reversible write. This is the legible "needs human approval" signal the dashboard
+    /// maps to its one-time approval card. NOTHING was applied.
     NeedsApproval {
         /// The stable, secret-free needs-approval reason.
         reason: String,
@@ -354,16 +364,23 @@ pub enum CommitOutcome {
     Failed(EngineError),
 }
 
-/// Route a statement through the commit gate + guard — the SINGLE commit path both the MCP `commit`
-/// tool and the t52 dashboard approval card share (no second applier, no privileged shortcut). The
-/// order is load-bearing (defence in depth):
+/// Route a statement through the commit gate + the selectable **safety mode** (t59) — the SINGLE
+/// commit path both the MCP `commit` tool and the t52 dashboard approval card share (no second
+/// applier, no privileged shortcut). The order is load-bearing (defence in depth):
 ///   1. **policy gate** ([`qfs_server::gate_plan`], default-deny) — an out-of-policy plan is
-///      refused with the decision; the apply is NEVER reached (zero effects).
-///   2. **irreversible-ack guard** ([`qfs_core::IrreversibleGuard`], `RunMode::Server`) — an
-///      irreversible plan without `ack` is refused ("needs human approval"); never auto-applied.
-///      `RunMode::Server` IS the roadmap §2.4 *Autonomous-in-policy* default: a reversible in-policy
-///      plan auto-commits, an irreversible one is held for the explicit ack (the card's confirm).
-///   3. **apply** — only an in-policy, acked (or reversible) plan reaches the injected applier.
+///      refused with the decision; the apply is NEVER reached (zero effects). This is the FLOOR no
+///      mode can lower (the mode is consulted only on a plan the gate already allowed).
+///   2. **safety-mode decision** ([`qfs_core::IrreversibleGuard::decide`] over the engine's resolved
+///      [`SafetyMode`](qfs_core::SafetyMode)) — the live t59 governance. The same in-policy plan
+///      yields different outcomes per preset:
+///        - *Autonomous-in-policy* (default): reversible auto-commits, irreversible is held for the
+///          explicit `ack` (the card's confirm) — the historical `RunMode::Server` posture.
+///        - *Approve-everything*: BOTH reversible and irreversible are held for the ack — the most
+///          restrictive preset refuses a write Autonomous would auto-apply.
+///        - *Policy-only*: BOTH auto-commit (unattended CI) — the mode is the standing ack, but the
+///          policy floor in step 1 still denies an out-of-policy plan.
+///   3. **apply** — only a plan the mode resolved to auto-commit (reversible-in-policy, or acked, or
+///      Policy-only-in-policy) reaches the injected applier.
 #[must_use]
 pub fn commit_plan(engine: &dyn McpEngine, statement: &str, ack: bool) -> CommitOutcome {
     let plan = match engine.build_plan(statement) {
@@ -384,30 +401,60 @@ pub fn commit_plan(engine: &dyn McpEngine, statement: &str, ack: bool) -> Commit
         };
     }
 
-    // 2. The irreversible-effect guard. The unattended-commit posture (Server mode): an
-    //    irreversible plan WITHOUT an explicit ack is blocked — a legible "needs human approval"
-    //    verdict, never silently applied (t59 selectable-safety is a later ticket).
+    // 2. The selectable safety mode (t59), composed ON TOP OF the gate's allow. `within_policy` is
+    //    the gate verdict (true here — a denied plan returned above). The resolved preset decides
+    //    whether the in-policy plan auto-commits, is held for an explicit human ack, or (defensively,
+    //    out of policy) is denied — irreversibility read solely from the plan, never re-derived.
     let ack = if ack {
         qfs_core::Ack::Granted
     } else {
         qfs_core::Ack::Absent
     };
-    if let Err(needs) =
-        qfs_core::IrreversibleGuard::require_ack(&plan, qfs_core::RunMode::Server, ack)
-    {
-        return CommitOutcome::NeedsApproval {
-            reason: needs.reason().to_string(),
-            effects: gate.effects,
-        };
+    let mode = engine.safety_mode();
+    match qfs_core::IrreversibleGuard::decide(&plan, mode, gate.is_allow(), ack) {
+        qfs_core::SafetyDecision::AutoCommit => {}
+        qfs_core::SafetyDecision::NeedApproval => {
+            return CommitOutcome::NeedsApproval {
+                reason: needs_approval_reason(mode, &plan),
+                effects: gate.effects,
+            };
+        }
+        // Unreachable on an allowed plan (within_policy is true), but kept total: a mode never
+        // bypasses the policy floor, so a Deny here is surfaced as the policy refusal it is.
+        qfs_core::SafetyDecision::Deny => {
+            return CommitOutcome::PolicyDenied {
+                reason: "blocked by policy (default-deny)".to_string(),
+                effects: gate.effects,
+            };
+        }
     }
 
-    // 3. Apply (through the injected runtime-backed commit). Only reachable for an in-policy,
-    //    acked-or-reversible plan.
+    // 3. Apply (through the injected runtime-backed commit). Only reachable for a plan the mode
+    //    resolved to auto-commit.
     match engine.apply(&plan) {
         Ok(()) => {
             CommitOutcome::Applied(qfs_exec::PlanPreview::committed(qfs_core::preview(&plan)))
         }
         Err(e) => CommitOutcome::Failed(e),
+    }
+}
+
+/// The stable, secret-free "needs human approval" reason for a held commit — phrased by WHY the
+/// active mode held it (an irreversible effect under any mode that holds it, vs. the
+/// approve-everything mode holding even a reversible write), so the agent / approval card reads a
+/// legible cause rather than a generic refusal.
+#[must_use]
+fn needs_approval_reason(mode: qfs_core::SafetyMode, plan: &qfs_core::Plan) -> String {
+    if plan.is_irreversible() {
+        format!(
+            "plan contains an irreversible effect (REMOVE / CALL); the `{mode}` safety mode holds \
+             it for explicit human approval (ack)"
+        )
+    } else {
+        format!(
+            "the `{mode}` safety mode holds every write for explicit human approval (ack), \
+             including this reversible one"
+        )
     }
 }
 

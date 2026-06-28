@@ -53,7 +53,9 @@ pub use registry::{
     ProcRegistry, Realm, ScopeResolution, RESERVED_REALMS,
 };
 pub use resolve::{capability_verb_for, write_verb_for, ResolveError, ResolvedCall, Resolver};
-pub use security::{Ack, IrreversibleGuard, NeedsPreview, RunMode};
+pub use security::{
+    Ack, IrreversibleGuard, NeedsPreview, RunMode, SafetyDecision, SafetyMode, UnknownSafetyMode,
+};
 pub use stdlib::{
     AggregateFactory, AggregateKind, AggregateState, AliasDecl, BuiltinEval, BuiltinFn, EnvSource,
     EvalCtx, FnError, FnSig, HigherOrderKind, MapEnv, NoEnv, PlanNode, PlanNodeKind, Prelude,

@@ -86,6 +86,14 @@ impl McpEngine for ServeMcpEngine {
         }
     }
 
+    fn safety_mode(&self) -> qfs_core::SafetyMode {
+        // t59: resolve the active selectable safety mode LIVE per commit — the persisted
+        // /sys/settings choice, else the env config, else the safe default. Resolving per call (not
+        // once at boot) lets an operator change the mode (an `INSERT INTO /sys/settings`) take effect
+        // without restarting serve; the read is cheap and a commit already touches the System DB.
+        crate::sys::resolve_active_safety_mode()
+    }
+
     fn connections(&self) -> Result<Vec<ConnectionInfo>, EngineError> {
         // Best-effort, redacted: open the SAME envelope-encrypted store `qfs connection list`
         // reads, list selectors + metadata ONLY (never credential material). If the store cannot

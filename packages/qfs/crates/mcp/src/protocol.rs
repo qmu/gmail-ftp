@@ -112,6 +112,8 @@ mod tests {
         applied: Mutex<bool>,
         /// Whether `apply` should report a failure.
         apply_fails: bool,
+        /// The active t59 safety mode this engine reports (default = Autonomous-in-policy).
+        mode: qfs_core::SafetyMode,
     }
 
     fn insert_plan() -> qfs_core::Plan {
@@ -175,6 +177,9 @@ mod tests {
                 connection: "work".to_string(),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
             }])
+        }
+        fn safety_mode(&self) -> qfs_core::SafetyMode {
+            self.mode
         }
     }
 
@@ -422,5 +427,133 @@ mod tests {
         // A build failure is an in-band isError tool result (a successful JSON-RPC response).
         assert!(v.get("error").is_none());
         assert_eq!(v["result"]["isError"], true);
+    }
+
+    // --- t59: the three selectable safety presets, LIVE on the real `commit_plan` path -----------
+
+    use crate::tools::{commit_plan, CommitOutcome};
+    use qfs_core::SafetyMode;
+
+    /// Build a FakeEngine for an in-policy commit under `mode` (the verb is explicitly allowed so
+    /// the policy gate passes and the mode decision is what's exercised).
+    fn engine_for(plan: qfs_core::Plan, verb: qfs_server::Verb, mode: SafetyMode) -> FakeEngine {
+        FakeEngine {
+            plan: Some(plan),
+            policy: Some(allow_policy(&[verb])),
+            mode,
+            ..Default::default()
+        }
+    }
+
+    /// Autonomous-in-policy: a reversible in-policy write AUTO-COMMITS; an irreversible one is HELD.
+    #[test]
+    fn autonomous_auto_commits_reversible_holds_irreversible() {
+        let rev = engine_for(
+            insert_plan(),
+            qfs_server::Verb::Insert,
+            SafetyMode::AutonomousInPolicy,
+        );
+        assert!(
+            matches!(
+                commit_plan(&rev, "INSERT ...", false),
+                CommitOutcome::Applied(_)
+            ),
+            "autonomous auto-commits a reversible in-policy write"
+        );
+        assert!(*rev.applied.lock().unwrap());
+
+        let irr = engine_for(
+            remove_plan(),
+            qfs_server::Verb::Remove,
+            SafetyMode::AutonomousInPolicy,
+        );
+        assert!(
+            matches!(
+                commit_plan(&irr, "REMOVE ...", false),
+                CommitOutcome::NeedsApproval { .. }
+            ),
+            "autonomous holds an irreversible write for approval"
+        );
+        assert!(
+            !*irr.applied.lock().unwrap(),
+            "the held plan applied nothing"
+        );
+    }
+
+    /// Approve-everything (most restrictive): it HOLDS even a reversible in-policy write that
+    /// Autonomous would auto-apply — the key differentiating behaviour, proven on the real path.
+    #[test]
+    fn approve_everything_holds_a_reversible_write_on_the_commit_path() {
+        let eng = engine_for(
+            insert_plan(),
+            qfs_server::Verb::Insert,
+            SafetyMode::ApproveEverything,
+        );
+        match commit_plan(&eng, "INSERT ...", false) {
+            CommitOutcome::NeedsApproval { reason, .. } => {
+                assert!(
+                    reason.contains("approve-everything"),
+                    "names the mode: {reason}"
+                );
+            }
+            other => panic!("approve-everything must hold a reversible write, got {other:?}"),
+        }
+        assert!(!*eng.applied.lock().unwrap(), "nothing applied while held");
+
+        // The explicit ack (the card's confirm) satisfies the hold and the write applies.
+        let acked = engine_for(
+            insert_plan(),
+            qfs_server::Verb::Insert,
+            SafetyMode::ApproveEverything,
+        );
+        assert!(matches!(
+            commit_plan(&acked, "INSERT ...", true),
+            CommitOutcome::Applied(_)
+        ));
+        assert!(*acked.applied.lock().unwrap());
+    }
+
+    /// Policy-only (least restrictive, for CI): it AUTO-COMMITS an irreversible in-policy write
+    /// with no per-call ack — the write Autonomous would have held.
+    #[test]
+    fn policy_only_auto_commits_irreversible_on_the_commit_path() {
+        let eng = engine_for(
+            remove_plan(),
+            qfs_server::Verb::Remove,
+            SafetyMode::PolicyOnly,
+        );
+        assert!(
+            matches!(
+                commit_plan(&eng, "REMOVE ...", false),
+                CommitOutcome::Applied(_)
+            ),
+            "policy-only auto-commits an irreversible in-policy write unattended"
+        );
+        assert!(*eng.applied.lock().unwrap());
+    }
+
+    /// The FLOOR: an out-of-policy plan is denied in EVERY mode — no preset bypasses the gate, and
+    /// the apply is never reached (most-restrictive-wins).
+    #[test]
+    fn out_of_policy_is_denied_in_every_mode_on_the_commit_path() {
+        for mode in SafetyMode::ALL {
+            // No explicit allow rule ⇒ default-deny gate refuses the INSERT before the mode runs.
+            let eng = FakeEngine {
+                plan: Some(insert_plan()),
+                mode,
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    commit_plan(&eng, "INSERT ...", true),
+                    CommitOutcome::PolicyDenied { .. }
+                ),
+                "{mode:?} must deny an out-of-policy plan even with ack"
+            );
+            assert!(
+                !*eng.applied.lock().unwrap(),
+                "{mode:?} applied a denied plan"
+            );
+        }
     }
 }
