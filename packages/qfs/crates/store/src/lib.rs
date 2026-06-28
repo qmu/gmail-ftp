@@ -43,6 +43,9 @@ pub mod worm;
 mod identity_store;
 pub use identity_store::SqliteIdentityStore;
 
+mod invite_store;
+pub use invite_store::SqliteInviteStore;
+
 mod session_store;
 pub use session_store::SqliteSessionStore;
 
@@ -266,6 +269,18 @@ pub const SYSTEM_MIGRATIONS: &[Migration] = &[
         name: "system_policies",
         sql: include_str!("schema/system_policies.sql"),
     },
+    // t55 (roadmap M5): invites + memberships — the JOINING half of decision B. `invites` holds
+    // one-time, expiring invitations (the token stored ONLY as a `sha256` digest, like sessions /
+    // password hashes) and `memberships` links a redeemed user to the host (or a project). Appended
+    // as a NEW version (#8) — migrations #1–#7 stay frozen (the checksum guard forbids editing a
+    // shipped migration). The rusqlite `SqliteInviteStore` impl that fills these lives in
+    // `invite_store.rs`. MEMBERSHIP ONLY: a row here says "belongs", never "may do X" (§4.1; the ACL
+    // is t57).
+    Migration {
+        version: 8,
+        name: "system_invites",
+        sql: include_str!("schema/system_invites.sql"),
+    },
 ];
 
 /// The Project DB's ordered migration set (forward-only; append, never edit a shipped entry).
@@ -347,7 +362,7 @@ mod tests {
         let applied = migrate(&mut db, SYSTEM_MIGRATIONS).unwrap();
         assert_eq!(
             applied,
-            vec![1, 2, 3, 4, 5, 6, 7],
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
             "first migrate applies every pending version"
         );
         // Second call on the SAME db is a verified no-op (re-verifies the checksum, re-applies none).
@@ -449,7 +464,10 @@ mod tests {
         assert!(table_exists(sys.db(), "oauth_refresh_tokens"));
         // t53 migration #7: the /sys/policies grant rows.
         assert!(table_exists(sys.db(), "sys_policies"));
-        assert_eq!(applied_migrations(sys.db()).unwrap().len(), 7);
+        // t55 migration #8: the invites + memberships tables.
+        assert!(table_exists(sys.db(), "invites"));
+        assert!(table_exists(sys.db(), "memberships"));
+        assert_eq!(applied_migrations(sys.db()).unwrap().len(), 8);
     }
 
     #[test]
@@ -520,6 +538,31 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1, "data persisted across reopen");
-        assert_eq!(applied_migrations(sys2.db()).unwrap().len(), 7);
+        assert_eq!(applied_migrations(sys2.db()).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn system_invites_migration_v8_applies_idempotently() {
+        // t55: migration #8 is idempotent — opening the System DB twice applies it once, re-verifies
+        // it the second time (checksum), and the invites/memberships tables + their indexes exist.
+        let mut db = Db::open(&MemorySource).unwrap();
+        let applied = migrate(&mut db, SYSTEM_MIGRATIONS).unwrap();
+        assert!(applied.contains(&8), "v8 applied on the first migrate");
+        // A relaunch re-applies nothing (the v8 body is re-verified by checksum, not re-run).
+        assert!(migrate(&mut db, SYSTEM_MIGRATIONS).unwrap().is_empty());
+        assert!(table_exists(&db, "invites"));
+        assert!(table_exists(&db, "memberships"));
+        // The unique index that makes "is a member of (scope, project)" singular is present.
+        let idx_exists: bool = db
+            .conn()
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='memberships_user_scope_project'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()
+            .unwrap()
+            .unwrap_or(false);
+        assert!(idx_exists, "the membership uniqueness index was created");
     }
 }

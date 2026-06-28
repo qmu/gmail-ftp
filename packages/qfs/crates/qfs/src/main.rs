@@ -11,7 +11,7 @@
 //! binary is that leaf, so it builds the wired shell and injects it into `qfs-cmd` via the
 //! [`qfs_cmd::ShellLauncher`]. The shell LOGIC itself lives in `qfs-exec`; this only wires it.
 
-use qfs::{commit, connection, describe, identity, serve, shell, store, version};
+use qfs::{commit, connection, describe, identity, invite, serve, shell, store, version};
 
 fn main() {
     // t40: the binary owns the build metadata (semver + git sha + target triple baked in by
@@ -61,6 +61,12 @@ fn main() {
         // is zeroized after); the password hash is never printed. AUTHENTICATION ONLY — no session
         // yet (t46), no authorization (M2).
         &identity::run_identity,
+        // t55 `qfs invite create/redeem/revoke`: the System-DB-backed invite store I/O + the
+        // binary-owned CSPRNG that mints the one-time token, injected here (qfs-cmd stays off the
+        // concrete backend). The token is generated, returned ONCE, and stored only as a hash; redeem
+        // creates a real identity + membership (identity ≠ authorization, §4.1). Email delivery + the
+        // HTTP accept-route session are documented seams (see crates/qfs/src/invite.rs).
+        &invite::run_invite,
         // The REAL `qfs run --commit` apply path: drives the qfs-runtime interpreter over the live
         // driver registry (local-fs today). qfs-cmd/qfs-exec stay off qfs-runtime; this is the leaf.
         &commit::apply_plan,

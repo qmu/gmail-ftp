@@ -31,11 +31,18 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod invite;
+mod invite_store;
 mod model;
 mod password;
 mod signup;
 mod store;
 
+pub use invite::{
+    Invite, InviteId, InviteStatus, InviteToken, Membership, MembershipId, MembershipScope,
+    NewInvite, Role,
+};
+pub use invite_store::{InviteError, InviteStore, Redemption};
 pub use model::{Account, AccountId, SoleUser, User, UserId, UserStatus, PROVIDER_LOCAL};
 pub use password::{hash_password, verify_password, PasswordError, PasswordHash};
 pub use signup::{

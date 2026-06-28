@@ -50,7 +50,8 @@ pub(crate) fn open_identity_store() -> Result<SqliteIdentityStore, String> {
 
 /// Read the password from STDIN as a [`Secret`] (never argv). Trims a single trailing newline so a
 /// `printf %s "$PW" | …` and an interactive `echo` both work; rejects an empty password early.
-fn read_password_from_stdin() -> Result<Secret, String> {
+/// Shared with the t55 invite-redeem launcher (which sets the redeemer's password the same way).
+pub(crate) fn read_password_from_stdin() -> Result<Secret, String> {
     let mut buf = String::new();
     std::io::stdin()
         .read_to_string(&mut buf)

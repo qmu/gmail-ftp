@@ -103,6 +103,50 @@ pub enum IdentityAction {
 /// like the connection launcher. Returns the process exit code.
 pub type IdentityLauncher<'a> = dyn Fn(&IdentityAction) -> i32 + 'a;
 
+/// A parsed `qfs invite <verb>` request, handed to the binary-injected [`InviteLauncher`] (t55, M5).
+/// This is the team-membership front door — a host operator MINTS a one-time, expiring invite, the
+/// invitee REDEEMS it to create their local identity + a membership (identity ≠ authorization, §4.1).
+/// Like [`IdentityAction`], the **password is never carried here** (the launcher reads it from STDIN
+/// at redeem). The redeem `token` IS carried (it is the one-time-URL secret the invitee presents) —
+/// it is single-use, burned on redeem, and never logged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InviteAction {
+    /// `invite create [--email <e>] [--scope host|project] [--project <p>] [--role <r>] [--ttl <s>]`
+    /// — mint an invite and print its one-time URL/token EXACTLY once. Metadata only (no secret on
+    /// argv); the token is generated + returned by the launcher.
+    Create {
+        /// The optional invitee email (the delivery target when mail is configured — a seam).
+        email: Option<String>,
+        /// The membership scope to seed (`host` default, or `project`).
+        scope: Option<String>,
+        /// The project ref for a project-scoped invite.
+        project: Option<String>,
+        /// The initial membership role label (`member` default).
+        role: Option<String>,
+        /// The invite time-to-live in seconds (the launcher applies a default if absent).
+        ttl_secs: Option<i64>,
+    },
+    /// `invite redeem <token> <email>` — redeem the one-time token to create the local user +
+    /// membership. The password is read from STDIN by the launcher, never argv.
+    Redeem {
+        /// The one-time token off the invite URL (single-use; burned on redeem).
+        token: String,
+        /// The email the redeemer signs up with (the new user's handle + local account subject).
+        email: String,
+    },
+    /// `invite revoke <id>` — revoke a still-pending invite so its token can no longer redeem.
+    Revoke {
+        /// The invite id to revoke.
+        id: i64,
+    },
+}
+
+/// The injected **invite launcher** (t55): the binary supplies the System-DB-backed invite store I/O
+/// and the CSPRNG that mints the one-time token (it depends on `qfs-store` + `qfs-identity`, which
+/// `qfs-cmd` may not). `qfs-cmd` only parses the verb and calls this, exactly like the identity
+/// launcher. Returns the process exit code.
+pub type InviteLauncher<'a> = dyn Fn(&InviteAction) -> i32 + 'a;
+
 /// The injected **run-context provider**: the binary supplies the `(Engine, ReadRegistry)` for
 /// `qfs run` — the [`Engine`] whose mount registry has the real drivers (so a `/path …` source
 /// resolves + plans + pushes down) and the [`qfs_exec::ReadRegistry`] of `ReadDriver` scan facets
@@ -205,6 +249,17 @@ enum Command {
         #[command(subcommand)]
         verb: IdentityVerb,
     },
+    /// Manage team invites + membership (t55, roadmap M5). An operator mints a one-time, expiring
+    /// invite; the invitee redeems it to create their local identity and join the host.
+    ///
+    /// MEMBERSHIP, not authorization (§4.1): redeeming makes someone a *member*, never grants a
+    /// capability (the ACL is t57). The one-time token is minted by a CSPRNG, returned ONCE, and
+    /// stored only as a hash; redeem is single-use and expiring. Email delivery is a documented seam
+    /// — when mail is not configured, the printed one-time URL is the artifact.
+    Invite {
+        #[command(subcommand)]
+        verb: InviteVerb,
+    },
     // The absence of a subcommand starts the interactive shell (handled in `run`).
 }
 
@@ -261,6 +316,45 @@ enum IdentityVerb {
     },
 }
 
+/// `qfs invite <verb>` — the team-invite + membership verbs (t55). Maps onto the injected
+/// [`InviteLauncher`] over the System-DB invite store. The one-time token is minted by the launcher's
+/// CSPRNG and printed once at `create`; the redeem password is read from STDIN (never argv).
+#[derive(Subcommand, Debug)]
+enum InviteVerb {
+    /// Mint a one-time, expiring invite and print its URL/token EXACTLY once (store it now — it is
+    /// never shown again). Metadata only; no secret on argv.
+    Create {
+        /// The optional invitee email (the delivery target when mail is configured — a seam).
+        #[arg(long)]
+        email: Option<String>,
+        /// The membership scope to seed: `host` (default) or `project`.
+        #[arg(long)]
+        scope: Option<String>,
+        /// The project ref for a `--scope project` invite.
+        #[arg(long)]
+        project: Option<String>,
+        /// The initial membership role label (`member` by default — a label, not a grant; §4.1).
+        #[arg(long)]
+        role: Option<String>,
+        /// The invite lifetime in seconds (a default is applied if omitted).
+        #[arg(long = "ttl")]
+        ttl_secs: Option<i64>,
+    },
+    /// Redeem a one-time invite token to create the local user + membership. The password is read
+    /// from STDIN (e.g. `printf %s "$PW" | qfs invite redeem <token> a@b.com`), never argv.
+    Redeem {
+        /// The one-time token off the invite URL (single-use; burned on redeem).
+        token: String,
+        /// The email to sign up with (the new user's handle + local account subject).
+        email: String,
+    },
+    /// Revoke a still-pending invite so its token can no longer redeem (idempotent).
+    Revoke {
+        /// The invite id to revoke.
+        id: i64,
+    },
+}
+
 /// The library entrypoint the thin `qfs` binary calls. Parses `args`, dispatches,
 /// and maps the outcome to a process exit code (`0` on success, `1` on a structured
 /// error, `2` on argv/usage errors from clap). Never panics.
@@ -282,6 +376,7 @@ pub fn run<I, T>(
     skill: &SkillProvider,
     connection: &ConnectionLauncher,
     identity: &IdentityLauncher,
+    invite: &InviteLauncher,
     apply: &qfs_exec::WorldApply,
     run_ctx: &RunContextProvider,
 ) -> i32
@@ -392,6 +487,12 @@ where
         Some(Command::Identity { verb }) => {
             tracing::debug!(target: "qfs::cmd", "dispatch identity via launcher");
             return identity(&identity_action(&verb));
+        }
+        // `invite` is dispatched through the injected launcher (the binary owns the System-DB invite
+        // store + the token CSPRNG; qfs-cmd stays off the concrete backend). Returns the exit code.
+        Some(Command::Invite { verb }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch invite via launcher");
+            return invite(&invite_action(&verb));
         }
     };
 
@@ -615,6 +716,33 @@ fn identity_action(verb: &IdentityVerb) -> IdentityAction {
     }
 }
 
+/// Map the clap-parsed [`InviteVerb`] to the public [`InviteAction`] handed to the injected
+/// [`InviteLauncher`]. Pure (selectors/handles only); the password is never carried — the launcher
+/// reads it from STDIN at redeem. The redeem token IS carried (it is the one-time-URL secret the
+/// invitee presents), single-use and never logged.
+fn invite_action(verb: &InviteVerb) -> InviteAction {
+    match verb {
+        InviteVerb::Create {
+            email,
+            scope,
+            project,
+            role,
+            ttl_secs,
+        } => InviteAction::Create {
+            email: email.clone(),
+            scope: scope.clone(),
+            project: project.clone(),
+            role: role.clone(),
+            ttl_secs: *ttl_secs,
+        },
+        InviteVerb::Redeem { token, email } => InviteAction::Redeem {
+            token: token.clone(),
+            email: email.clone(),
+        },
+        InviteVerb::Revoke { id } => InviteAction::Revoke { id: *id },
+    }
+}
+
 /// Render a [`CfsError`] to stderr: a human line, or a `{"error": {...}}` JSON
 /// envelope (AI-facing, RFD §5). This is the only place output mode is rendered.
 fn report_error(err: &CfsError, output: OutputMode) {
@@ -749,6 +877,12 @@ mod tests {
         9
     }
 
+    /// A stub invite launcher returning a distinct sentinel, so a test can assert the `invite` arm
+    /// dispatched into the injected launcher (the real System-DB invite store I/O lives in the binary).
+    fn stub_invite(_action: &InviteAction) -> i32 {
+        11
+    }
+
     /// A no-op world-apply: a `--commit` in a unit test "succeeds" without touching the World
     /// (the real interpreter-backed applier lives in the binary crate).
     fn noop_apply(_plan: &qfs_core::Plan) -> Result<(), qfs_exec::ExecError> {
@@ -776,6 +910,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_invite,
             &noop_apply,
             &stub_run_ctx,
         )
@@ -818,6 +953,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_invite,
             &noop_apply,
             &stub_run_ctx,
         );
@@ -868,6 +1004,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_invite,
             &noop_apply,
             &stub_run_ctx,
         );
@@ -960,6 +1097,50 @@ mod tests {
     }
 
     #[test]
+    fn invite_verbs_map_to_the_public_action() {
+        // The clap verb maps 1:1 to the injected-launcher action (selectors/handles only, no secret).
+        assert_eq!(
+            invite_action(&InviteVerb::Create {
+                email: Some("a@b.com".into()),
+                scope: None,
+                project: None,
+                role: None,
+                ttl_secs: Some(3600)
+            }),
+            InviteAction::Create {
+                email: Some("a@b.com".into()),
+                scope: None,
+                project: None,
+                role: None,
+                ttl_secs: Some(3600)
+            }
+        );
+        assert_eq!(
+            invite_action(&InviteVerb::Redeem {
+                token: "tok".into(),
+                email: "a@b.com".into()
+            }),
+            InviteAction::Redeem {
+                token: "tok".into(),
+                email: "a@b.com".into()
+            }
+        );
+        assert_eq!(
+            invite_action(&InviteVerb::Revoke { id: 7 }),
+            InviteAction::Revoke { id: 7 }
+        );
+    }
+
+    #[test]
+    fn invite_subcommand_parses_and_dispatches_to_the_launcher() {
+        // `qfs invite …` parses cleanly and routes into the injected invite launcher (the stub
+        // returns the sentinel 11). The real System-DB store I/O lives in the binary crate.
+        assert_eq!(run_t(["qfs", "invite", "create", "--email", "a@b.com"]), 11);
+        assert_eq!(run_t(["qfs", "invite", "redeem", "tok", "a@b.com"]), 11);
+        assert_eq!(run_t(["qfs", "invite", "revoke", "5"]), 11);
+    }
+
+    #[test]
     fn help_exits_zero_without_panic() {
         let code = run_t(["qfs", "--help"]);
         assert_eq!(code, 0);
@@ -984,6 +1165,7 @@ mod tests {
                 &provider,
                 &stub_connection,
                 &stub_identity,
+                &stub_invite,
                 &noop_apply,
                 &stub_run_ctx
             ),
@@ -999,6 +1181,7 @@ mod tests {
                 &provider,
                 &stub_connection,
                 &stub_identity,
+                &stub_invite,
                 &noop_apply,
                 &stub_run_ctx
             ),

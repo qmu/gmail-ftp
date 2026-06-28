@@ -29,6 +29,7 @@ pub mod docs;
 pub mod git;
 pub mod host;
 pub mod identity;
+pub mod invite;
 pub mod mcp;
 pub mod oauth;
 pub mod secret_store;
