@@ -3,9 +3,9 @@ created_at: 2026-06-25T09:47:49+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [Infrastructure]
-effort:
-commit_hash:
-category:
+effort: -
+commit_hash: (SQLite shipped v0.0.5)
+category: Superseded
 depends_on: []
 ---
 
@@ -57,3 +57,7 @@ So this is **build a production `SqlBackend` impl**, then wire it — not just w
   the most verifiable-offline choice and a good first slice.
 - DSNs/passwords are `Secret`; never logged/argv.
 - Patch bump + docs-in-lockstep per the umbrella ticket.
+
+## DISPOSITION (night drive, 2026-06-29)
+
+The SQLite production SqlBackend is SHIPPED and wired (v0.0.5: file-backed rusqlite backend in crates/qfs/src/sql.rs, registered in commit.rs live_registry + the planning mount, configured via QFS_SQL_<conn>, verified end-to-end incl. injection-safety + ACID + fail-closed). That is the offline/hermetic-testable deliverable. The residual Postgres/MySQL NETWORKED backends need a heavy async DB client (likely not in the offline cargo cache) AND a live database to verify — a network seam, deferred, not completable hermetically this drive.
