@@ -256,20 +256,15 @@ fn live_registry() -> DriverRegistry {
     // t54 / M4 — github is a CLOUD driver: it only binds when a signed-in operator has recorded
     // consent for the selected connection (`cloud_bind_allowed`). Otherwise it is left UNREGISTERED
     // (fail closed) and the refusal reason is logged secret-free, so a `/github` commit fails with a
-    // clear cause rather than silently acting without consent.
-    if let Some((gh_store, gh_cred)) = networked_credential("github") {
-        if cloud_bind_allowed("github", gh_cred.connection.as_str()) {
-            let gh_client = Arc::new(qfs_driver_github::RestGitHubClient::new(
-                crate::transport::github_transport(),
-                gh_store,
-                gh_cred,
-            ));
-            let gh_driver = qfs_driver_github::GitHubDriver::new(gh_client);
-            reg = reg.with(
-                DriverId::new("github"),
-                Arc::new(qfs_driver_github::github_apply_driver(&gh_driver)),
-            );
-        }
+    // clear cause rather than silently acting without consent. The credentialed client is built by
+    // the SHARED [`crate::clients`] builder, so the commit applier and the read facet
+    // (`run_engine_and_reads`) bind the SAME client construction + bind gate — one source of truth.
+    if let Some(gh_client) = crate::clients::live_github_client() {
+        let gh_driver = qfs_driver_github::GitHubDriver::new(gh_client);
+        reg = reg.with(
+            DriverId::new("github"),
+            Arc::new(qfs_driver_github::github_apply_driver(&gh_driver)),
+        );
     }
 
     // SQL: the real SQLite-backed driver, when at least one `QFS_SQL_<conn>` is configured. Real
@@ -324,21 +319,14 @@ fn live_registry() -> DriverRegistry {
     }
 
     // Slack: same shape (the shared reqwest transport, Slack's body-error rule on). Slack is a CLOUD
-    // driver too — gated on the same sign-in + recorded-consent bind rule as github (t54 / M4).
-    if let Some((sl_store, sl_cred)) = networked_credential("slack") {
-        if cloud_bind_allowed("slack", sl_cred.connection.as_str()) {
-            let sl_client = Arc::new(qfs_driver_slack::RestSlackClient::new(
-                crate::transport::slack_transport(),
-                sl_store,
-                sl_cred,
-                qfs_driver_slack::BodyErrorRule::On,
-            ));
-            let sl_driver = qfs_driver_slack::SlackDriver::new(sl_client);
-            reg = reg.with(
-                DriverId::new("slack"),
-                Arc::new(qfs_driver_slack::slack_apply_driver(&sl_driver)),
-            );
-        }
+    // driver too — gated on the same sign-in + recorded-consent bind rule as github (t54 / M4). The
+    // credentialed client comes from the SAME shared [`crate::clients`] builder the read facet uses.
+    if let Some(sl_client) = crate::clients::live_slack_client() {
+        let sl_driver = qfs_driver_slack::SlackDriver::new(sl_client);
+        reg = reg.with(
+            DriverId::new("slack"),
+            Arc::new(qfs_driver_slack::slack_apply_driver(&sl_driver)),
+        );
     }
 
     // Google (gmail / gdrive / ga): the real OAuth-authenticated clients over the shared reqwest
@@ -526,7 +514,7 @@ fn register_google(
 /// driver" (fail closed). A local (non-cloud) driver is never gated — `bind_gate` short-circuits to
 /// `Ok` — so this is a no-op for `local`/`git`/`sql`/`sys`. Best-effort + secret-free: it reads only
 /// metadata (an identity's existence, a consent row), never a token.
-fn cloud_bind_allowed(driver: &str, connection: &str) -> bool {
+pub(crate) fn cloud_bind_allowed(driver: &str, connection: &str) -> bool {
     let did = DriverId::new(driver);
     if !qfs_secrets::is_cloud_driver(&did) {
         return true;
@@ -578,7 +566,7 @@ fn consent_recorded(driver: &str, connection: &str) -> bool {
 /// missing/locked credential becomes a clear per-leg auth error at commit, never a panic at registry
 /// build. Returns `None` only if the connection id cannot be constructed (impossible for the literal
 /// `default` fallback) — in which case the driver is simply left unregistered rather than panicking.
-fn networked_credential(driver: &str) -> Option<(Arc<dyn Secrets>, CredentialKey)> {
+pub(crate) fn networked_credential(driver: &str) -> Option<(Arc<dyn Secrets>, CredentialKey)> {
     let store: Arc<dyn Secrets> = match crate::connection::open_store_for_commit() {
         Some(sqlite) => Arc::new(sqlite),
         None => Arc::new(EnvStore::from_process_env()),

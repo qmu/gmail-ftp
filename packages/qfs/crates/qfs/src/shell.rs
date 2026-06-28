@@ -252,6 +252,26 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
             ))),
         );
     }
+    // GitHub / Slack networked READ facets: register each driver's read adapter behind the SAME
+    // credentialed client the commit applier binds (the shared `crate::clients` builder), so a
+    // `FROM /github/.../pulls` or `FROM /slack/<ws>/users` (and therefore a `FROM … |> CALL` whose
+    // pipeline starts with a read) executes through the read executor. FAIL CLOSED: the builder
+    // returns `None` when the operator is unconfigured or the t54 cloud bind gate refuses, leaving
+    // the read facet UNREGISTERED so the `FROM` then fails honestly ("no source") rather than
+    // reading without authorization. A registered facet whose credential cannot be resolved at
+    // request time surfaces a clear auth error (see `crate::read_facets`), never empty rows.
+    if let Some(client) = crate::clients::live_github_client() {
+        reads = reads.with(
+            DriverId::new("github"),
+            Arc::new(crate::read_facets::GitHubReadDriver::new(client)),
+        );
+    }
+    if let Some(client) = crate::clients::live_slack_client() {
+        reads = reads.with(
+            DriverId::new("slack"),
+            Arc::new(crate::read_facets::SlackReadDriver::new(client)),
+        );
+    }
     (engine, reads, safety_mode)
 }
 

@@ -10,13 +10,61 @@
 
 use qfs_types::{Row, RowBatch, Schema};
 
+use crate::client::GitHubClient;
 use crate::dto::{
     BranchDto, CommentDto, FileMetaDto, IssueDto, PullDto, ReleaseDto, ReviewDto, RunDto,
 };
 use crate::error::GitHubError;
-use crate::path::Namespace;
+use crate::path::{GitHubPath, Namespace};
 use crate::pushdown::{build_params, PushdownResult};
 use crate::schema::schema_for;
+
+/// Execute a `FROM /github/{owner}/{repo}/<namespace>[/<id>/<sub>]` **collection read** end to end
+/// — the single in-crate entry point the binary's async `ReadDriver` adapter drives, mirroring
+/// [`qfs_driver_local::scan_rows`]. It composes the four pure-then-I/O stages this module and its
+/// siblings already own, so the binary adapter never re-derives the path→plan→fetch→decode logic:
+///
+/// 1. [`GitHubPath::parse_str`] — parse the addressed node (pure, no I/O, no token).
+/// 2. [`ReadPlan::list`] — lower `predicate` into pushed params + a truthful residual (pure).
+/// 3. [`GitHubClient::list`] — the **only** I/O: the credentialed, Link-paginated list fetch (the
+///    real client resolves the PAT lazily at request-build time, so a missing/locked credential
+///    surfaces here as [`GitHubError::Auth`] — fail closed, never empty rows, never a panic).
+/// 4. [`decode_list`] — the GitHub JSON → owned typed [`RowBatch`] boundary (no vendor type
+///    escapes).
+///
+/// The pushed query may honestly over-return relative to any unpushable predicate/limit; the
+/// executor re-applies the residual locally (the t20 property), exactly like the local scan.
+///
+/// A path that names the bare repo root (no namespace) is rejected — there is no listable
+/// collection there. A path that addresses a single object id without a sub-collection
+/// (`issues/123`) lists its effective collection and lets the residual trim it: this driver's seam
+/// is list-only (no per-id `get`), so the collection list is the honest superset.
+///
+/// # Errors
+/// [`GitHubError`] on a malformed path, an auth/transport/API failure, or a decode failure.
+pub fn read_rows(
+    client: &dyn GitHubClient,
+    path: &str,
+    predicate: Option<&qfs_types::Predicate>,
+) -> Result<RowBatch, GitHubError> {
+    let parsed = GitHubPath::parse_str(path)?;
+    let Some(namespace) = parsed.namespace else {
+        return Err(GitHubError::InvalidPath {
+            path: path.to_string(),
+            reason: "a GitHub read must name a collection namespace, not the repo root",
+        });
+    };
+    // A sub-collection read (`issues/123/comments`) scopes the list to the parent object id; a
+    // top-level collection read carries no scope. Only `(id, sub)` together form a sub scope.
+    let sub: Option<(String, Namespace)> = match (parsed.id.clone(), parsed.sub) {
+        (Some(id), Some(sub_ns)) => Some((id, sub_ns)),
+        _ => None,
+    };
+    let plan = ReadPlan::list(parsed.slug(), namespace, sub, predicate);
+    let sub_ref = plan.sub.as_ref().map(|(id, ns)| (id.as_str(), *ns));
+    let value = client.list(&plan.slug, plan.namespace, sub_ref, plan.params())?;
+    decode_list(plan.effective_namespace(), &value)
+}
 
 /// A pure, self-documenting read: which namespace under which `owner/repo`, the pushed query
 /// params, the optional sub-collection scope, and the **residual** predicate the engine re-checks
@@ -325,4 +373,64 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+#[cfg(test)]
+mod read_rows_tests {
+    //! `read_rows` against the in-memory [`MockGitHubClient`] — offline, no socket, no credential.
+    //! Proves the path→plan→fetch→decode composition the binary adapter drives returns the right
+    //! typed rows for a representative `FROM /github/.../<ns>` path, and records the exact list call.
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use crate::client::{MockGitHubClient, RecordedCall};
+    use qfs_types::Value;
+
+    #[test]
+    fn reads_a_pulls_collection_into_typed_rows() {
+        // FROM /github/octocat/hello/pulls — the representative collection read.
+        let client = MockGitHubClient::new().with_list(serde_json::json!([
+            { "number": 7, "title": "Add read facet", "state": "open",
+              "user": { "login": "octocat" }, "head": { "ref": "feature", "sha": "abc" },
+              "base": { "ref": "main" }, "merged": false },
+        ]));
+        let batch = read_rows(&client, "/github/octocat/hello/pulls", None).unwrap();
+        assert_eq!(batch.rows.len(), 1, "one pull row decoded");
+        // The first column of the pulls schema is `number` — confirm the row decoded, not empty.
+        assert_eq!(batch.rows[0].values[0], Value::Int(7));
+        // The mock recorded exactly the list call the plan lowered to (the `pulls` segment).
+        match client.recorded().as_slice() {
+            [RecordedCall::List { slug, segment, .. }] => {
+                assert_eq!(slug, "octocat/hello");
+                assert_eq!(segment, "pulls");
+            }
+            other => panic!("expected one recorded List call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reads_a_sub_collection_scoped_to_the_parent_id() {
+        // FROM /github/octocat/hello/issues/123/comments — the sub-collection read scopes to `123`.
+        let client = MockGitHubClient::new().with_list(serde_json::json!([
+            { "id": 55, "user": { "login": "octocat" }, "body": "thanks" },
+        ]));
+        let batch = read_rows(&client, "/github/octocat/hello/issues/123/comments", None).unwrap();
+        assert_eq!(batch.rows.len(), 1);
+        match client.recorded().as_slice() {
+            [RecordedCall::List { segment, .. }] => assert_eq!(segment, "comments"),
+            other => panic!("expected one recorded List call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repo_root_without_a_namespace_is_rejected() {
+        // There is no listable collection at the bare repo root — fail with a structured path error,
+        // never an empty batch.
+        let client = MockGitHubClient::new();
+        let err = read_rows(&client, "/github/octocat/hello", None).unwrap_err();
+        assert_eq!(err.code(), "github_invalid_path");
+        assert!(
+            client.recorded().is_empty(),
+            "a rejected path performs no I/O"
+        );
+    }
 }
