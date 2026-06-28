@@ -389,6 +389,14 @@ fn networked_credential(driver: &str) -> Option<(Arc<dyn Secrets>, CredentialKey
     };
     let connection =
         crate::connection::active_connection(driver).unwrap_or_else(|| "default".to_string());
+    // t81: a project/team-owned connection is gated on the acting operator's actor-policy BEFORE
+    // the credential binds — a member with no grant for the connection's scope cannot use it
+    // (default-deny). A denial leaves the driver UNREGISTERED (fail closed, like t54's cloud
+    // consent gate); a user-owned connection is unaffected (`bind_allowed` short-circuits to true).
+    // Metadata-only + passphrase-free: this never decrypts the secret — it only decides who may bind.
+    if !crate::shared_connection::bind_allowed(driver, &connection) {
+        return None;
+    }
     // `default` is always a valid connection name; an invalid persisted selection falls back to it.
     let acct = ConnectionId::new(&connection)
         .or_else(|_| ConnectionId::new("default"))

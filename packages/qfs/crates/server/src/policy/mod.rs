@@ -27,6 +27,9 @@ pub mod enforce;
 pub mod gate;
 pub mod grammar;
 pub mod model;
+// t81 (roadmap M5, decision U / §3.3): the shared-connection USE gate — the pure actor-policy
+// decision the binary's commit-time bind consults for a project/team-owned connection.
+pub mod shared;
 
 pub use audit::{FiredDecision, FiredPlanRecord};
 pub use context::{resolve_memberships, DecisionContext, MembershipResolver};
@@ -40,3 +43,4 @@ pub use grammar::{policy_from_ddl, policy_from_def, policy_to_rule_strings, rule
 pub use model::{
     Condition, DriverGlob, Effectivity, Policy, RoleGraph, Rule, ScopeGlob, Subject, Verb, VerbSet,
 };
+pub use shared::{evaluate_shared_use, SharedUseDecision};

@@ -50,6 +50,9 @@ mod envelope;
 mod key;
 mod resolve;
 mod secret;
+// t81 (roadmap M5): the PURE shared-connection USE gate (no I/O, no Secret), so it builds on both
+// native and wasm. The binary wires the real owner + actor-policy-grant state into it.
+mod shared;
 mod store;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -69,9 +72,14 @@ pub use consent::{bind_gate, is_cloud_driver, ConsentError, CLOUD_DRIVERS};
 pub use envelope::{
     derive_kek, generate_dek, generate_salt, open, seal, unwrap_dek, wrap_dek, EnvelopeError,
 };
-pub use key::{ConnectionId, ConnectionIdError, ConnectionRecord, CredentialKey, DriverId};
+pub use key::{
+    ConnectionId, ConnectionIdError, ConnectionRecord, CredentialKey, DriverId, OwnerScope,
+};
 pub use resolve::{resolve, ConnectionSource, Resolution, ResolveError};
 pub use secret::{Secret, REDACTED};
+// t81 (roadmap M5): the shared-connection USE gate. The binary's commit-time bind consults this to
+// fail closed for a member whose actor-policy does not grant a project-owned connection's scope.
+pub use shared::{shared_use_gate, SharedUseError};
 pub use store::{grant_scopes, ScopeError, ScopeGrant, SecretError, Secrets};
 
 #[cfg(not(target_arch = "wasm32"))]

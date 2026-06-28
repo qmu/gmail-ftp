@@ -99,6 +99,62 @@ impl CredentialKey {
     }
 }
 
+/// **Who owns a stored connection** (t81, decision U / §3.3) — the ownership axis that makes a
+/// connection *team-shared* rather than tied to one operator.
+///
+/// - [`OwnerScope::Me`] — a **user-owned** connection: the credential belongs to the operator who
+///   added it (the pre-t81 default; every existing connection deserializes to this via
+///   `#[serde(default)]`). Using it is ungated by the shared-connection actor-policy gate.
+/// - [`OwnerScope::Project`] — a **project/team-owned** connection: the credential belongs to the
+///   project and members USE it *as the team*, bounded by the t57 actor-policy (NOT by who holds a
+///   token). The secret stays envelope-encrypted; sharing is about WHO MAY USE it, not exposing the
+///   secret (§3.3). A member with no policy grant for the connection's scope **cannot** use it
+///   (default-deny — [`crate::shared_use_gate`]).
+///
+/// This is the *connection record's* ownership label (the t44 connection record, extended). It is
+/// metadata only — never a credential — so it is safe to `Debug`, serialize, and surface in
+/// `qfs connection list`. The owner is **not** the policy: a project-owned connection only *selects*
+/// which upstream credential an allowed effect rides; the actor's policy decides whether the effect
+/// is allowed at all (§3.3 — policy gates the actor, the connection picks the credential).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnerScope {
+    /// User-owned (the pre-t81 default): the operator who added it owns the credential.
+    #[default]
+    Me,
+    /// Project/team-owned: members use it as the team, gated by the t57 actor-policy.
+    Project,
+}
+
+impl OwnerScope {
+    /// Whether this connection is **project/team-owned** (the shared, policy-gated case).
+    #[must_use]
+    pub fn is_project(self) -> bool {
+        matches!(self, OwnerScope::Project)
+    }
+
+    /// The canonical, secret-free round-trip label (`me` / `project`) — for `/sys/connections`,
+    /// `connection list`, and the audit trail. Never a credential.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            OwnerScope::Me => "me",
+            OwnerScope::Project => "project",
+        }
+    }
+
+    /// Parse the canonical `me` / `project` label; any other word falls back to the fail-safe
+    /// default [`OwnerScope::Me`] (an unrecognized owner is treated as user-owned, NOT silently
+    /// shared — sharing must be explicit).
+    #[must_use]
+    pub fn from_label(word: &str) -> Self {
+        match word {
+            "project" => OwnerScope::Project,
+            _ => OwnerScope::Me,
+        }
+    }
+}
+
 /// A listing entry describing one stored connection — selectors + metadata only, **never**
 /// the credential. Safe to `Debug`, serialize, log, and surface in `qfs connection list`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,18 +166,40 @@ pub struct ConnectionRecord {
     /// When the credential was stored (RFC 3339). Plaintext metadata for `list`/audit.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Who owns the connection (t81). Defaults to [`OwnerScope::Me`] (user-owned) so a record
+    /// serialized before t81 — and every backend that does not track ownership — rehydrates to the
+    /// pre-t81 behaviour. The binary's SQLite store fills this from the project DB's
+    /// `shared_connection` table (a project-owned connection is one with a row there).
+    #[serde(default)]
+    pub owner_scope: OwnerScope,
 }
 
 impl ConnectionRecord {
     /// Construct a record. `created_at` is the caller's clock reading (the store stamps
-    /// it on `put`); kept as an argument so this type performs no I/O and stays pure.
+    /// it on `put`); kept as an argument so this type performs no I/O and stays pure. The owner
+    /// defaults to [`OwnerScope::Me`] (user-owned); use [`ConnectionRecord::with_owner_scope`] to
+    /// mark a project/team-owned connection.
     #[must_use]
     pub fn new(driver: DriverId, connection: ConnectionId, created_at: OffsetDateTime) -> Self {
         Self {
             driver,
             connection,
             created_at,
+            owner_scope: OwnerScope::Me,
         }
+    }
+
+    /// Set the [`OwnerScope`] (builder, t81) — marks a project/team-owned connection.
+    #[must_use]
+    pub fn with_owner_scope(mut self, owner_scope: OwnerScope) -> Self {
+        self.owner_scope = owner_scope;
+        self
+    }
+
+    /// Whether this connection is project/team-owned (the shared, actor-policy-gated case).
+    #[must_use]
+    pub fn is_shared(&self) -> bool {
+        self.owner_scope.is_project()
     }
 
     /// The `(driver, connection)` key this record describes.

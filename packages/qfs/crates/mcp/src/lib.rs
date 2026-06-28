@@ -71,3 +71,12 @@ pub use qfs_http_core::{HttpMethod, HttpRequest, HttpResponse};
 // production, but composing a real `Policy` is part of the trait's contract) — re-exported so the
 // `qfs` binary uses them WITHOUT a forbidden direct `qfs-server` edge.
 pub use qfs_server::{DriverGlob, Policy, Rule, Verb, VerbSet};
+// t81 (roadmap M5, decision U / §3.3): the shared-connection USE gate + the actor-policy DTOs the
+// binary's commit-time bind needs to decide whether a member may USE a project/team-owned connection
+// — re-exported through this same window so the `qfs` binary consumes them WITHOUT a forbidden direct
+// `qfs-server` edge (the binary's thin-entrypoint pin stays intact). `policy_from_def` + `PolicyDef`
+// let the binary rehydrate the stored `/sys/policies` grants into a `Policy` to evaluate.
+pub use qfs_server::{
+    evaluate_shared_use, policy_from_def, Condition, DecisionContext, PolicyDef, RoleGraph,
+    ScopeGlob, SharedUseDecision, Subject,
+};

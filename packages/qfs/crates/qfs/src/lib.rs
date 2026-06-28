@@ -36,6 +36,7 @@ pub mod secret_store;
 pub mod serve;
 pub mod serve_builtins;
 pub mod session;
+pub mod shared_connection;
 pub mod shell;
 pub mod sql;
 pub mod store;

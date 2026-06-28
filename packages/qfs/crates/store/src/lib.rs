@@ -335,6 +335,18 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
         name: "project_connection_consent",
         sql: include_str!("schema/project_consent.sql"),
     },
+    // t81 (roadmap M5, decision U / §3.3): the project/team-owned (shared) connection registry
+    // (`shared_connection`) — a row marks a connection PROJECT-owned and records the realm `scope`
+    // the acting member's actor-policy must grant to USE it. Selectors + metadata only; the
+    // credential stays encrypted in `secret_store` (migration #2). Appended as a NEW version (#4) —
+    // migrations #1–#3 stay frozen (the checksum guard forbids editing a shipped migration). The
+    // passphrase-free read/write that fills these columns lives in the binary
+    // (`crates/qfs/src/secret_store.rs`); this declares the shape.
+    Migration {
+        version: 4,
+        name: "project_shared_connection",
+        sql: include_str!("schema/project_shared_connections.sql"),
+    },
 ];
 
 /// Structured, secret-free persistence errors (AI-consumable; a DB path is infra, not a secret, but
@@ -515,8 +527,10 @@ mod tests {
         assert!(table_exists(proj.db(), "active_account"));
         // t54 migration #3: the cloud-connection consent ledger.
         assert!(table_exists(proj.db(), "connection_consent"));
-        // All three project migrations are recorded.
-        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 3);
+        // t81 migration #4: the project/team-owned (shared) connection registry.
+        assert!(table_exists(proj.db(), "shared_connection"));
+        // All four project migrations are recorded.
+        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 4);
     }
 
     #[test]

@@ -24,7 +24,7 @@ use std::sync::Mutex;
 
 use qfs_secrets::{
     derive_kek, generate_dek, generate_salt, open, seal, unwrap_dek, wrap_dek, ConnectionId,
-    ConnectionRecord, CredentialKey, DriverId, Secret, SecretError, Secrets,
+    ConnectionRecord, CredentialKey, DriverId, OwnerScope, Secret, SecretError, Secrets,
 };
 use rusqlite::{Connection, OptionalExtension};
 use time::format_description::well_known::Rfc3339;
@@ -152,9 +152,17 @@ impl Secrets for SqliteSecrets {
 
     fn list(&self, driver: Option<&DriverId>) -> Result<Vec<ConnectionRecord>, SecretError> {
         let conn = self.lock()?;
+        // t81: LEFT JOIN the `shared_connection` registry so each listed connection carries its
+        // OWNER (`me` vs `project`) — a connection with a `shared_connection` row is project/team
+        // owned. SELECTORS + metadata only (no `nonce`/`ciphertext`): the redaction contract holds —
+        // the listing never touches the encrypted value.
         let mut stmt = conn
             .prepare(
-                "SELECT driver, connection, created_at FROM secret_store ORDER BY driver, connection",
+                "SELECT s.driver, s.connection, s.created_at, sc.driver AS shared \
+                 FROM secret_store s \
+                 LEFT JOIN shared_connection sc \
+                   ON sc.driver = s.driver AND sc.connection = s.connection \
+                 ORDER BY s.driver, s.connection",
             )
             .map_err(|e| SecretError::Backend(format!("listing connections: {e}")))?;
         let rows = stmt
@@ -163,12 +171,14 @@ impl Secrets for SqliteSecrets {
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
+                    // The joined `shared_connection.driver` is non-NULL iff the connection is shared.
+                    r.get::<_, Option<String>>(3)?.is_some(),
                 ))
             })
             .map_err(|e| SecretError::Backend(format!("listing connections: {e}")))?;
         let mut out = Vec::new();
         for row in rows {
-            let (drv, acct, created) =
+            let (drv, acct, created, shared) =
                 row.map_err(|e| SecretError::Backend(format!("listing connections: {e}")))?;
             // A row whose connection name no longer parses is skipped rather than failing the list
             // (mirrors LocalStore::list); the names were validated on `put`, so this is defensive.
@@ -176,7 +186,13 @@ impl Secrets for SqliteSecrets {
                 continue;
             };
             let created_at = parse_created_at(&created);
-            let rec = ConnectionRecord::new(DriverId::new(drv), connection, created_at);
+            let owner = if shared {
+                OwnerScope::Project
+            } else {
+                OwnerScope::Me
+            };
+            let rec = ConnectionRecord::new(DriverId::new(drv), connection, created_at)
+                .with_owner_scope(owner);
             if driver.is_none_or(|d| &rec.driver == d) {
                 out.push(rec);
             }
@@ -279,6 +295,123 @@ pub fn db_get_consent(conn: &Connection, driver: &str, connection: &str) -> Opti
     .optional()
     .ok()
     .flatten()
+}
+
+/// A recorded project/team-owned (shared) connection — selectors + metadata ONLY (`scope`, who
+/// shared it, when), **never** a secret. The presence of a row marks a connection PROJECT-owned
+/// (t81 / decision U / §3.3); its [`scope`](SharedConnectionRow::scope) is the realm path the acting
+/// member's actor-policy must grant before the commit-time bind resolves the credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedConnectionRow {
+    /// The realm path glob (t71, e.g. `/projects/acme/**`) the member's actor-policy must grant to
+    /// USE this connection. A §10 hint, never a token.
+    pub scope: String,
+    /// The identity (email / user label, t45) that shared the connection. Audit metadata for the
+    /// §3.3 two-layer trace; never a credential.
+    pub shared_by: String,
+    /// When the connection was shared (RFC 3339).
+    pub created_at: String,
+}
+
+/// Mark `driver`/`connection` as PROJECT/TEAM-owned (shared) with the realm `scope` the acting
+/// member's actor-policy must grant to USE it, recording `shared_by` (who shared it). UPSERT —
+/// re-sharing updates the scope/sharer (last-writer-wins per `(driver, connection)`). Selectors +
+/// metadata only — the credential itself stays ENCRYPTED in `secret_store`; this row carries no key
+/// material, so it needs no passphrase (the same passphrase-free path as `active_account`).
+///
+/// # Errors
+/// [`SecretError::Backend`] on a DB failure (secret-free message).
+pub fn db_share_connection(
+    conn: &Connection,
+    driver: &str,
+    connection: &str,
+    scope: &str,
+    shared_by: &str,
+) -> Result<(), SecretError> {
+    conn.execute(
+        "INSERT INTO shared_connection (driver, connection, scope, shared_by) VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(driver, connection) DO UPDATE SET \
+             scope = excluded.scope, \
+             shared_by = excluded.shared_by, \
+             created_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+        rusqlite::params![driver, connection, scope, shared_by],
+    )
+    .map_err(|e| SecretError::Backend(format!("sharing connection: {e}")))?;
+    Ok(())
+}
+
+/// Stop sharing `driver`/`connection` — revert it to user-owned by deleting its
+/// `shared_connection` row. Idempotent: removing an unshared connection affects zero rows and is
+/// still `Ok`. Selectors only; passphrase-free.
+///
+/// # Errors
+/// [`SecretError::Backend`] on a DB failure (secret-free message).
+pub fn db_unshare_connection(
+    conn: &Connection,
+    driver: &str,
+    connection: &str,
+) -> Result<(), SecretError> {
+    conn.execute(
+        "DELETE FROM shared_connection WHERE driver = ?1 AND connection = ?2",
+        rusqlite::params![driver, connection],
+    )
+    .map_err(|e| SecretError::Backend(format!("unsharing connection: {e}")))?;
+    Ok(())
+}
+
+/// Read the project-ownership row for `driver`/`connection`, or `None` if it is user-owned /
+/// unreadable. Best-effort + passphrase-free (the row carries no key material); an unreadable
+/// Project DB reads as user-owned. The commit-time bind consults this BEFORE any decrypt to decide
+/// whether the actor-policy gate applies (a `Some` ⇒ project-owned ⇒ gate; `None` ⇒ ungated).
+#[must_use]
+pub fn db_get_shared_connection(
+    conn: &Connection,
+    driver: &str,
+    connection: &str,
+) -> Option<SharedConnectionRow> {
+    conn.query_row(
+        "SELECT scope, shared_by, created_at FROM shared_connection \
+         WHERE driver = ?1 AND connection = ?2",
+        rusqlite::params![driver, connection],
+        |r| {
+            Ok(SharedConnectionRow {
+                scope: r.get(0)?,
+                shared_by: r.get(1)?,
+                created_at: r.get(2)?,
+            })
+        },
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// List every project/team-owned (shared) connection as `(driver, connection, row)` — selectors +
+/// metadata only, never a secret. Powers a `connection list --project` / `/sys` style surface that
+/// shows which connections are team-shared and at what scope. Best-effort: a query failure yields an
+/// empty list rather than erroring (the metadata view never blocks).
+#[must_use]
+pub fn db_list_shared_connections(conn: &Connection) -> Vec<(String, String, SharedConnectionRow)> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT driver, connection, scope, shared_by, created_at FROM shared_connection \
+         ORDER BY driver, connection",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            SharedConnectionRow {
+                scope: r.get(2)?,
+                shared_by: r.get(3)?,
+                created_at: r.get(4)?,
+            },
+        ))
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
 }
 
 #[cfg(test)]
@@ -456,5 +589,109 @@ mod tests {
         db_set_active(&conn, "s3", "prod").unwrap();
         assert_eq!(db_get_active(&conn, "s3").as_deref(), Some("prod"));
         assert_eq!(db_get_active(&conn, "mail").as_deref(), Some("personal"));
+    }
+
+    #[test]
+    fn sharing_marks_a_connection_project_owned_and_carries_no_secret() {
+        // t81: sharing records ownership + the realm scope against the (driver, connection), and a
+        // user-owned connection (no row) reads back as `None`. Selectors + metadata only.
+        let conn = migrated_conn();
+        assert!(db_get_shared_connection(&conn, "github", "team").is_none());
+
+        db_share_connection(&conn, "github", "team", "/projects/acme/**", "a@b.com").unwrap();
+        let row = db_get_shared_connection(&conn, "github", "team").expect("shared");
+        assert_eq!(row.scope, "/projects/acme/**");
+        assert_eq!(row.shared_by, "a@b.com");
+        assert!(!row.created_at.is_empty());
+
+        // Independent per (driver, connection).
+        assert!(db_get_shared_connection(&conn, "github", "personal").is_none());
+        assert!(db_get_shared_connection(&conn, "slack", "team").is_none());
+
+        // Last-writer-wins on re-share (e.g. a re-scope).
+        db_share_connection(&conn, "github", "team", "/projects/beta/**", "c@d.com").unwrap();
+        assert_eq!(
+            db_get_shared_connection(&conn, "github", "team")
+                .unwrap()
+                .scope,
+            "/projects/beta/**"
+        );
+
+        // The registry stores NO credential material — only the metadata columns exist.
+        let cols: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT name FROM pragma_table_info('shared_connection')")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(
+            !cols.iter().any(|c| c.contains("secret")
+                || c.contains("token")
+                || c.contains("ciphertext")
+                || c.contains("nonce")),
+            "the shared-connection registry must carry no secret column, got {cols:?}"
+        );
+
+        // Unsharing reverts to user-owned (idempotent).
+        db_unshare_connection(&conn, "github", "team").unwrap();
+        assert!(db_get_shared_connection(&conn, "github", "team").is_none());
+        db_unshare_connection(&conn, "github", "team").unwrap();
+    }
+
+    #[test]
+    fn list_reflects_owner_scope_from_the_shared_registry() {
+        // t81: `list` LEFT JOINs the shared registry so each record carries its owner — a connection
+        // with a shared row is project-owned; the rest stay user-owned. Metadata only (no decrypt).
+        let store = SqliteSecrets::open_or_init(migrated_conn(), &Secret::from("pass")).unwrap();
+        store
+            .put(&ckey("github", "team"), Secret::from("ghp_team"))
+            .unwrap();
+        store
+            .put(&ckey("github", "mine"), Secret::from("ghp_mine"))
+            .unwrap();
+
+        // Share only `github/team`.
+        {
+            let conn = store.lock().unwrap();
+            db_share_connection(&conn, "github", "team", "/projects/acme/**", "a@b.com").unwrap();
+        }
+
+        let listed = store.list(Some(&DriverId::new("github"))).unwrap();
+        let team = listed
+            .iter()
+            .find(|r| r.connection.as_str() == "team")
+            .unwrap();
+        let mine = listed
+            .iter()
+            .find(|r| r.connection.as_str() == "mine")
+            .unwrap();
+        assert_eq!(
+            team.owner_scope,
+            OwnerScope::Project,
+            "shared ⇒ project-owned"
+        );
+        assert!(team.is_shared());
+        assert_eq!(mine.owner_scope, OwnerScope::Me, "unshared ⇒ user-owned");
+        assert!(!mine.is_shared());
+
+        // The list view never carries the secret value (redaction holds across the join).
+        let dump = format!("{listed:?}");
+        assert!(!dump.contains("ghp_team") && !dump.contains("ghp_mine"));
+    }
+
+    #[test]
+    fn list_shared_connections_returns_metadata_only() {
+        let conn = migrated_conn();
+        db_share_connection(&conn, "github", "team", "/projects/acme/**", "a@b.com").unwrap();
+        db_share_connection(&conn, "slack", "ops", "/projects/acme/ops/**", "a@b.com").unwrap();
+        let all = db_list_shared_connections(&conn);
+        assert_eq!(all.len(), 2);
+        // Ordered by (driver, connection): github before slack.
+        assert_eq!(all[0].0, "github");
+        assert_eq!(all[0].2.scope, "/projects/acme/**");
+        assert_eq!(all[1].0, "slack");
     }
 }
