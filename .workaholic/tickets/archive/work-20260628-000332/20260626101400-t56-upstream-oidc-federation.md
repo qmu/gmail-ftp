@@ -3,9 +3,9 @@ created_at: 2026-06-26T10:00:00+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [Domain, Infrastructure]
-effort:
-commit_hash:
-category:
+effort: L
+commit_hash: ca87d4f
+category: Added
 depends_on: [20260626100600-t48-oauth-as-metadata-prm-jwks.md, 20260626100300-t45-identity-users-accounts-local-signup.md]
 ---
 
