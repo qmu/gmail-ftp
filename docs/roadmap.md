@@ -843,6 +843,23 @@ the [short-lived credential brokering](#part-5--expanded-possibilities) idea tak
 > mitigation for connections that must survive it. (4) *Accidental leak via the language* → impossible
 > by construction: secrets never appear in a statement, only metadata does.
 
+> **Status (M9, brokering CORE — t66).** The **OAuth-brokering data model + the team-connection
+> provisioning + the security gates** have landed and are hermetic. qfs Cloud is modelled as the OAuth
+> **broker**: it holds one broker client registration per provider (the `client_id` + the client
+> secret, the crown jewel) and mints a **team-scoped** token to a team's connection, so members act
+> *as the team* with no personal OAuth client. A `Broker` trait is the seam; an in-memory
+> `FixtureBroker` is the reference impl the tests drive. Proven by construction: a team connection is
+> provisioned through the broker and the brokered token is sealed at rest (t43 envelope), reusing
+> t81's project-owned `shared_connection` gate; a **non-member is refused with no token minted**; a
+> brokered grant is **team-scoped** and cannot be replayed for another team; the **broker client
+> secret is envelope-encrypted at rest**; and USE decrypts only after BOTH the team-membership gate
+> and the t57/t81 actor-policy gate pass (no secret crosses to an unauthorized actor). **The live qfs
+> Cloud broker endpoint remains a documented seam** — a network `Broker` impl, not in this repo and
+> not claimed to work; the binary's commit path would call it exactly where it calls the fixture.
+> **Open product decisions flagged:** (a) brokering *custody* — central qfs-Cloud token custody vs. the
+> tenant Project DB at rest (this slice implements the tenant-Project-DB choice, the testable one);
+> (b) per-user-override precedence over a team default. Managed monitoring + billing are still ahead.
+
 ### 4.6 Observability is external — qfs emits, it does not store 🧭 (decision V)
 
 The same reasoning that keeps qfs out of the scheduler business (§4.3) keeps it out of the monitoring

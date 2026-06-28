@@ -41,6 +41,12 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+// t66 (roadmap M9 — Managed Team / §3.2/§3.3): the OAuth-brokering domain model — the pure
+// request/grant types + the `Broker` SEAM (the live qfs Cloud broker is a network impl behind it,
+// NOT in this repo) + an in-memory `FixtureBroker` reference impl + the security gates (a non-member
+// is refused with no token; a brokered grant is team-scoped and cannot be replayed cross-team). The
+// broker client secret + the brokered token are carried only inside the redacting `Secret`.
+mod broker;
 mod client_reg;
 mod flow;
 mod jwks;
@@ -57,6 +63,10 @@ mod seal;
 mod sign;
 mod verify;
 
+pub use broker::{
+    assert_team_scope, Broker, BrokerClientId, BrokerError, BrokerTokenRequest, BrokeredGrant,
+    BrokeredToken, FixtureBroker, TeamId,
+};
 pub use client_reg::{
     validate_registration, ClientRegistrationRequest, ClientRegistrationResponse,
     RegistrationError, AUTH_METHOD_NONE,

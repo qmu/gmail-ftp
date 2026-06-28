@@ -383,6 +383,20 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
         name: "project_e2e_recipient_wrap",
         sql: include_str!("schema/project_e2e.sql"),
     },
+    // t66 (roadmap M9 — Managed Team / §3.2/§3.3): the BROKERED team-connection registry
+    // (`broker_connection`) — the metadata binding a project connection to the qfs Cloud broker that
+    // minted its token (team, provider, the broker's PUBLIC client id, scope). A brokered connection
+    // is ALSO project-owned (it gets a t81 `shared_connection` row); this table adds the brokering
+    // provenance. Selectors + metadata only — the brokered TOKEN stays encrypted in `secret_store`
+    // (migration #2) and the broker CLIENT SECRET never reaches the tenant DB (the broker holds it).
+    // Appended as a NEW version (#7) — migrations #1–#6 stay frozen (the checksum guard forbids
+    // editing a shipped migration). The passphrase-free read/write that fills these columns lives in
+    // the binary (`crates/qfs/src/secret_store.rs`); this declares the shape.
+    Migration {
+        version: 7,
+        name: "project_broker_connection",
+        sql: include_str!("schema/project_broker_connections.sql"),
+    },
 ];
 
 /// Structured, secret-free persistence errors (AI-consumable; a DB path is infra, not a secret, but
@@ -587,8 +601,41 @@ mod tests {
         // t80 migration #6: the per-recipient (E2E) DEK wrap + the separately-sealed E2E value.
         assert!(table_exists(proj.db(), "e2e_recipient_wrap"));
         assert!(table_exists(proj.db(), "e2e_secret"));
-        // All six project migrations are recorded.
-        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 6);
+        // t66 migration #7: the brokered team-connection registry (M9).
+        assert!(table_exists(proj.db(), "broker_connection"));
+        // All seven project migrations are recorded.
+        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 7);
+    }
+
+    #[test]
+    fn project_broker_connection_migration_v7_applies_idempotently() {
+        // t66 (M9): migration #7 is idempotent — applying the Project set twice creates the
+        // `broker_connection` table once and re-verifies it (checksum) the second time. The table is
+        // metadata-only: it carries NO secret/token/ciphertext/nonce column (the brokered token stays
+        // in `secret_store`; the broker client secret never reaches the tenant DB).
+        let mut db = Db::open(&MemorySource).unwrap();
+        let applied = migrate(&mut db, PROJECT_MIGRATIONS).unwrap();
+        assert!(applied.contains(&7), "v7 applied on the first migrate");
+        // A relaunch re-applies nothing (the v7 body is re-verified by checksum, not re-run).
+        assert!(migrate(&mut db, PROJECT_MIGRATIONS).unwrap().is_empty());
+        assert!(table_exists(&db, "broker_connection"));
+        let cols: Vec<String> = {
+            let mut stmt = db
+                .conn()
+                .prepare("SELECT name FROM pragma_table_info('broker_connection')")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(
+            !cols.iter().any(|c| c.contains("secret")
+                || c.contains("token")
+                || c.contains("ciphertext")
+                || c.contains("nonce")),
+            "the broker registry must carry no secret column, got {cols:?}"
+        );
     }
 
     #[test]

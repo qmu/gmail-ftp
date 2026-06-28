@@ -525,6 +525,102 @@ pub fn db_list_shared_connections(conn: &Connection) -> Vec<(String, String, Sha
     rows.filter_map(Result::ok).collect()
 }
 
+/// A recorded BROKERED team-connection (t66 / M9) — selectors + metadata ONLY (the team it is scoped
+/// to, the upstream provider, the broker's PUBLIC client id, the scope, who provisioned it), **never**
+/// a secret. The brokered TOKEN stays sealed in `secret_store`; the broker CLIENT SECRET never reaches
+/// the tenant DB. This row records the brokering provenance the §3.2 `/sys/connections` view surfaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokerConnectionRow {
+    /// The team the brokered token is scoped to (the load-bearing binding). Metadata, never a token.
+    pub team: String,
+    /// The upstream provider key the broker holds a client for (e.g. `google`, `github`, `slack`).
+    pub provider: String,
+    /// The broker's PUBLIC OAuth client id (qfs Cloud's registered client) — NOT the client secret.
+    pub broker_client_id: String,
+    /// The upstream scope the brokered token carries (a §10 hint, never a token).
+    pub scope: String,
+    /// The identity (email / federated handle, t45/t56) that provisioned the team connection. Audit
+    /// metadata for the §3.3 two-layer trace; never a credential.
+    pub brokered_by: String,
+    /// When the team connection was provisioned (RFC 3339).
+    pub created_at: String,
+}
+
+/// Record (UPSERT) the brokering metadata for a `driver`/`connection` provisioned through the broker
+/// (t66 / M9): the `team` it is scoped to, the upstream `provider`, the broker's PUBLIC
+/// `broker_client_id`, the `scope`, and who provisioned it (`brokered_by`). Last-writer-wins per
+/// `(driver, connection)`. Selectors + metadata only — the brokered token itself is sealed separately
+/// in `secret_store`; this row carries no key material, so it needs no passphrase (the same
+/// passphrase-free path as `shared_connection`/`active_account`).
+///
+/// # Errors
+/// [`SecretError::Backend`] on a DB failure (secret-free message).
+#[allow(clippy::too_many_arguments)]
+pub fn db_record_broker_connection(
+    conn: &Connection,
+    driver: &str,
+    connection: &str,
+    team: &str,
+    provider: &str,
+    broker_client_id: &str,
+    scope: &str,
+    brokered_by: &str,
+) -> Result<(), SecretError> {
+    conn.execute(
+        "INSERT INTO broker_connection \
+             (driver, connection, team, provider, broker_client_id, scope, brokered_by) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+         ON CONFLICT(driver, connection) DO UPDATE SET \
+             team = excluded.team, \
+             provider = excluded.provider, \
+             broker_client_id = excluded.broker_client_id, \
+             scope = excluded.scope, \
+             brokered_by = excluded.brokered_by, \
+             created_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')",
+        rusqlite::params![
+            driver,
+            connection,
+            team,
+            provider,
+            broker_client_id,
+            scope,
+            brokered_by
+        ],
+    )
+    .map_err(|e| SecretError::Backend(format!("recording brokered connection: {e}")))?;
+    Ok(())
+}
+
+/// Read the brokering metadata for `driver`/`connection`, or `None` if it was not provisioned through
+/// the broker / unreadable. Best-effort + passphrase-free (the row carries no key material). The
+/// commit-time bind consults this BEFORE any decrypt to learn which team a brokered connection is
+/// scoped to (`qfs_oauth::assert_team_scope`).
+#[must_use]
+pub fn db_get_broker_connection(
+    conn: &Connection,
+    driver: &str,
+    connection: &str,
+) -> Option<BrokerConnectionRow> {
+    conn.query_row(
+        "SELECT team, provider, broker_client_id, scope, brokered_by, created_at \
+         FROM broker_connection WHERE driver = ?1 AND connection = ?2",
+        rusqlite::params![driver, connection],
+        |r| {
+            Ok(BrokerConnectionRow {
+                team: r.get(0)?,
+                provider: r.get(1)?,
+                broker_client_id: r.get(2)?,
+                scope: r.get(3)?,
+                brokered_by: r.get(4)?,
+                created_at: r.get(5)?,
+            })
+        },
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -928,5 +1024,71 @@ mod tests {
         assert_eq!(all[0].0, "github");
         assert_eq!(all[0].2.scope, "/projects/acme/**");
         assert_eq!(all[1].0, "slack");
+    }
+
+    #[test]
+    fn broker_connection_records_team_binding_and_carries_no_secret() {
+        // t66 / M9: provisioning a team connection records its brokering metadata against the
+        // (driver, connection) — the team, provider, the broker's PUBLIC client id, the scope, who
+        // provisioned it. Selectors + metadata only; no passphrase, no token.
+        let conn = migrated_conn();
+        assert!(db_get_broker_connection(&conn, "gdrive", "team").is_none());
+
+        db_record_broker_connection(
+            &conn,
+            "gdrive",
+            "team",
+            "acme",
+            "google",
+            "qfs-cloud-broker-google",
+            "drive.readonly",
+            "alice@acme.co",
+        )
+        .unwrap();
+        let row = db_get_broker_connection(&conn, "gdrive", "team").expect("brokered");
+        assert_eq!(row.team, "acme");
+        assert_eq!(row.provider, "google");
+        assert_eq!(row.broker_client_id, "qfs-cloud-broker-google");
+        assert_eq!(row.scope, "drive.readonly");
+        assert_eq!(row.brokered_by, "alice@acme.co");
+        assert!(!row.created_at.is_empty());
+
+        // Independent per (driver, connection); last-writer-wins on re-provision (e.g. a re-team).
+        assert!(db_get_broker_connection(&conn, "gdrive", "personal").is_none());
+        db_record_broker_connection(
+            &conn,
+            "gdrive",
+            "team",
+            "beta",
+            "google",
+            "qfs-cloud-broker-google",
+            "drive.readonly",
+            "carol@beta.co",
+        )
+        .unwrap();
+        assert_eq!(
+            db_get_broker_connection(&conn, "gdrive", "team")
+                .unwrap()
+                .team,
+            "beta"
+        );
+
+        // The registry stores NO credential material — only the metadata columns exist.
+        let cols: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT name FROM pragma_table_info('broker_connection')")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(
+            !cols.iter().any(|c| c.contains("secret")
+                || c.contains("token")
+                || c.contains("ciphertext")
+                || c.contains("nonce")),
+            "the broker registry must carry no secret column, got {cols:?}"
+        );
     }
 }
