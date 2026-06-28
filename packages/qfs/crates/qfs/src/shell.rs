@@ -193,6 +193,22 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
     // Google (gmail / gdrive / ga): register the cred-free mock-client facets as mounts so `/mail`,
     // `/drive`, and `/ga` statements PLAN (see `register_google_planning_mounts`).
     register_google_planning_mounts(&mut engine);
+    // S3 / R2 (objstore): register the cred-free planning facets as mounts so `/s3/<bucket>/<key>`
+    // and `/r2/...` statements PLAN. Each carries a representative `bucket` (the describe convention)
+    // plus the operator-configured live bucket name when present, so the parse-time per-node
+    // capability gate (which keys off a *registered* bucket) resolves. The MockObjectBackend behind
+    // each bucket is never applied — planning reads only the pure introspective half; the real SigV4
+    // backend that APPLIES lives in the apply registry (`commit.rs`), keyed by the same driver id.
+    let _ = engine
+        .mounts
+        .register(Arc::new(qfs_driver_objstore::S3Driver::new(
+            crate::objstore::planning_registry(qfs_driver_objstore::Scheme::S3),
+        )));
+    let _ = engine
+        .mounts
+        .register(Arc::new(qfs_driver_objstore::R2Driver::new(
+            crate::objstore::planning_registry(qfs_driver_objstore::Scheme::R2),
+        )));
     // SQL: register the live SQLite-backed mount when configured, so `/sql/<conn>/<table>`
     // statements PLAN against the real introspected catalog (the same registry the commit apply
     // driver uses). Skipped when no `QFS_SQL_*` connection is configured.
@@ -539,6 +555,32 @@ mod tests {
         assert!(
             t.contains("type COMMIT to apply"),
             "/mail plan reaches the COMMIT gate:\n{t}"
+        );
+    }
+
+    #[test]
+    fn s3_upsert_plans_through_the_registered_objstore_mount() {
+        // The cred-free objstore planning mount lets a `/s3/<bucket>/<key>` UPSERT RESOLVE + PLAN end
+        // to end with no SigV4 backend, no credential, and no network — the same describe-only path
+        // `qfs describe /s3/bucket/key` uses (the per-node capability gate keys off the *registered*
+        // representative `bucket`). The real SigV4 backend only matters at COMMIT (commit.rs). This
+        // drives the SAME `planning_registry` wiring the one-shot path registers.
+        let (_d, mut engine, reads) = fixture();
+        let _ = engine
+            .mounts
+            .register(Arc::new(qfs_driver_objstore::S3Driver::new(
+                crate::objstore::planning_registry(qfs_driver_objstore::Scheme::S3),
+            )));
+        let t = run_script(
+            &engine,
+            &reads,
+            "UPSERT INTO /s3/bucket/key VALUES ('blob')\n",
+        );
+        // It previews a plan (the safety gate), not an unresolved-mount / unknown-driver error.
+        assert!(t.contains("PREVIEW"), "/s3 UPSERT must plan/preview:\n{t}");
+        assert!(
+            t.contains("type COMMIT to apply"),
+            "/s3 plan reaches the COMMIT gate:\n{t}"
         );
     }
 

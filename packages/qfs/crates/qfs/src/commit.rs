@@ -352,7 +352,100 @@ fn live_registry() -> DriverRegistry {
     // seam (`crate::google`); this wires the plumbing so a configured, consented operator routes.
     reg = register_google(reg, crate::google::live_google_stack());
 
+    // S3 / R2 (objstore): the real SigV4-signed S3-compatible backend over the shared reqwest
+    // transport + the resolved secret access key. FAIL CLOSED on two layers: the routing config is
+    // `None` unless the operator set the endpoint/region/bucket/access-key-id env vars (see
+    // `crate::objstore`), so without config NO objstore driver is registered (a `/s3` commit then
+    // fails "no driver / not configured", honest); and a present config still resolves the SECRET
+    // access key from the encrypted credential store and binds nothing if it cannot be resolved.
+    // Live S3/R2 (a real bucket round-trip) remains a documented seam (no live network is exercised
+    // by any test); this wires the plumbing so a configured operator's commit routes + signs.
+    reg = register_objstore(reg, live_s3_driver(), live_r2_driver());
+
     reg
+}
+
+/// Register the object-storage apply drivers (`/s3`, `/r2`) into `reg` when a live, fully-configured
+/// SigV4 driver is available for each. Factored out (and taking the built drivers as parameters) so
+/// the **fail-closed** contract is hermetic: `register_objstore(reg, None, None)` touches no store
+/// and registers nothing, which is exactly the no-config path. The live builders
+/// ([`live_s3_driver`] / [`live_r2_driver`]) return `None` whenever the routing config or the secret
+/// access key is absent, so an unconfigured `/s3`/`/r2` commit fails closed (no driver) rather than
+/// faking success.
+fn register_objstore(
+    mut reg: DriverRegistry,
+    s3: Option<qfs_driver_objstore::S3Driver>,
+    r2: Option<qfs_driver_objstore::R2Driver>,
+) -> DriverRegistry {
+    if let Some(driver) = &s3 {
+        reg = reg.with(
+            DriverId::new("s3"),
+            Arc::new(qfs_driver_objstore::s3_apply_driver(driver)),
+        );
+    }
+    if let Some(driver) = &r2 {
+        reg = reg.with(
+            DriverId::new("r2"),
+            Arc::new(qfs_driver_objstore::r2_apply_driver(driver)),
+        );
+    }
+    reg
+}
+
+/// Build the live SigV4 [`S3Driver`](qfs_driver_objstore::S3Driver) when fully configured, else
+/// `None` (fail closed). Resolves the NON-secret routing config from the environment
+/// (`crate::objstore::s3_config`) and the SECRET access key from the SAME encrypted credential store
+/// the networked drivers use (keyed by driver id `s3` + the active connection); the secret is read
+/// here only to hand it to the signer (a `qfs_secrets::Secret` that redacts) — if it cannot be
+/// resolved (locked store, no credential) the driver is left unregistered, never a panic. The
+/// `amz_date`/`date_stamp` are fixed at construction from the current UTC (the live registry is
+/// rebuilt per short-lived commit, so a per-build wall-clock read is correct).
+fn live_s3_driver() -> Option<qfs_driver_objstore::S3Driver> {
+    let cfg = crate::objstore::s3_config()?;
+    let registry = build_obj_registry("s3", cfg)?;
+    Some(qfs_driver_objstore::S3Driver::new(registry))
+}
+
+/// Build the live SigV4 [`R2Driver`](qfs_driver_objstore::R2Driver) when fully configured, else
+/// `None` (fail closed) — the R2 twin of [`live_s3_driver`], reusing the same native SigV4 backend.
+fn live_r2_driver() -> Option<qfs_driver_objstore::R2Driver> {
+    let cfg = crate::objstore::r2_config()?;
+    let registry = build_obj_registry("r2", cfg)?;
+    Some(qfs_driver_objstore::R2Driver::new(registry))
+}
+
+/// Shared objstore-registry builder for a `driver` id (`s3`/`r2`) over a resolved
+/// [`ObjConfig`](crate::objstore::ObjConfig): resolve + gate the credential exactly like the
+/// networked drivers (the t81/t80 bind gates AND the t54 cloud bind gate — a no-op for the
+/// non-cloud-classified `s3`/`r2` ids, kept for structural parity and future-proofing), read the
+/// secret access key from the store (fail closed on any error), construct the SigV4
+/// [`HttpBackend`](qfs_driver_objstore::HttpBackend) over the shared reqwest exchange, and register
+/// the single configured bucket. Returns `None` (driver left unregistered) whenever the credential
+/// cannot bind or resolve.
+fn build_obj_registry(
+    driver: &str,
+    cfg: crate::objstore::ObjConfig,
+) -> Option<qfs_driver_objstore::ObjRegistry> {
+    use qfs_driver_objstore::{Bucket, HttpBackend, ObjRegistry, SigV4Credentials};
+
+    let (store, cred) = networked_credential(driver)?;
+    if !cloud_bind_allowed(driver, cred.connection.as_str()) {
+        return None;
+    }
+    // Resolve the SECRET access key eagerly (the signer holds it for the commit's lifetime). A
+    // locked store / missing credential => fail closed (the driver is left unregistered) rather than
+    // binding a backend that cannot sign. The access key id is non-secret routing config.
+    let secret = store.get(&cred).ok()?;
+    let creds = SigV4Credentials::new(cfg.access_key_id, secret);
+    let (amz_date, date_stamp) = crate::objstore::current_signing_dates();
+    let backend = HttpBackend::new(
+        crate::transport::objstore_exchange(),
+        cfg.endpoint,
+        creds,
+        amz_date,
+        date_stamp,
+    );
+    Some(ObjRegistry::new().with_bucket(cfg.bucket, Bucket::new(Arc::new(backend))))
 }
 
 /// Register the Google apply drivers (`/mail`, `/drive`, `/ga`) into `reg` when a live
@@ -540,6 +633,24 @@ mod tests {
         assert!(
             reg.get(&DriverId::new("ga")).is_none(),
             "/ga must be unregistered without Google config (fail closed)"
+        );
+    }
+
+    /// Fail closed: with no live object-storage driver (the no-config path — absent
+    /// `QFS_S3_*`/`QFS_R2_*` routing config or an unresolvable secret), the s3/r2 apply drivers are
+    /// NOT registered, so a `/s3` (or `/r2`) commit fails with a clear "no driver" cause rather than
+    /// faking success. Hermetic: `register_objstore(_, None, None)` touches no store and reads no
+    /// environment — it is the pure no-config decision.
+    #[test]
+    fn objstore_drivers_are_unregistered_without_config() {
+        let reg = register_objstore(DriverRegistry::new(), None, None);
+        assert!(
+            reg.get(&DriverId::new("s3")).is_none(),
+            "/s3 must be unregistered without objstore config (fail closed)"
+        );
+        assert!(
+            reg.get(&DriverId::new("r2")).is_none(),
+            "/r2 must be unregistered without objstore config (fail closed)"
         );
     }
 }

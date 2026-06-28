@@ -39,6 +39,7 @@ pub mod invite;
 pub mod job;
 pub mod mcp;
 pub mod oauth;
+pub mod objstore;
 pub mod secret_store;
 pub mod serve;
 pub mod serve_builtins;

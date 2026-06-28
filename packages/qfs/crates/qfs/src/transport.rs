@@ -105,6 +105,45 @@ impl qfs_google_auth::HttpExchange for ReqwestTransport {
     }
 }
 
+/// The shared `reqwest` transport as the **object-storage** (S3 / R2) backend's wire seam
+/// (`qfs_driver_objstore::HttpExchange`).
+///
+/// `qfs-driver-objstore` is a self-contained runtime leaf that rides its OWN thin `HttpExchange`
+/// trait (`exchange(&HttpRequest) -> Result<HttpResponse, qfs_driver_objstore::TransportError>`)
+/// over the SAME shared `qfs-http-core` DTOs, so it links neither `reqwest` nor `qfs-driver-http`
+/// (the SigV4 signer + the `HttpBackend` stay vendor-free — the `qfs-google-auth` / `qfs-driver-cf`
+/// precedent). This adapter bridges the one confined [`ReqwestClient`] onto that seam in the
+/// terminal binary, exactly like the github/slack/google impls above — a pure delegate (the
+/// `HttpRequest`/`HttpResponse` are the identical `qfs-http-core` types) plus an error-class remap.
+///
+/// Like the Google seam, `qfs_driver_objstore::TransportError` carries `method` + `url` + `reason`
+/// (vs. the drivers' `reason`-only error), so the remap re-derives the secret-free request shape
+/// from `req` (the method token + the URL are never credentials — the SigV4 signature rides the
+/// `Authorization` header, which `qfs-http-core` redacts in every `Debug`/log). A non-2xx status is
+/// a *response* the backend classifies, never a `TransportError` — the same seam contract as above.
+impl qfs_driver_objstore::HttpExchange for ReqwestTransport {
+    fn exchange(
+        &self,
+        req: &HttpRequest,
+    ) -> Result<HttpResponse, qfs_driver_objstore::TransportError> {
+        self.inner
+            .send(req)
+            .map_err(|e| qfs_driver_objstore::TransportError {
+                method: req.method.as_str().to_string(),
+                url: req.url.clone(),
+                reason: reason(&e),
+            })
+    }
+}
+
+/// The shared `reqwest` transport as the object-storage [`HttpBackend`](qfs_driver_objstore::HttpBackend)
+/// wire seam (`qfs_driver_objstore::HttpExchange`) — the one confined wire client the live `/s3` and
+/// `/r2` SigV4 backends send their already-signed requests over.
+#[must_use]
+pub fn objstore_exchange() -> Arc<dyn qfs_driver_objstore::HttpExchange> {
+    Arc::new(ReqwestTransport::new())
+}
+
 /// A `ReqwestTransport` as the slack driver's transport.
 #[must_use]
 pub fn slack_transport() -> Arc<dyn qfs_driver_slack::HttpTransport> {
@@ -230,6 +269,66 @@ mod tests {
         use qfs_google_auth::{HttpExchange, HttpMethod as GMethod, HttpRequest as GRequest};
         let transport = ReqwestTransport::new();
         let req = GRequest::new(GMethod::Get, "http://127.0.0.1:1/");
+        let err = HttpExchange::exchange(&transport, &req)
+            .expect_err("a dead address fails the exchange");
+        assert_eq!(
+            err.method, "GET",
+            "the request method rides the error shape"
+        );
+        assert_eq!(
+            err.url, "http://127.0.0.1:1/",
+            "the URL rides the error shape"
+        );
+        assert!(
+            !err.reason.is_empty(),
+            "transport error carries a class reason"
+        );
+    }
+
+    #[test]
+    fn objstore_exchange_delegates_a_real_loopback_round_trip() {
+        // The object-storage `HttpExchange` seam rides the SAME confined reqwest client as
+        // github/slack/google — prove it performs the real wire exchange over a loopback server
+        // (connect → request → status + body) with NO live network, using the `qfs_driver_objstore`
+        // re-exported DTOs. This is the seam the live `/s3` + `/r2` SigV4 backends send over.
+        use qfs_driver_objstore::HttpExchange;
+        let url = one_shot_server(200, "{\"ok\":true}");
+        let transport = ReqwestTransport::new();
+        let req = HttpRequest::new(HttpMethod::Get, url);
+
+        let resp = HttpExchange::exchange(&transport, &req).expect("loopback exchange succeeds");
+
+        assert_eq!(
+            resp.status, 200,
+            "status round-trips from the loopback server"
+        );
+        assert_eq!(
+            String::from_utf8(resp.body).unwrap(),
+            "{\"ok\":true}",
+            "body round-trips"
+        );
+    }
+
+    #[test]
+    fn objstore_non_2xx_is_a_response_not_a_transport_error() {
+        // A 404/403 is the load-bearing status the SigV4 backend classifies (a missing key / an
+        // access denial), so the seam MUST surface it as a *response*, never a TransportError.
+        use qfs_driver_objstore::HttpExchange;
+        let url = one_shot_server(403, "AccessDenied");
+        let transport = ReqwestTransport::new();
+        let req = HttpRequest::new(HttpMethod::Get, url);
+        let resp = HttpExchange::exchange(&transport, &req)
+            .expect("a 403 is still a successful wire exchange");
+        assert_eq!(resp.status, 403);
+    }
+
+    #[test]
+    fn objstore_dead_address_is_a_secret_free_transport_error_with_request_shape() {
+        // A dead loopback port fails the wire exchange → a class-only TransportError carrying the
+        // secret-free request shape (method + URL + class reason), never a credential.
+        use qfs_driver_objstore::HttpExchange;
+        let transport = ReqwestTransport::new();
+        let req = HttpRequest::new(HttpMethod::Get, "http://127.0.0.1:1/");
         let err = HttpExchange::exchange(&transport, &req)
             .expect_err("a dead address fails the exchange");
         assert_eq!(
