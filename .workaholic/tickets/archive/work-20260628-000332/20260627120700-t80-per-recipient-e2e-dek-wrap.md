@@ -3,9 +3,9 @@ created_at: 2026-06-27T12:07:00+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [Domain, DB]
-effort:
-commit_hash:
-category:
+effort: L
+commit_hash: da39f86
+category: Added
 depends_on: [20260626100100-t43-envelope-encryption-sqlite-secret-store.md, 20260626100300-t45-identity-users-accounts-local-signup.md, 20260626101700-t59-selectable-ai-safety-modes.md]
 ---
 
