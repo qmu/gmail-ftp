@@ -3,9 +3,9 @@ created_at: 2026-06-25T09:47:51+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [Infrastructure]
-effort:
-commit_hash:
-category:
+effort: M
+commit_hash: 52651e1
+category: Added
 depends_on: []
 ---
 
@@ -53,3 +53,7 @@ commit path uses.
 - Depends on the per-driver commit tickets only loosely (the client builders are shared, so doing
   them together per driver family is natural — fold reads into each family's PR if convenient).
 - Patch bump + docs-in-lockstep per the umbrella ticket.
+
+## DISPOSITION (night drive, 2026-06-29)
+
+GITHUB + SLACK read facets SHIPPED (read_rows helpers + ReadDriver adapters + shared credentialed-client builder + ReadRegistry wiring, fail-closed without creds; commit 52651e1). The gmail/gdrive/ga/objstore reads are a DOCUMENTED REMAINING SEAM, not built: they are genuinely multi-shape (gmail = search ids + N×get; ga = compiled runReport; gdrive = listing vs download/export+codec; objstore = list_objects_v2 vs get_object) with no single parse->list->decode read_rows shape (gmail/ga have no read module at all). Building them faithfully is a larger separate slice; the shared crate::clients builder is their extension point. Live network reads (real creds + real API) are a seam per the ticket — the hermetic proof is the read_rows helpers vs mock clients + fail-closed wiring.
