@@ -124,6 +124,16 @@ qfs-types = { path = "../types" }
 # here in the terminal leaf — the driver crates stay transport-agnostic + mockable, and qfs-cmd
 # stays off both. github/slack are already linked above (describe); this only adds the wire client.
 qfs-driver-http = { path = "../driver-http" }
+# google-drivers live commit wiring: the binary bridges the ONE reqwest transport onto
+# qfs-google-auth's runtime-free `HttpExchange` seam (src/transport.rs) and composes the OAuth
+# client + per-account `StoredTokenSource` + authenticated `GoogleApiClient` that the gmail/gdrive/ga
+# apply drivers issue calls through (src/google.rs, registered in src/commit.rs gated like
+# github/slack). qfs-google-auth is a PURE off-runtime leaf (it shares only the qfs-http-core DTOs +
+# qfs-secrets, NEVER reqwest/qfs-runtime/qfs-driver-http — the confinement guard pins this), so the
+# edge adds no runtime coupling; the wire client + the live loopback browser consent dead-end HERE in
+# the terminal leaf. The operator's Google Desktop OAuth app id/secret come from QFS_GOOGLE_CLIENT_ID
+# / QFS_GOOGLE_CLIENT_SECRET; absent either, the drivers are left UNREGISTERED (fail closed).
+qfs-google-auth = { path = "../google-auth" }
 # t-exec sql live commit: the binary wires the real SQLite-backed sql driver. qfs-driver-sql is the
 # vendor-free driver (trait + compiler + dialect). The production `SqlBackend` impl (SQLite) lives
 # in the binary (src/sql.rs): qfs-driver-sql is a qfs-runtime consumer, so the guard requires it be

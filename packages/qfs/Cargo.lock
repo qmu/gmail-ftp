@@ -1242,6 +1242,7 @@ dependencies = [
  "qfs-driver-sql",
  "qfs-driver-sys",
  "qfs-exec",
+ "qfs-google-auth",
  "qfs-host",
  "qfs-http",
  "qfs-identity",

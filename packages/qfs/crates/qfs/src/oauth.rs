@@ -1030,10 +1030,11 @@ mod tests {
             .map(|(_, v)| v.as_str())
     }
 
-    // The env (XDG_CONFIG_HOME) the flow-store openers read is process-global; serialize the
-    // file-backed tests so they don't race.
-    use std::sync::Mutex;
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // The env (XDG_CONFIG_HOME / QFS_OAUTH_ISSUER) the flow-store openers read is process-global;
+    // serialize the file-backed tests via the crate-wide ENV_LOCK so they don't race each other — OR
+    // the sibling `store.rs` tests, which also mutate `XDG_CONFIG_HOME` (one shared lock makes that
+    // mutual exclusion cross-module, so the parallel harness is deterministic).
+    use crate::ENV_LOCK;
 
     #[test]
     fn discovery_now_advertises_the_live_flow_endpoints() {

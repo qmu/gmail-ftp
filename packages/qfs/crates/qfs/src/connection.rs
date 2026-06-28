@@ -84,6 +84,14 @@ pub fn active_connection(driver: &str) -> Option<String> {
     secret_store::db_get_active(&conn, driver)
 }
 
+/// Is `driver` one of the three Google drivers that authenticate through the shared
+/// `qfs-google-auth` OAuth base (one consent serves all three)? Gates the opt-in interactive consent
+/// branch in `connection add`. Note these are the CONSENT driver names (`gmail`/`gdrive`/`ga`),
+/// distinct from the runtime registry ids (`mail`/`drive`/`ga`).
+fn is_google_driver(driver: &str) -> bool {
+    matches!(driver, "gmail" | "gdrive" | "ga")
+}
+
 fn cred_key(driver: &str, connection: &str) -> Result<CredentialKey, String> {
     let conn_id =
         ConnectionId::new(connection).map_err(|e| format!("invalid connection name: {e:?}"))?;
@@ -208,6 +216,40 @@ fn run_inner(action: &ConnectionAction) -> Result<String, String> {
             } else {
                 None
             };
+            // Google drivers (gmail/gdrive/ga): OPT-IN interactive loopback browser consent
+            // (QFS_GOOGLE_CONSENT). When set, run the real `qfs_google_auth::authorize` flow (the
+            // documented seam in `crate::google`) INSTEAD of reading a refresh token from stdin: it
+            // builds the OAuth client over the production transport, opens the consent URL, captures
+            // the redirect code, exchanges it, and persists the refresh token under
+            // `google:<email>:refresh_token` (one consent serves all three Google drivers). The
+            // browser open + the human approval are interactive and NOT hermetically testable, so
+            // this path is never exercised by a test; the default stdin path below stays the tested,
+            // out-of-band provisioning route (so green never depends on this round-trip).
+            if is_google_driver(driver) && std::env::var(crate::google::GOOGLE_CONSENT_ENV).is_ok()
+            {
+                let store = open_store()?;
+                let store_arc: std::sync::Arc<dyn Secrets> = std::sync::Arc::new(store);
+                let email = crate::google::run_google_consent(driver, store_arc)
+                    .map_err(|e| format!("google consent failed: {e}"))?;
+                // Record the M4 consent against the (driver, connection) selector — the load-bearing
+                // state the commit-time bind gate consults (selectors + metadata only, never a token).
+                if let Some(subject) = subject {
+                    let proj = open_project_conn()?;
+                    secret_store::db_record_consent(
+                        &proj,
+                        driver,
+                        connection,
+                        &subject,
+                        consent_scope(driver),
+                    )
+                    .map_err(|e| format!("recording consent: {e}"))?;
+                    return Ok(format!(
+                        "authorized {driver}/{connection} for {email} (refresh token stored under \
+                         google:{email}:refresh_token; consent granted by {subject})"
+                    ));
+                }
+                return Ok(format!("authorized {driver}/{connection} for {email}"));
+            }
             let store = open_store()?;
             let key = cred_key(driver, connection)?;
             // The credential value comes from stdin — never argv. For a cloud driver this is the

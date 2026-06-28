@@ -341,6 +341,80 @@ fn live_registry() -> DriverRegistry {
         }
     }
 
+    // Google (gmail / gdrive / ga): the real OAuth-authenticated clients over the shared reqwest
+    // transport + the per-account refresh token. Composed in `crate::google`, registered here under
+    // the runtime DriverIds `mail` / `drive` / `ga`. FAIL CLOSED on two layers: the stack is `None`
+    // unless the operator's Google OAuth app (QFS_GOOGLE_CLIENT_ID/SECRET) AND an active account
+    // email are configured (so without config NO Google driver is registered — a `/mail` commit then
+    // fails "no driver / not configured", honest); and each driver additionally only binds when the
+    // SAME t54 cloud sign-in + recorded-consent gate (`cloud_bind_allowed`) passes for its consent
+    // driver name (`gmail`/`gdrive`/`ga`). The live browser consent + live commit remain a documented
+    // seam (`crate::google`); this wires the plumbing so a configured, consented operator routes.
+    reg = register_google(reg, crate::google::live_google_stack());
+
+    reg
+}
+
+/// Register the Google apply drivers (`/mail`, `/drive`, `/ga`) into `reg` when a live
+/// [`GoogleStack`](crate::google::GoogleStack) is available, each gated by the t54 cloud bind rule.
+///
+/// Factored out (and taking the stack as a parameter) so the **fail-closed** contract is hermetic:
+/// `register_google(reg, None)` touches no store and registers nothing, which is exactly the
+/// no-config path. A present stack still binds a driver only when `cloud_bind_allowed` passes for
+/// that driver's consent name — gmail→`gmail`, drive→`gdrive`, ga→`ga` (the `is_cloud_driver`
+/// classification keys off those names, while the runtime registry keys off `mail`/`drive`/`ga`).
+/// The shared `GoogleApiClient` is cloned (`Arc`) into each driver's client (one token cache serves
+/// all three). A refused bind leaves the driver UNREGISTERED (fail closed); the reason is logged
+/// secret-free by `cloud_bind_allowed`.
+fn register_google(
+    mut reg: DriverRegistry,
+    stack: Option<crate::google::GoogleStack>,
+) -> DriverRegistry {
+    let Some(stack) = stack else {
+        return reg;
+    };
+
+    // gmail → /mail
+    let gmail_conn =
+        crate::connection::active_connection("gmail").unwrap_or_else(|| "default".to_string());
+    if cloud_bind_allowed("gmail", &gmail_conn) {
+        let client: Arc<dyn qfs_driver_gmail::GmailClient> = Arc::new(
+            qfs_driver_gmail::GoogleApiGmailClient::new(stack.api.clone()),
+        );
+        let driver = qfs_driver_gmail::GmailDriver::new(client);
+        reg = reg.with(
+            DriverId::new("mail"),
+            Arc::new(qfs_driver_gmail::gmail_apply_driver(&driver)),
+        );
+    }
+
+    // gdrive → /drive
+    let gdrive_conn =
+        crate::connection::active_connection("gdrive").unwrap_or_else(|| "default".to_string());
+    if cloud_bind_allowed("gdrive", &gdrive_conn) {
+        let client: Arc<dyn qfs_driver_gdrive::GDriveClient> = Arc::new(
+            qfs_driver_gdrive::GoogleApiDriveClient::new(stack.api.clone()),
+        );
+        let driver = qfs_driver_gdrive::GDriveDriver::new(client);
+        reg = reg.with(
+            DriverId::new("drive"),
+            Arc::new(qfs_driver_gdrive::gdrive_apply_driver(&driver)),
+        );
+    }
+
+    // ga → /ga
+    let ga_conn =
+        crate::connection::active_connection("ga").unwrap_or_else(|| "default".to_string());
+    if cloud_bind_allowed("ga", &ga_conn) {
+        let client: Arc<dyn qfs_driver_ga::GaClient> =
+            Arc::new(qfs_driver_ga::GoogleApiGaClient::new(stack.api.clone()));
+        let driver = qfs_driver_ga::GaDriver::new(client);
+        reg = reg.with(
+            DriverId::new("ga"),
+            Arc::new(qfs_driver_ga::ga_apply_driver(&driver)),
+        );
+    }
+
     reg
 }
 
@@ -441,4 +515,31 @@ fn networked_credential(driver: &str) -> Option<(Arc<dyn Secrets>, CredentialKey
         .ok()?;
     let cred = CredentialKey::new(qfs_secrets::DriverId(driver.to_string()), acct);
     Some((store, cred))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fail closed: with no live Google stack (the no-config path — absent
+    /// `QFS_GOOGLE_CLIENT_ID`/`SECRET` or no selected account), the gmail/drive/ga apply drivers are
+    /// NOT registered, so a `/mail` (or `/drive` / `/ga`) commit fails with a clear "no driver"
+    /// cause rather than faking success. Hermetic: `register_google(_, None)` touches no store and
+    /// reads no environment — it is the pure no-config decision.
+    #[test]
+    fn google_drivers_are_unregistered_without_config() {
+        let reg = register_google(DriverRegistry::new(), None);
+        assert!(
+            reg.get(&DriverId::new("mail")).is_none(),
+            "/mail must be unregistered without Google config (fail closed)"
+        );
+        assert!(
+            reg.get(&DriverId::new("drive")).is_none(),
+            "/drive must be unregistered without Google config (fail closed)"
+        );
+        assert!(
+            reg.get(&DriverId::new("ga")).is_none(),
+            "/ga must be unregistered without Google config (fail closed)"
+        );
+    }
 }

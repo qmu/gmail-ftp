@@ -279,6 +279,15 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         // qfs-cmd/qfs-exec stay off the wire client. qfs-driver-http is already in the
         // runtime-consumer allowlist; this is its only allowed dependent besides the driver layer.
         "qfs-driver-http",
+        // google-drivers live commit: the binary composes the OAuth-authenticated gmail/gdrive/ga
+        // commit stack (src/google.rs) over qfs-google-auth — bridging the ONE reqwest transport onto
+        // its runtime-free `HttpExchange` seam, building the per-account StoredTokenSource +
+        // GoogleApiClient, and registering the apply drivers in src/commit.rs (gated like
+        // github/slack). qfs-google-auth is a PURE off-runtime leaf (it shares only qfs-http-core +
+        // qfs-secrets, never reqwest/qfs-runtime/qfs-driver-http — pinned by
+        // `http_core_is_a_pure_leaf_single_sourcing_the_redaction_set`), so this edge adds NO runtime
+        // coupling to the terminal binary; the wire client + the live loopback consent dead-end here.
+        "qfs-google-auth",
         // t-exec sql live commit: the binary wires the real SQLite-backed sql driver. qfs-driver-sql
         // is the vendor-free driver (trait + compiler); the production SqliteBackend (rusqlite)
         // lives IN the binary (src/sql.rs) because qfs-driver-sql is a runtime consumer that must

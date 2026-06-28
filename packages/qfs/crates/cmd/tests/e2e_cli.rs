@@ -366,8 +366,10 @@ fn kind_to_exit_code_is_one_to_one() {
 }
 
 // ===================================================================================
-// Scenario 3: PREVIEW / COMMIT gate — via the REAL binary (effect plans build with an
-// empty engine; commit applies against the in-memory engine).
+// Scenario 3: PREVIEW / COMMIT gate — via the REAL binary. Effect plans build against the
+// one-shot mounts (incl. the cred-free Google describe mounts, so `/mail/drafts` PLANS); the
+// commit then routes to the live apply registry, which has NO `mail` driver unless a Google
+// OAuth app + account are configured (fail closed), so a `--commit` here reaches `commit_failed`.
 // ===================================================================================
 
 #[test]
@@ -375,7 +377,7 @@ fn non_destructive_effect_previews_at_exit_zero_with_counts() {
     let o = qfs(&[
         "run",
         "-e",
-        "INSERT INTO /mail/inbox VALUES (9, 'x')",
+        "INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')",
         "--json",
     ]);
     assert_eq!(o.code, 0, "a non-destructive preview is exit 0");
@@ -503,7 +505,7 @@ fn reversible_commit_passes_the_irreversible_gate() {
     let o = qfs(&[
         "run",
         "-e",
-        "INSERT INTO /mail/inbox VALUES (9, 'x')",
+        "INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')",
         "--json",
         "--commit",
     ]);
@@ -568,7 +570,11 @@ fn trailing_commit_keyword_irreversible_also_fails_closed() {
 #[test]
 fn piped_default_is_json_no_flag() {
     // stdout is a pipe (captured) → json by default, no plan prompt, just the document.
-    let o = qfs(&["run", "-e", "INSERT INTO /mail/inbox VALUES (9, 'x')"]);
+    let o = qfs(&[
+        "run",
+        "-e",
+        "INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')",
+    ]);
     assert_eq!(o.code, 0);
     let v = json(&o.stdout);
     assert!(
@@ -582,7 +588,7 @@ fn explicit_format_table_overrides_pipe_default() {
     let o = qfs(&[
         "run",
         "-e",
-        "INSERT INTO /mail/inbox VALUES (9, 'x')",
+        "INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')",
         "--format",
         "table",
     ]);
@@ -603,7 +609,7 @@ fn explicit_json_flag_is_machine_json() {
     let o = qfs(&[
         "run",
         "-e",
-        "INSERT INTO /mail/inbox VALUES (9, 'x')",
+        "INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')",
         "--json",
     ]);
     assert_eq!(o.code, 0);
@@ -636,7 +642,7 @@ fn tty_default_is_table_via_pty() {
     // `script -qec "<cmd>" /dev/null` runs <cmd> attached to a pty, capturing to /dev/null but
     // letting <cmd>'s own stdout flow to script's stdout (the pipe we capture).
     let cmd = format!(
-        "{} run -e \"INSERT INTO /mail/inbox VALUES (9, 'x')\"",
+        "{} run -e \"INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')\"",
         qfs_bin().display()
     );
     let out = Command::new(script)
@@ -677,7 +683,7 @@ fn data_on_stdout_errors_on_stderr() {
     let ok = qfs(&[
         "run",
         "-e",
-        "INSERT INTO /mail/inbox VALUES (1, 'x')",
+        "INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')",
         "--json",
     ]);
     assert!(!ok.stdout.is_empty() && ok.stderr.is_empty());

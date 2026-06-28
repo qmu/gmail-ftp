@@ -142,6 +142,32 @@ fn local_engine_and_reads(root: PathBuf) -> (Engine, ReadRegistry) {
 /// active selectable **safety mode** (t59) that governs the one-shot commit gate. qfs-cmd stays
 /// off qfs-driver-local; the binary (the leaf) owns this adapter, like the shell + commit
 /// composition. Other drivers join here as their read facets land.
+/// Register the cred-free **planning** facets for the three Google drivers (`/mail`, `/drive`,
+/// `/ga`) into `engine`'s mounts, so statements over those paths RESOLVE + PLAN end to end. The
+/// planner is pure — it reads only the introspective describe/capabilities/pushdown half, never a
+/// client and never a token — so a mock client suffices here (exactly as `qfs describe` does). The
+/// real OAuth-authenticated clients that APPLY a commit leg live in the apply registry
+/// (`commit.rs`), keyed by the SAME runtime driver ids (`mail`/`drive`/`ga`) the planner stamps; the
+/// mock clients registered here are never called (no read facet is wired for them, and planning
+/// never touches an applier). Factored out so the planning wiring is unit-tested hermetically.
+fn register_google_planning_mounts(engine: &mut Engine) {
+    let _ = engine
+        .mounts
+        .register(Arc::new(qfs_driver_gmail::GmailDriver::new(Arc::new(
+            qfs_driver_gmail::MockGmailClient::new(),
+        ))));
+    let _ = engine
+        .mounts
+        .register(Arc::new(qfs_driver_gdrive::GDriveDriver::new(Arc::new(
+            qfs_driver_gdrive::MockDriveClient::default(),
+        ))));
+    let _ = engine
+        .mounts
+        .register(Arc::new(qfs_driver_ga::GaDriver::new(Arc::new(
+            qfs_driver_ga::MockGaClient::default(),
+        ))));
+}
+
 #[must_use]
 pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
     // The active safety mode (t59): the persisted /sys/settings choice, else the env config, else
@@ -164,6 +190,9 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
         .register(Arc::new(qfs_driver_slack::SlackDriver::new(Arc::new(
             qfs_driver_slack::MockSlackClient::default(),
         ))));
+    // Google (gmail / gdrive / ga): register the cred-free mock-client facets as mounts so `/mail`,
+    // `/drive`, and `/ga` statements PLAN (see `register_google_planning_mounts`).
+    register_google_planning_mounts(&mut engine);
     // SQL: register the live SQLite-backed mount when configured, so `/sql/<conn>/<table>`
     // statements PLAN against the real introspected catalog (the same registry the commit apply
     // driver uses). Skipped when no `QFS_SQL_*` connection is configured.
@@ -490,6 +519,27 @@ mod tests {
         // A raw qfs read typed at the prompt produces a listing, same as the one-shot path.
         let t = run_script(&engine, &reads, "/local |> SELECT name\n");
         assert!(t.contains("a.md"), "raw statement listing:\n{t}");
+    }
+
+    #[test]
+    fn mail_statement_plans_through_the_registered_google_mount() {
+        // The cred-free Google planning mounts let a `/mail` write RESOLVE + PLAN end to end with no
+        // client, no token, and no network — the same describe-only path `qfs describe` uses. A real
+        // OAuth client only matters at COMMIT (commit.rs). This drives the SAME wiring the one-shot
+        // path uses (`register_google_planning_mounts`) over a hermetic temp-dir local engine.
+        let (_d, mut engine, reads) = fixture();
+        register_google_planning_mounts(&mut engine);
+        let t = run_script(
+            &engine,
+            &reads,
+            "INSERT INTO /mail/drafts VALUES ('alice@example.com', 'Hi', 'Body text')\n",
+        );
+        // It previews a plan (the safety gate), not an unresolved-mount / unknown-driver error.
+        assert!(t.contains("PREVIEW"), "/mail must plan/preview:\n{t}");
+        assert!(
+            t.contains("type COMMIT to apply"),
+            "/mail plan reaches the COMMIT gate:\n{t}"
+        );
     }
 
     #[test]

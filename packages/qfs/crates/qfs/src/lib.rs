@@ -32,6 +32,7 @@ pub mod docs;
 pub mod e2e_store;
 pub mod fs;
 pub mod git;
+pub mod google;
 pub mod host;
 pub mod identity;
 pub mod invite;
@@ -53,3 +54,16 @@ pub mod tunnel;
 pub mod version;
 pub mod watchtower;
 pub mod worm;
+
+/// A process-global lock serializing the **test-only** mutation of shared environment variables
+/// (`XDG_CONFIG_HOME` and friends) across the crate's test modules.
+///
+/// The config-home resolvers (`store.rs` and the OAuth flow store in `oauth.rs`) read
+/// `XDG_CONFIG_HOME` process-globally. Both modules' tests set + restore it; previously each owned a
+/// *module-local* `ENV_LOCK`, which serialized within a module but NOT across modules — so a
+/// `store.rs` test setting `XDG_CONFIG_HOME` could corrupt an in-flight `oauth.rs` test's config home
+/// (and vice-versa), panicking it and poisoning that module's lock (a cascade of false failures under
+/// the parallel harness). Sharing ONE lock makes every env-mutating test across the crate mutually
+/// exclusive, so the suite is deterministic regardless of thread scheduling.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

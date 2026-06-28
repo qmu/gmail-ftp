@@ -99,10 +99,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
-    // We mutate process env (HOME/XDG) which is global; serialize via a mutex so the cases that
-    // read it don't race each other under the test harness's threads.
-    use std::sync::Mutex;
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // We mutate process env (HOME/XDG) which is global; serialize via the crate-wide ENV_LOCK so the
+    // cases that read it don't race each other — OR the sibling `oauth.rs` tests, which also mutate
+    // `XDG_CONFIG_HOME` (a shared lock, not a module-local one, is what makes that mutual exclusion
+    // cross-module and the suite deterministic under the parallel harness).
+    use crate::ENV_LOCK;
 
     #[test]
     fn xdg_config_home_takes_precedence() {
