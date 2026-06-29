@@ -243,5 +243,3 @@ See [Connections & credentials](/guide/connections) for details, including the p
 - **[How qfs works](/guide/concepts)** — paths, archetypes, previews, and federation explained.
 - **[CLI reference](/guide/cli)** — every command and flag.
 - **[Interactive shell](/guide/shell)** — explore your services like a filesystem.
-</content>
-</invoke>

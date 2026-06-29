@@ -260,5 +260,3 @@ reads the credential value from stdin. See [Connections & credentials](/guide/co
 full flow.
 
 **Next:** put it all together in [the Cookbook →](/cookbook/)
-</content>
-</invoke>
