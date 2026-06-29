@@ -147,7 +147,8 @@ mod native {
             store: &dyn WatcherStore,
             now: i64,
         ) -> Result<usize, String> {
-            let stmt = qfs_exec::parse(&format!("FROM {}", self.source))
+            // Decision R (t73): the source leads — no `FROM`. `self.source` is a `/path` mount.
+            let stmt = qfs_exec::parse(&self.source)
                 .map_err(|e| format!("watcher source parse failed: {e}"))?;
             let rows = qfs_exec::execute_read(&stmt, &engine.mounts, reads)
                 .await

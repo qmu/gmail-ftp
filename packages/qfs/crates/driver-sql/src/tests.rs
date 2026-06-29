@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use qfs_driver::{check_capability, Driver, Path, PushdownProfile, Verb};
 use qfs_plan::{DriverId as PlanDriverId, EffectKind, EffectNode, NodeId, Target, VfsPath};
 use qfs_secrets::{
-    AccountId, CredentialKey, DriverId as SecretDriverId, InMemoryStore, Secret, Secrets,
+    ConnectionId, CredentialKey, DriverId as SecretDriverId, InMemoryStore, Secret, Secrets,
 };
 use qfs_types::{
     CmpOp, ColRef, Column, ColumnType, Literal, Predicate, Row, RowBatch, Schema, Value,
@@ -645,7 +645,7 @@ async fn end_to_end_insert_through_runtime_bridge() {
 fn connection_credential_is_never_leaked_in_an_error() {
     const PLANTED: &str = "postgres://user:PLANTED-PASSWORD-9f8e7d6c@db.internal:5432/app";
     let store = InMemoryStore::new();
-    let key = CredentialKey::new(SecretDriverId::new("sql"), AccountId::new("db").unwrap());
+    let key = CredentialKey::new(SecretDriverId::new("sql"), ConnectionId::new("db").unwrap());
     store.put(&key, Secret::from(PLANTED)).unwrap();
 
     // resolve_dialect reads ONLY the scheme; the dialect is postgres and the secret is returned
@@ -683,7 +683,10 @@ fn connection_credential_is_never_leaked_in_an_error() {
 fn unknown_scheme_credential_is_rejected_without_leaking() {
     const PLANTED: &str = "oracle://admin:TOPSECRET-abc123@host/db";
     let store = InMemoryStore::new();
-    let key = CredentialKey::new(SecretDriverId::new("sql"), AccountId::new("ora").unwrap());
+    let key = CredentialKey::new(
+        SecretDriverId::new("sql"),
+        ConnectionId::new("ora").unwrap(),
+    );
     store.put(&key, Secret::from(PLANTED)).unwrap();
     let err = resolve_dialect(&store, "ora").unwrap_err();
     assert_eq!(err.code(), "unknown_scheme");

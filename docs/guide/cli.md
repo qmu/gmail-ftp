@@ -9,7 +9,7 @@ qfs [OPTIONS] [COMMAND]
 Commands:
   run       Run one statement and exit (preview by default)
   describe  Describe a path: archetype, columns, verbs, procedures, pushdown
-  account   Manage stored credentials per service/account
+  connection  Manage stored credentials per service/connection
   skill     Print the embedded AI operating procedure
   serve     Start the server from a .qfs config file
   help      Print help for any command
@@ -44,7 +44,7 @@ qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')"
 qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')" --commit
 
 # Irreversible needs the extra ack:
-qfs run "FROM /mail/drafts |> CALL mail.send" --commit --commit-irreversible
+qfs run "/mail/drafts |> CALL mail.send" --commit --commit-irreversible
 ```
 
 ## `qfs describe` — inspect a path
@@ -58,16 +58,21 @@ Completely **offline and credential-free**. It returns the node's archetype, col
 nullability), supported verbs, `CALL` procedures (with which are irreversible), prelude aliases, and
 which filters push down to the service. This is the first thing to run against any unfamiliar path.
 
-## `qfs account` — credentials
+## `qfs connection` — credentials
 
 Store and manage credentials per service. Names are metadata (safe to print); the secret is never
-echoed. See [Accounts & credentials](/guide/accounts).
+echoed. See [Connections & credentials](/guide/connections).
+
+`add`, `list`, and `remove` need **`QFS_PASSPHRASE`** exported first — the master passphrase that
+unlocks the encrypted local store (not a service credential). The credential **value is read from
+stdin**, never argv:
 
 ```sh
-qfs account add <service> <name>     # store (or replace) a credential
-qfs account list [<service>]         # list account names only
-qfs account use <service> <name>     # set the active account for a service
-qfs account remove <service> <name>  # delete (idempotent)
+read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE     # unlock the store, no shell-history leak
+printf %s "$TOKEN" | qfs connection add <service> <name>   # value via stdin (store/replace)
+qfs connection list [<service>]         # list connection names only
+qfs connection use <service> <name>     # set the active connection (no passphrase needed)
+qfs connection remove <service> <name>  # delete (idempotent)
 ```
 
 ## `qfs skill` — the embedded AI procedure

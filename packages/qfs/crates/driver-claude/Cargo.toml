@@ -1,0 +1,30 @@
+[package]
+name = "qfs-driver-claude"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs /claude AI-sessions driver (RFD-0001 §5; roadmap §3.3 / M7, t64): each machine's Claude Code sessions surfaced as ordinary qfs paths under the host realm — `/hosts/<host>/claude/sessions` reads what an agent is doing, `INSERT INTO /hosts/<host>/claude/sessions/<id>/instructions` steers it. Decision K: qfs NEVER hosts or calls an LLM — this is a PATH FACADE over session metadata + an append-log of instructions, not an inference dependency. The introspective half (mount/describe/capabilities/pushdown) is PURE — a stable, credential-free schema with NO session source and NO secrets, mirroring the /sys driver's injected-backend split. The on-disk session read source + the append applier are INJECTED from the qfs binary leaf through the vendor-free SessionSource seam, so this crate stays tokio-free and I/O-free (wasm-buildable, proof test green). `/claude/sessions` is READ-ONLY (SELECT); `.../instructions` is APPEND-ONLY (SELECT + a single reversible INSERT — steering is an append, never a silent reversible stop). The schema carries no secret/token column, so a credential cannot surface through a path. Bridges its synchronous PlanApplier to the runtime async ApplyDriver via qfs-runtime's PlanApplierBridge (a runtime leaf). The live cross-machine `<host>` hop rides the t63 tunnel and re-checks POLICY at the destination — a DOCUMENTED SEAM, fail-closed by default."
+
+[dependencies]
+# The introspective Driver contract (t13): trait, archetype/capability/pushdown DTOs,
+# the shared CfsError, and the Path boundary adapter.
+qfs-driver = { path = "../driver" }
+# The effect substrate (t06/t09): EffectKind/EffectNode/Target/VfsPath + the synchronous
+# PlanApplier seam the runtime bridge drives.
+qfs-plan = { path = "../plan" }
+# The canonical typed row model + Schema/Column/Value/DriverId (t05) the describe schema,
+# the scanned session rows, and the instruction-append payload speak.
+qfs-types = { path = "../types" }
+# The async interpreter side: the SharedApplier/EffectError/EffectOutput the runtime bridge
+# adapts this driver's synchronous applier into, and the PlanApplierBridge itself. tokio is
+# confined to qfs-runtime + leaf driver-impl consumers (this crate), so the spine purity guard
+# stays green — the real on-disk SessionSource is INJECTED from the binary, not pulled here.
+qfs-runtime = { path = "../runtime" }
+# Structured, secret-free ClaudeError taxonomy (RFD §5, AI-consumable).
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

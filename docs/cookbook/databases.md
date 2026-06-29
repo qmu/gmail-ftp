@@ -9,33 +9,33 @@ and limits **down** into the database and does the rest locally.
 **Filter, project, sort, limit** — the `WHERE` and `LIMIT` run inside the database:
 
 ```qfs
-FROM /sql/pg/orders
-|> WHERE total > 100
-|> SELECT id, total, status
-|> ORDER BY total DESC
-|> LIMIT 5
+/sql/pg/orders
+|> where total > 100
+|> select id, total, status
+|> order by total DESC
+|> limit 5
 ```
 
 **Ranges and sets read naturally:**
 
 ```qfs
-FROM /sql/pg/orders
-|> WHERE total BETWEEN 50 AND 100
-|> SELECT id, total
+/sql/pg/orders
+|> where total BETWEEN 50 AND 100
+|> select id, total
 ```
 
 ```qfs
-FROM /sql/pg/orders
-|> WHERE status IN ('open', 'pending')
-|> SELECT id, status
+/sql/pg/orders
+|> where status IN ('open', 'pending')
+|> select id, status
 ```
 
 **Multiple conditions:**
 
 ```qfs
-FROM /sql/pg/users
-|> WHERE age >= 18 AND country = 'JP'
-|> SELECT id, name, age
+/sql/pg/users
+|> where age >= 18 AND country == 'JP'
+|> select id, name, age
 ```
 
 ## Summarize
@@ -43,17 +43,17 @@ FROM /sql/pg/users
 **Count rows per group:**
 
 ```qfs
-FROM /sql/pg/orders
-|> GROUP BY status
-|> AGGREGATE count(id) AS n
-|> ORDER BY n DESC
+/sql/pg/orders
+|> group by status
+|> aggregate count(id) as n
+|> order by n DESC
 ```
 
 **Sum a column:**
 
 ```qfs
-FROM /sql/pg/orders
-|> AGGREGATE SUM(total) AS revenue
+/sql/pg/orders
+|> aggregate SUM(total) as revenue
 ```
 
 ## Add a computed column
@@ -61,9 +61,9 @@ FROM /sql/pg/orders
 `EXTEND` adds a derived column without dropping the rest:
 
 ```qfs
-FROM /sql/pg/orders
-|> EXTEND high_value = total
-|> SELECT id, total, high_value
+/sql/pg/orders
+|> extend high_value = total
+|> select id, total, high_value
 ```
 
 ## Write
@@ -71,24 +71,24 @@ FROM /sql/pg/orders
 **Insert a row, returning its id:**
 
 ```qfs
-INSERT INTO /sql/pg/audit
-  VALUES ('login', 'alice')
-  RETURNING id
+insert into /sql/pg/audit
+  values ('login', 'alice')
+  returning id
 ```
 
 **Update matching rows** (preview shows exactly which are affected):
 
 ```qfs
-UPDATE /sql/pg/orders
-  SET status = 'shipped'
-  WHERE id = 7
+update /sql/pg/orders
+  set status = 'shipped'
+  where id == 7
 ```
 
 **Upsert — the retry-safe write** (create-or-replace; running it twice converges):
 
 ```qfs
-UPSERT INTO /sql/pg/settings
-  VALUES ('theme', 'dark')
+upsert into /sql/pg/settings
+  values ('theme', 'dark')
 ```
 
 ## Combine two tables
@@ -96,13 +96,13 @@ UPSERT INTO /sql/pg/settings
 Set operations stitch two sources together:
 
 ```qfs
-FROM /sql/pg/users
-|> UNION FROM /sql/mysql/users
+/sql/pg/users
+|> union /sql/mysql/users
 ```
 
 ```qfs
-FROM /sql/pg/active_users
-|> EXCEPT FROM /sql/pg/banned_users
+/sql/pg/active_users
+|> except /sql/pg/banned_users
 ```
 
 ::: tip Want to join a database to another *service*?

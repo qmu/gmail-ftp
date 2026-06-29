@@ -35,6 +35,27 @@ Before any feature, two rules decide whether it is allowed to exist.
    dashboard, a line in the terminal, and a tool call from Claude are the same operation rendered three
    ways. That sameness is the product.
 
+   > **Implementation status (t52 — the dashboard commits).** The CLI ✅ and the MCP endpoint ✅ are
+   > live; the **web dashboard** now has a shipped ✅ embedded SPA — a static page in the
+   > binary (`GET /`, `GET /assets/*`) that the in-house listener serves over loopback, plus a thin JSON
+   > bridge (`POST /api/describe`, `POST /api/run`) that drives the **same** injected engine the MCP face
+   > uses. The **preview→commit approval cards** ✅ (t52) have landed: a preview renders the plan's
+   > effects as a card, and `POST /api/commit` applies an approved plan through the **same** default-deny
+   > policy gate + irreversible-effect guard the CLI/MCP use — a reversible in-policy plan auto-commits,
+   > an out-of-policy plan is refused with the decision, and an **irreversible** plan (REMOVE / CALL) is
+   > never auto-applied: it raises a distinct one-time confirm that posts the explicit ack (the same
+   > acknowledgement `--commit-irreversible` drives). The *selectable* commit modes (§2.4) ✅ (t59) have
+   > landed: the three presets are an operator setting stored as data (`/sys/settings` `safety_mode`,
+   > resolved with an env fallback to the safe default), and they govern the **real** commit path —
+   > `qfs_mcp::commit_plan` (MCP + dashboard) and the CLI one-shot — so e.g. *Approve-everything* refuses a
+   > reversible write *Autonomous-in-policy* would auto-apply, while the policy gate + irreversible-ack
+   > floor hold in every mode (an out-of-policy plan is denied regardless of mode).
+   > The first `/sys/*` admin views ✅ (t53) have landed: the deployment's own state (`/sys/users`,
+   > `/sys/projects`, `/sys/audit`, `/sys/connections`, `/sys/policies`) is now an ordinary set of qfs
+   > paths backed by the System DB, readable from every face and writable via a gated
+   > `INSERT INTO /sys/policies` (default-deny, audited). The shell is loopback-only and not yet
+   > session-gated; the super-admin vs. project-admin split is still open (§3.4).
+
 ## The confirmed architecture (decision ledger)
 
 The plan rests on these decisions. Later sections expand each.
@@ -59,7 +80,7 @@ The plan rests on these decisions. Later sections expand each.
 | P | Addressing | A path names three axes — **scope** (whose), **service** (what), **coordinate** (when). Root is a **closed set of plural realms** (`/members`, `/projects`, `/hosts`, `/directories`) plus two singletons (`/me`, `/sys`); within a scope, connections/accounts are **plain `/`-segments** (no new punctuation). The path is the authorization subject; realms are closed/governed while drivers stay an open registry. See §1.3 |
 | Q | Write form | A write reads as **dataflow**: when it has a source it is a **pipeline stage** — `<source> \|> … \|> insert/upsert/update/remove <target>`; a **source-less literal** write leads with the verb — `insert into <target> values (…)`. Both forms are legal; nothing else is. (Today's parser only accepts the verb-leading form — aligning it to the pipeline-stage form is grammar work, tracked with the M6 language tickets.) |
 | R | Source form | A `/path` is a first-class **`Resource`** value — a lazy, describable handle to a node. The source position needs no `from`: a leading `/path` **is** the source, and the *same* literal serves `join`/set-op operands, `policy` targets, and `member_of(…)` — one spelling for "a node" instead of four. A `Resource` is pure to hold and `describe`; only a pipeline forces its rows. A leading `/` is unambiguous by **position** — `/` where an expression *begins* (a stage/operand start) is always a path, `/` *between* two operands is division — so dropping `from` costs no clarity. (Today's parser requires `from` and quotes path patterns; unifying them is M6 grammar work — see §1.2.) |
-| S | Keyword case | Keywords are **lowercase** (`where`, `select`, `let`, `insert into`, `join`, `policy`, …). Paths, column names, and bindings are the data that carries the visual weight; keywords stay quiet. (§1.1 and the cookbook still render uppercase until the same M6 migration pass; the catalogue stays honest about what parses *now*.) |
+| S | Keyword case | Keywords are **lowercase** (`where`, `select`, `let`, `insert into`, `join`, `policy`, …). Paths, column names, and bindings are the data that carries the visual weight; keywords stay quiet. (**Landed in M6, ticket t74:** the lexer recognizes keywords **case-insensitively** and renders them lowercase as the canonical form — so an older uppercase query still parses — and the generated reference + the cookbook now show lowercase.) |
 | T | Type system | A real, **static** type system, checked at **plan time** — before any I/O, so a type error surfaces in `preview`, consistent with the purity floor. Scalar primitives are lowercase, Rust-style: **`bool`** (`true`/`false`), fixed-width ints **`i32`/`i64`/`u32`/`u64`**, floats **`f32`/`f64`**, and **`string`** (`'…'`) — alongside the **`Resource`** value (decision R) and lambda/function types (CamelCase for named types, lowercase for scalar primitives). Column types come from `describe`, so a pipeline type-checks before it touches the world. Ordinary **infix arithmetic** (`+ - * /`) is supported and type-checked; a leading `/` stays unambiguous by **position** (decision R), not by banning division. |
 | U | Credential vault | Secrets live in a **vault** with a **three-level key hierarchy** (extends E): a deployment **root KEK** (OS keychain / cloud KMS, never in the DB) wraps a per-project/connection **data key**, which encrypts only the secret columns. A team **shares a connection, never the secret** — a project connection is added once and used *as the team*, with actor-based `policy` deciding who may run plans through it; the raw secret is never re-entered, copied, or shown. A secret **never appears in a qfs statement** (it would be previewable/audited) — it enters only through a dedicated credential input (CLI prompt / admin form); the language sees **metadata only**. Member removal revokes use and **rotates**; an optional **per-recipient (E2E) wrap** to a member's key scopes a high-sensitivity connection cryptographically below the server (at the cost that an agent can't use it unattended). See §4.5 |
 | V | Observability | Telemetry is **externalized — qfs emits, it does not store** (the monitoring parallel to decision M). Three signals — **audit** (actor/connection/verb/path/committed), **metrics** (counters/histograms), **traces** (per-plan `describe`→pushdown→`commit`) — written to one of **three prepared output sinks: `file` (default), `stdout`, or `OTel` (recommended)**. Everything downstream (Prometheus, Grafana, Datadog, a SIEM, qfs Cloud's dashboards) consumes one of those — almost always OTel; qfs ships the standard output and integrates with no vendor directly. **One surface, two consumers:** the managed tier consumes it automatically; a self-hosted deployment points its own stack at the same output. Telemetry is **metadata only** — never secrets or row data — and audit reads are `policy`-gated. qfs **exports** the audit stream rather than retaining it: events are **hash-chained** as emitted and the chain head is **sealed to an independent write-once witness** (WORM / transparency log), so the *consumer's* store is tamper-evident and a compromised server can't rewrite history undetectably. **Where the log lives and how long it is kept are the consumer's concern, not qfs's** — though a local install may point the `file` sink at a rotating path when it has no external monitor. See §4.6 |
@@ -74,11 +95,11 @@ One small, SQL-like language addresses every service as a tree of **paths**. A q
 followed by **stages** joined by `|>` (a pipe). Read it top to bottom.
 
 ```qfs
-FROM /mail/inbox
-|> WHERE subject LIKE '%invoice%'
-|> SELECT date, from, subject
-|> ORDER BY date DESC
-|> LIMIT 20
+/mail/inbox
+|> where subject LIKE '%invoice%'
+|> select date, from, subject
+|> order by date DESC
+|> limit 20
 ```
 
 Paths are always absolute and name a node on any backend:
@@ -95,7 +116,7 @@ Paths are always absolute and name a node on any backend:
 
 The **read/transform stages**: `WHERE`, `SELECT … AS …`, `EXTEND col = expr`, `JOIN <path> ON …`
 (**even across services**), `AGGREGATE fn AS name`, `GROUP BY`, `ORDER BY … DESC`, `LIMIT`,
-`DISTINCT`, and the set operations `UNION` / `EXCEPT` / `INTERSECT FROM <path>`.
+`DISTINCT`, and the set operations `UNION` / `EXCEPT` / `INTERSECT <path>`.
 
 The **write effects**: `INSERT INTO`, `UPSERT INTO` (retry-safe), `UPDATE`, `REMOVE`, and
 `CALL <service>.<action>(…)`. **Codecs** turn bytes into rows and back: `DECODE json`, `ENCODE csv`
@@ -108,9 +129,9 @@ The **write effects**: `INSERT INTO`, `UPSERT INTO` (retry-safe), `UPDATE`, `REM
 Federation — one query, many services — is the point:
 
 ```qfs
-FROM /sql/pg/orders
-|> JOIN /github/acme/web/issues ON id = issue_id
-|> SELECT id, title
+/sql/pg/orders
+|> join /github/acme/web/issues on id == issue_id
+|> select id, title
 ```
 
 Safety is built in: `qfs run` **previews by default**, `--commit` applies, and **irreversible**
@@ -118,13 +139,13 @@ effects (sending mail, merging a PR, deleting) demand `--commit-irreversible`. S
 `POLICY` (least-privilege scopes) and `TRIGGER` (automation):
 
 ```qfs
-CREATE POLICY uploads ALLOW UPSERT ON '/s3/*'
-CREATE TRIGGER notify ON /mail/inbox
-  DO INSERT INTO /slack/acme/general/messages VALUES (NEW.subject)
+create policy uploads ALLOW UPSERT on '/s3/*'
+create trigger notify on /mail/inbox
+  do insert into /slack/acme/general/messages values (NEW.subject)
 ```
 
-> Credentials are stored once with `qfs account add <service> <name>` and never printed back. Under the
-> plan this command becomes `qfs connection add …` (decision B); the behavior is unchanged.
+> Credentials are stored once with `qfs connection add <service> <name>` and never printed back
+> (decision B renamed this command from `qfs account add`); the behavior is unchanged.
 
 ### 1.2 Where the language is going 🧭
 
@@ -183,13 +204,13 @@ let active    = true
 |> select id, total, currency
 ```
 
-> These land across the **M6** language tickets — *not* one ticket. Today's parser still requires `from`,
-> quotes `policy`/`member_of` paths, renders uppercase keywords, and has no static type checker; the work
-> splits by decision: **t70** flips `=`→`==` (decision O), a **`Resource`/drop-`from`** ticket removes
-> `from` and unquotes path literals (decision R), a **lowercase-keywords** ticket lowers the keyword set
-> (decision S), and a **static-type-system** ticket lands typed literals + the plan-time checker (decision
-> T). Until they ship, §1.1 (the grammar you have today ✅) and the [query cookbook](/query-cookbook) stay
-> honest about what parses *now*.
+> These land across the **M6** language tickets — *not* one ticket. The work splits by decision:
+> **t70** flips `=`→`==` (decision O, landed), a **`Resource`/drop-`from`** ticket removes `from` and
+> unquotes path literals (decision R), **t74** lowers the keyword set to **lowercase** (decision S,
+> **landed** — keywords are recognized case-insensitively and render lowercase), and a
+> **static-type-system** ticket lands typed literals + the plan-time checker (decision T, still pending,
+> so the type annotations below are parsed-and-retained but not yet checked). §1.1 (the grammar you have
+> today ✅) and the [query cookbook](/query-cookbook) stay honest about what parses *now*.
 
 **`=` binds, `==` compares** (decision O) — **unlike SQL, a single `=` is never equivalence.** Once
 `let` and lambdas make binding a first-class, everyday act, overloading `=` for both "give this name a
@@ -197,12 +218,12 @@ value" and "is this value equal" reads as a trap. So qfs splits them: `=` **alwa
 (`let x = …`, `extend col = …`, `set col = …`, `update … set …`), and equivalence is the explicit
 **`==`**. The other comparisons are unchanged (`<> < > <= >= like ~ in between any`).
 
-> Today's binary still parses a single `=` as comparison, requires `from`, and renders keywords
-> uppercase; that is why §1.1 (the grammar you have today ✅) and the `grammar=core` recipes in the
-> [query cookbook](/query-cookbook) still show `WHERE x = …`. Once the M6 grammar tickets above land, a
-> single migration pass rewrites every example to `==`, no-`from`, lowercase, unquoted in one go — until
-> then, the catalogue stays honest about what parses *now*. **The 🧭 examples below already show the
-> target grammar.**
+> The `=`/`==` split (decision O) **has now landed** (ticket t70): the binary parses a single `=` as a
+> bind/assignment only, and `==` as equivalence, so §1.1 (the grammar you have today ✅) and the
+> `grammar=core` recipes in the [query cookbook](/query-cookbook) use `where x == …`. **Lowercase keywords
+> (decision S) have also landed** (ticket t74): keywords are recognized case-insensitively and render
+> lowercase, so the reference and the cookbook now show the lowercase form. **The 🧭 examples below
+> already show the full target grammar.**
 
 ```qfs
 # 🧭 proposed — `=` binds the name, `==` tests equivalence; the two never collide.
@@ -276,7 +297,10 @@ create policy analysts
 ```
 
 New **drivers** join as ordinary paths: a first-class **`fs`** driver (your real filesystem as a blob
-namespace, beyond today's `/local`) and the AI-session driver mounted under a host
+namespace, beyond today's `/local`) — **landed (t68)** as an opt-in, **deny-all-by-default** mount:
+it addresses files under operator-configured **named roots** (`/fs/<root>/...`, one `QFS_FS_<NAME>`
+per root), with `..`/absolute/symlink escapes refused at both scan and apply time and `REMOVE` kept
+irreversible; with no root configured nothing resolves — and the AI-session driver mounted under a host
 (**`/hosts/<host>/claude/...`** — Part 3). Two of the surfaces below are **closed/governed**, not open
 driver mounts (§1.3, decision P): **`/directories/<provider>/...`** (LDAP / Active Directory / Entra /
 Google Workspace, for ACL) — a realm — and **`/sys/...`** (the deployment's own users, policies,
@@ -355,8 +379,8 @@ segment     = (name | "*" | "**") coordinate?    # globs make a path set-valued;
 coordinate  = "@" ref                            # binds to the preceding segment
 ```
 
-The *meaning* of segments **inside** the service — which segment is a connection/account vs. a
-resource (`/sql/pg/orders`: **connection** `pg`, table `orders`; `/google/work/gmail/inbox`: account
+The *meaning* of segments **inside** the service — which segment is a connection vs. a
+resource (`/sql/pg/orders`: **connection** `pg`, table `orders`; `/google/work/gmail/inbox`: connection
 `work`, mailbox `inbox`) — is declared by each driver's schema (`describe`), exactly as a filesystem
 can't tell a dir from a file without asking the FS. That is the path-is-the-type model, not an
 ambiguity.
@@ -364,7 +388,7 @@ ambiguity.
 The connection segment is a **label**, never the coordinates themselves. `pg` is an alias you chose at
 `qfs connection add sql pg …`; the **host, port, username, password, and database name** all live
 *inside* that connection's stored credential (a `postgres://…` string, envelope-encrypted at rest —
-decision E), which the driver fetches by `(driver "sql", account "pg")` and never prints back. Two
+decision E), which the driver fetches by `(driver "sql", connection "pg")` and never prints back. Two
 Postgres databases — a different host, user, or db name — are simply two labels (`pg`, `pg_eu`,
 `analytics`); switching the label switches the whole `(host, user, db)` tuple at once, the same way
 switching `work`→`personal` moves a Google grant. `/sys/connections` maps each label → provider +
@@ -414,6 +438,26 @@ The connection follows the standard remote-MCP authorization handshake — no qf
 4. The client calls MCP tools with a **bearer token**; a **refresh token** keeps the session alive — the
    "recurring authentication" a managed identity is meant to provide.
 
+> **Implementation status (t50 — M2 complete).** All four steps are live end-to-end: a qfs server serves
+> its **Protected Resource Metadata** (`/.well-known/oauth-protected-resource`), its **AS metadata**
+> (`/.well-known/oauth-authorization-server`, advertising `authorization_endpoint` / `token_endpoint`
+> / `registration_endpoint` + `grant_types_supported` = `authorization_code` + `refresh_token`, alongside
+> `code_challenge_methods_supported=["S256"]`), and its **JWKS** (`/jwks.json`) backed by an
+> envelope-encrypted ES256 signing key. A client **registers dynamically** (`POST /register`, RFC 7591),
+> runs the **authorization-code flow with PKCE (S256)** — the human signs in to the qfs identity (t45)
+> over a t46 session and consents at `/authorize` — and **exchanges the code for a signed ES256 access
+> token** at `POST /token`. **Step 4 is now real:** the `POST /mcp` endpoint **requires** that bearer
+> access token — a request with no / a malformed / a bad-signature / a wrong-`aud`-or-`iss` / an expired
+> token is rejected with **`401` + `WWW-Authenticate: Bearer resource_metadata="…"`** (RFC 9728), so a
+> spec-compliant client discovers the AS and authorizes without bespoke qfs knowledge; only a verified
+> token reaches a tool. The **refresh-token grant** (`grant_type=refresh_token`) keeps the session alive:
+> it rotates the handle single-use (mints a fresh access token + a new refresh handle, burns the old),
+> and a replay of a rotated handle is an `invalid_grant`. So **Claude can now connect to qfs over
+> MCP+OAuth and drive every service qfs fronts.** Caveats kept honest: the MCP `commit` gate is still the
+> default-deny policy (a per-user/scope ACL is **decision I / t57**); irreversible MCP commits still
+> require explicit `ack` until the selectable safety mode (**t59**); and binding off localhost (now safe
+> because the endpoint authenticates) sits behind the trusted reverse proxy of decision F.
+
 **text-to-SQL is client-side (decision K).** qfs does **not** host or call a model. The MCP tools it
 exposes *are* the surface a client LLM uses to turn natural language into qfs:
 
@@ -455,9 +499,11 @@ The preview reports *"reads only, 0 effects"* — pure, so it runs freely. Actin
 *Sending* those drafts is irreversible, so in the default mode (§2.4) a `CALL mail.send` over the same
 set is the step that waits for a human's approval — the reversible drafting above does not.
 
-### 2.4 The commit boundary is selectable 🧭 (decision J)
+### 2.4 The commit boundary is selectable ✅ (decision J)
 
-How much an agent may do on its own is an operator setting, not a fixed rule. Three presets:
+How much an agent may do on its own is an operator setting, not a fixed rule — stored as data in
+`/sys/settings` (`safety_mode`) and consulted live on the real commit path (MCP / dashboard / CLI).
+Three presets:
 
 | Mode | Reversible effects | Irreversible effects (send mail, merge PR, delete) |
 | --- | --- | --- |
@@ -579,11 +625,34 @@ or hand to Claude over MCP — same statement, same preview, same commit.
 
   Your fleet of machines — and your teammates' — becomes one queryable surface, with every cross-machine
   call authenticated by the same identity and bounded by the same `POLICY`.
+
+  > **Status (M7, first slice).** The tunnel **transport protocol core** has landed and is hermetically
+  > tested: the length-prefixed frame codec, the relay registration handshake (a missing/invalid qfs
+  > Cloud sign-in token is *refused* — decision N), and request/response **multiplexing** over an
+  > in-memory transport, all in the pure `qfs-tunnel` crate with the redaction floor inherited from the
+  > shared HTTP DTOs (no token crosses a frame's log/`Debug` in cleartext). The **live outbound TCP/TLS
+  > dial** to a running qfs Cloud relay — and the relay's own hosting, node addressing/discovery, and
+  > reconnect/backoff — are a **documented seam** (the `qfs` binary's composition root), not yet wired
+  > to a socket; there is no live two-node tunnel yet.
+  >
+  > The **`/hosts/<host>/claude/...` AI-sessions driver** has now landed as a *local* slice (t64): the
+  > pure, credential-free describe surface (`/claude/sessions` is a read-only `RelationalTable`;
+  > `/claude/sessions/<id>/instructions` is an append-only `AppendLog`) is registered and catalogued,
+  > and the binary wires a **fail-closed, opt-in** on-disk session source (`QFS_CLAUDE_SESSIONS`) so a
+  > local `FROM /claude/sessions |> WHERE status='running'` read and a gated
+  > `INSERT INTO /claude/sessions/<id>/instructions` append both work against real session state.
+  > Steering is a **reversible append** (an explicit COMMIT); `DESCRIBE`/`PREVIEW` touch nothing; the
+  > schema carries no token/transcript column. Honouring **decision K, qfs never hosts or calls an
+  > LLM** — this is a path façade over session metadata + an instruction log, not an inference call.
+  > The model itself runs elsewhere. What is still ahead: the *cross-machine* hop — resolving
+  > `/hosts/<remote>/claude/...` over the t63 tunnel and re-checking `POLICY` at the destination — is a
+  > **documented seam**, and the exact coupling to Claude Code's on-disk session format is flagged as
+  > an open product decision behind the injected `SessionSource` seam.
 - **Scheduled jobs** (decision M) are **externalized**: OS `cron` (individual) or Cloudflare Cron
   Triggers (managed) fire a `qfs run` / saved plan on schedule — qfs runs no scheduler of its own, so
   exactly-once and distribution are the platform's job, not a qfs leader election.
 
-### 3.4 The admin page 🧭
+### 3.4 The admin page
 
 A team needs administration, so the dashboard has an **admin area**: manage members and invites, view
 and grant `POLICY`, add/rotate `connections`, review the audit log, watch migrations, and (on the
@@ -595,9 +664,17 @@ surface is a view over the deployment's own `/sys/...` paths — `/sys/users`, `
 dashboard rendering the same engine over the same grammar; a super-admin can do every administrative
 action as a qfs statement too, preserving the one-engine-three-faces constraint.
 
+The **first slice is shipped ✅ (t53):** the `/sys/*` paths are real — a `qfs-driver-sys` driver backs
+them on the System DB, every face can read them (`/sys/audit |> WHERE …`), `/sys/connections`
+projects names + metadata only (never secrets), `/sys/audit` is append-only and every `/sys` mutation
+appends to it, and a gated `INSERT INTO /sys/policies` (default-deny policy gate, transactional +
+audited) is the one write. The dashboard renders the first thin admin views over those paths through
+the same `/api/describe` + `/api/run` bridge — no admin capability the CLI lacks. What remains open
+(🧭) is the breadth of views and the local-super-admin vs. project-admin split (below).
+
 ```qfs
-# 🧭 proposed — granting access from the admin surface is itself a previewable, committable statement
-insert into /sys/policies values (name => 'analysts', allow => 'select', on => /sql/*)
+# the first gated admin write — granting access is itself a previewable, committable, audited statement
+insert into /sys/policies values (name => 'analysts', allow => 'select', target => '/sql/*')
 ```
 
 ::: info The admin page is planned; its implementation is open
@@ -628,11 +705,15 @@ Two concerns the current draft conflated, now kept separate:
 | **System DB** | Per host | Projects, cross-project config, `/sys/*` (users, policies, connections, audit) |
 | **Project DB** | Per project | That project's `connections`, config, and state |
 
-Credentials are **envelope-encrypted** at rest: a passphrase or OS keychain unwraps a data-key that
-encrypts the secret columns inside the DB — one persistence path from a single-user laptop to the
-managed cloud. That single-key form is the base case of the **credential vault** (§4.5), which
-generalizes the same envelope into a team key hierarchy. Because the project is still experimental,
-there is **no migration** of today's file vault; the ideal is built fresh (decision E).
+Credentials are **envelope-encrypted** at rest: a data-key encrypts the secret columns inside the DB,
+and the data-key is itself wrapped under a key-encryption-key — today derived from the
+`QFS_PASSPHRASE` passphrase (argon2id); an OS-keychain source to unwrap it without an env var is the
+flagged next step. This is **now the default credential backend** (the SQLite Project DB's
+`secret_store`/`secret_meta` tables) — one persistence path from a single-user laptop to the managed
+cloud. That single-key form is the base case of the **credential vault** (§4.5), which generalizes
+the same envelope into a team key hierarchy. Because the project is still experimental, there is **no
+migration** of the old encrypted file vault; the ideal is built fresh — re-run `qfs connection add` once
+per existing connection (decision E).
 
 Scale keeps SQLite semantics everywhere by using **distributed SQLite**: **Cloudflare Workers + D1**
 (primary) or **AWS Lambda + EFS** (alternative). The binary stays **stateless** — a request arrives at
@@ -656,6 +737,16 @@ the external scheduler calls by name, or an `ENDPOINT` it hits — each running 
 preview→commit engine under the same `POLICY`. Removing the internal scheduler also removes the
 System-DB lease, the leader-election, and the cron daemon from the plan entirely — that distributed,
 exactly-once complexity is now the platform's, not ours.
+
+> **Status (t65 — shipped) ✅.** The internal scheduler is **retired**: the `qfs-cron` crate, its
+> tokio interval daemon, the `JobStore`/lease, and the `qfs serve` scheduler thread are **deleted**.
+> A `CREATE JOB … EVERY … DO …` row is now a saved named plan + cadence only — the `/server/jobs`
+> definition surface is unchanged, but qfs no longer fires it. The invokable unit ships as
+> **`qfs job run <config> <name>`** (PREVIEW by default; `--commit` applies through the **same**
+> policy gate + `IrreversibleGuard` the CLI one-shot uses) and **`qfs job cron <config> <name>`**
+> emits the OS-cron crontab line. The managed tier reads the same cadence from the generated
+> `[triggers] crons` block. Idempotency is now the author's responsibility (external schedulers are
+> at-least-once; there is no internal run-ledger to dedup a re-fire).
 
 ### 4.4 How a mixed-source query resolves — the same on every face ✅ (mechanism) / 🧭 (cloud routing)
 
@@ -752,6 +843,46 @@ the [short-lived credential brokering](#part-5--expanded-possibilities) idea tak
 > mitigation for connections that must survive it. (4) *Accidental leak via the language* → impossible
 > by construction: secrets never appear in a statement, only metadata does.
 
+> **Status (M9, brokering CORE — t66).** The **OAuth-brokering data model + the team-connection
+> provisioning + the security gates** have landed and are hermetic. qfs Cloud is modelled as the OAuth
+> **broker**: it holds one broker client registration per provider (the `client_id` + the client
+> secret, the crown jewel) and mints a **team-scoped** token to a team's connection, so members act
+> *as the team* with no personal OAuth client. A `Broker` trait is the seam; an in-memory
+> `FixtureBroker` is the reference impl the tests drive. Proven by construction: a team connection is
+> provisioned through the broker and the brokered token is sealed at rest (t43 envelope), reusing
+> t81's project-owned `shared_connection` gate; a **non-member is refused with no token minted**; a
+> brokered grant is **team-scoped** and cannot be replayed for another team; the **broker client
+> secret is envelope-encrypted at rest**; and USE decrypts only after BOTH the team-membership gate
+> and the t57/t81 actor-policy gate pass (no secret crosses to an unauthorized actor). **The live qfs
+> Cloud broker endpoint remains a documented seam** — a network `Broker` impl, not in this repo and
+> not claimed to work; the binary's commit path would call it exactly where it calls the fixture.
+> **Open product decisions flagged:** (a) brokering *custody* — central qfs-Cloud token custody vs. the
+> tenant Project DB at rest (this slice implements the tenant-Project-DB choice, the testable one);
+> (b) per-user-override precedence over a team default. Managed monitoring + billing are still ahead.
+
+> **Status (M9, billing CORE — t67).** The **billing-tier model + the entitlement gate + plan-state
+> recording** have landed and are hermetic. There is a **FREE individual** tier and a **PAID team**
+> tier (`qfs_identity::billing`): each carries an explicit `Entitlements` set (the paid tier unlocks
+> team-wide brokered connections + unbounded members; the free tier is a single individual with none),
+> and the gate is **default-deny toward the free floor** — an unknown/garbled tier label, a missing
+> `/sys/billing` row, or a paid tier whose subscription is *not active* all resolve to the free
+> entitlements, so a paid-only capability is granted *only* by an actively-paid team plan. Plan state
+> is **data, not a flag**: it lives in the System DB (migration v12) and is surfaced as the
+> `/sys/billing` admin path (`team_id`/`tier`/`status`/`current_period_end`) — read with `FROM
+> /sys/billing`, recorded with a gated, self-auditing `INSERT INTO /sys/billing` (upsert on `team_id`,
+> the preview→commit twin of a dashboard click), exactly the t53 `/sys/*` pattern. The **enforcement**
+> rides where the feature lives: `provision_team_connection` now runs the tier gate *first*, so a
+> free/lapsed team is refused a team connection before the broker is even asked (no token minted,
+> nothing sealed). **The PAYMENT PROVIDER is the one OPEN PRODUCT DECISION, flagged not baked in** —
+> the provider (Stripe, Paddle, …), its fee model, and its tax/invoicing scope are a business choice;
+> this slice ships a `PaymentProvider` **seam** + an in-memory stub (no vendor SDK, no card charged, no
+> working integration claimed). Provider **webhooks** ride the existing `qfs-watchtower`
+> `WebhookBinding` (HMAC-SHA256 verify, signing secret resolved by handle, never logged) and update
+> plan state **idempotently** — deduped on the provider event id via the System-DB `billing_events`
+> ledger, so a replayed "subscription cancelled" never double-applies. Secrets never land in
+> `/sys/billing` or a log (the schema has no secret column; provider keys stay envelope-encrypted in
+> the t43 vault). Managed monitoring is still ahead.
+
 ### 4.6 Observability is external — qfs emits, it does not store 🧭 (decision V)
 
 The same reasoning that keeps qfs out of the scheduler business (§4.3) keeps it out of the monitoring
@@ -759,6 +890,32 @@ business: a metrics store, dashboards, retention, and alerting are a large state
 platforms beneath qfs already solve. So qfs **emits a standard telemetry surface** and lets whatever is
 watching consume it — and that single choice is what lets the managed tier and a self-hoster run the
 *same* signals through different tools.
+
+> **Implementation status (t77 — the externalized sinks).** The sink layer is live: a `TelemetrySink`
+> abstraction over the three signals, selected by `QFS_TELEMETRY_SINK` (`file` default / `stdout` /
+> `OTel`). The **`file`** ✅ and **`stdout`** ✅
+> sinks are fully wired — each commit emits the audit signal (the same metadata-only events as the
+> t76 chain), the `qfs_commit_total` / `qfs_commit_effects_total` metric counters, and a `qfs.commit`
+> trace span as one JSONL line per record (best-effort; a sink failure never breaks the commit). The
+> **`OTel`** sink is a **present-but-parked seam** 🚧 — selectable and metadata-rendering, but the OTLP
+> exporter is **not wired** (no vetted exporter crate in the offline build cache; t77 does not
+> hand-roll the OTLP wire protocol), so it logs the record it would export rather than shipping it.
+> **`/sys/metrics`** ✅ is live as the in-process counter live view (the snapshot, not a durable time
+> series — qfs emits, it does not store).
+>
+> **Implementation status (t78 — audit-chain sealing).** The **seal** layer is live: a signed
+> **checkpoint** over the t76 chain HEAD — `(seq, content_hash, prev_hash, issued_at)` signed with the
+> SAME AS ES256 key that signs access tokens (`qfs_oauth::sign_seal`/`verify_seal`) ✅ — plus a
+> consumer-side **verify** that recomputes a stored chain against a seal and reports the first
+> divergence or a head truncation/fork ✅. The seal is handed to a **WORM witness** through a
+> `WormSink` seam: the local append-only **`file`** witness ✅ is fully wired (one JSONL seal per
+> line, append-only), and the **external** witness (S3 Object Lock / transparency log) is a
+> **present-but-parked seam** 🚧 — selectable + metadata-rendering, but the real client is **not
+> wired** (no vetted Object-Lock / transparency-log crate in the offline build cache; t78 does not
+> hand-roll RFC 6962 / a vendor protocol). The seal **cadence is externalized** (decision M) — an
+> invokable unit fired by OS cron / Cron Triggers, not a qfs-internal scheduler. The
+> **`/sys/audit/seals`** read surface below remains 🧭 proposed (qfs emits the seals to the witness;
+> exposing them back as a queryable admin view is the follow-up slice).
 
 **Three signals, one surface.**
 

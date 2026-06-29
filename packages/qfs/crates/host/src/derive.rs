@@ -308,7 +308,7 @@ mod tests {
         let mut out = BTreeSet::new();
         scan_native_stores(
             &[
-                "FROM /cf/d1/analytics/events |> LIMIT 5",
+                "/cf/d1/analytics/events |> LIMIT 5",
                 "CP /local/x /cf/r2/backups/obj",
                 "INSERT INTO /kv/sessions",
             ],
@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn mount_scan_dedups_repeated_refs() {
         let mut out = BTreeSet::new();
-        scan_native_stores(&["FROM /cf/d1/db1/t1", "FROM /cf/d1/db1/t2"], &mut out);
+        scan_native_stores(&["/cf/d1/db1/t1", "/cf/d1/db1/t2"], &mut out);
         assert_eq!(out.len(), 1, "same db referenced twice yields one binding");
     }
 

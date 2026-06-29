@@ -3,28 +3,28 @@
 
 # qfs server guide
 
-`qfs serve <config.qfs>` runs the server from a config file. A config is just a list of `CREATE …` bindings — each one takes a query you already know and runs it on an event, a schedule, or an HTTP request. Bindings use the same language as everything else (see the [language reference](language.md)), so you can preview exactly what a binding would do before installing it.
+`qfs serve <config.qfs>` runs the server from a config file. A config is just a list of `create …` bindings — each one takes a query you already know and runs it on an event, a schedule, or an HTTP request. Bindings use the same language as everything else (see the [language reference](language.md)), so you can preview exactly what a binding would do before installing it.
 
-## Bindings (`CREATE …`)
+## Bindings (`create …`)
 
 | binding | shape | what causes the plan to run |
 |---------|-------|-----------------------------|
-| `CREATE ENDPOINT` | `ENDPOINT <name> DO <stmt>` | an HTTP `fetch` to the endpoint route |
-| `CREATE TRIGGER` | `TRIGGER <name> ON <event> DO <stmt>` | an event/watcher firing |
-| `CREATE JOB` | `JOB <name> EVERY <interval> DO <stmt>` | the cron scheduler / Cron trigger |
-| `CREATE VIEW` | `[MATERIALIZED] VIEW <name> AS <pipeline>` | a query against the view |
-| `CREATE WEBHOOK` | `WEBHOOK <name> DO <stmt>` | a signed inbound `/hooks/...` POST |
-| `CREATE POLICY` | `POLICY <name> <predicate>` | (gate) blocks plans that violate it |
+| `create endpoint` | `endpoint <name> do <stmt>` | an HTTP `fetch` to the endpoint route |
+| `create trigger` | `trigger <name> on <event> do <stmt>` | an event/watcher firing |
+| `create job` | `job <name> every <interval> do <stmt>` | a saved plan an EXTERNAL scheduler runs (`qfs job run` from OS cron; Cloudflare Cron Triggers) |
+| `create view` | `[materialized] view <name> as <pipeline>` | a query against the view |
+| `create webhook` | `webhook <name> do <stmt>` | a signed inbound `/hooks/...` POST |
+| `create policy` | `policy <name> <predicate>` | (gate) blocks plans that violate it |
 
 ## Policy & least privilege
 
-`CREATE POLICY` gates writes by verb / path / irreversibility — an irreversible effect (`REMOVE`, `CALL mail.send`) can be blocked or required to be explicitly acknowledged. **Credentials are never inline in a config**: a binding references a stored account by handle (`qfs account add <driver> <name>`), and no token is ever written to a config, a log, or a generated doc. Examples below use placeholder handles only.
+`create policy` gates writes by verb / path / irreversibility — an irreversible effect (`remove`, `call mail.send`) can be blocked or required to be explicitly acknowledged. **Credentials are never inline in a config**: a binding references a stored connection by handle (`qfs connection add <driver> <name>`), and no token is ever written to a config, a log, or a generated doc. Examples below use placeholder handles only.
 
 ```qfs
-CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5
-CREATE TRIGGER notify ON /mail/inbox DO INSERT INTO /slack/acme/general/messages VALUES (NEW.subject)
-CREATE JOB nightly EVERY '1h' DO REMOVE /tmp/scratch WHERE age > 7
-CREATE POLICY api ALLOW SELECT DENY INSERT, UPDATE, REMOVE, CALL
+create endpoint recent on 'GET /recent' as /mail/inbox |> limit 5
+create trigger notify on /mail/inbox do insert into /slack/acme/general/messages values (NEW.subject)
+create job nightly every '1h' do remove /tmp/scratch where age > 7
+create policy api ALLOW select DENY insert, update, remove, call
 ```
 
 ## Deployment targets
@@ -33,9 +33,9 @@ The same bindings deploy onto two production hosts behind the `RuntimeHost` seam
 
 | binding | EC2 daemon (`host-daemon`) | Cloudflare Workers (`host-workers`, parked) |
 |---------|---------------------------|---------------------------------------------|
-| `ENDPOINT` | the qfs-http listener | Worker `fetch` |
-| `JOB` | the qfs-cron interval daemon | Cron Trigger |
-| `WEBHOOK` / event | the watchtower bus + `/hooks/...` ingest | Queues |
+| `endpoint` | the qfs-http listener | Worker `fetch` |
+| `job` | OS `cron` runs `qfs job run` (no internal scheduler) | Cron Trigger |
+| `webhook` / event | the watchtower bus + `/hooks/...` ingest | Queues |
 | watcher / `LAST_RUN` | the on-disk durable store | Durable Object |
 | `/d1` · `/r2` · `/kv` | (native only on Workers) | native bindings |
 

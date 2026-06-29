@@ -1,0 +1,16 @@
+{
+  "at": 15,
+  "code": "UNKNOWN_KEYWORD",
+  "expected": [
+    "a source path",
+    "insert into",
+    "create",
+    "preview",
+    "commit",
+    "|>",
+    "a path"
+  ],
+  "found": "an identifier",
+  "message": "closed-core keywords are lowercase (recognized case-insensitively); this keyword is not valid here (RFD §3, decision S)",
+  "source": "/mail/inbox |> group id"
+}

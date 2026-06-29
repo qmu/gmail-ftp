@@ -9,7 +9,7 @@
 //! *commit* time, never stored in this config or rendered in its `Debug`. No variant here can
 //! hold key material, so the whole config is safe to `Debug`, serialize, and log.
 
-use qfs_secrets::{AccountId, CredentialKey, DriverId};
+use qfs_secrets::{ConnectionId, CredentialKey, DriverId};
 use serde::{Deserialize, Serialize};
 
 /// The codec format a `/rest/<api>` response body is decoded with (default `json`). An owned
@@ -70,7 +70,7 @@ impl SecretRef {
     /// Returns the secret-free error code if the account name is invalid (empty / reserved
     /// char) — surfaced as [`crate::HttpError::Auth`] so no token text is ever fabricated.
     pub fn credential_key(&self) -> Result<CredentialKey, &'static str> {
-        let account = AccountId::new(self.account.clone()).map_err(|_| "invalid_account")?;
+        let account = ConnectionId::new(self.account.clone()).map_err(|_| "invalid_account")?;
         Ok(CredentialKey::new(
             DriverId::new(self.driver.clone()),
             account,

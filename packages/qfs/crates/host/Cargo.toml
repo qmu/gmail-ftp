@@ -38,6 +38,8 @@ thiserror = { workspace = true }
 # the `host-daemon` feature (the default `cargo test --workspace` builds every feature combination
 # the deny-test pins). No live creds, no network.
 qfs-server = { path = "../server" }
+# t65: the job-extraction tests boot a saved-JOB config from a tempfile.
+tempfile = "3"
 
 [lints]
 workspace = true

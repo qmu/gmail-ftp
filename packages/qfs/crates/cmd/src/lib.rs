@@ -41,6 +41,50 @@ pub type ShellLauncher<'a> = dyn Fn() -> i32 + 'a;
 /// + listener and returns the process exit code.
 pub type ServeLauncher<'a> = dyn Fn(&std::path::Path) -> i32 + 'a;
 
+/// The injected **job launcher** (t65, decision M revised): the binary supplies `qfs job <verb>`.
+/// **qfs is not a scheduler** — a `CREATE JOB … EVERY … DO …` row is a *saved named plan + its
+/// intended cadence* that an EXTERNAL scheduler (OS `cron` / Cloudflare Cron Triggers) invokes.
+/// `qfs job run <config> <name>` builds + commits that saved plan once through the SAME policy gate
+/// and IrreversibleGuard the CLI one-shot uses; `qfs job cron <config> <name>` emits the crontab
+/// line for the host crontab. The whole boot→rehydrate→build→gate→apply path lives in the binary
+/// composition root (it owns `qfs-host` / `qfs-exec` / `qfs-runtime`), NOT in qfs-cmd (which must
+/// stay off them) — the [`ServeLauncher`] pattern. qfs-cmd only parses the verb and forwards the
+/// [`JobRequest`], returning the launcher's process exit code.
+pub type JobLauncher<'a> = dyn Fn(&JobRequest) -> i32 + 'a;
+
+/// Which `qfs job` action the binary launcher performs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobAction {
+    /// `qfs job run` — invoke a saved JOB's plan once (the external-scheduler entrypoint).
+    Run,
+    /// `qfs job cron` — emit the OS-cron crontab line that invokes the JOB on its cadence.
+    Cron,
+}
+
+/// An owned `qfs job <verb>` request the binary-injected [`JobLauncher`] executes. The config path
+/// and job name are safe metadata; no credential is ever carried here (the commit resolves creds
+/// the same way `qfs run --commit` does — from the env / connection store, never argv).
+#[derive(Debug, Clone)]
+pub struct JobRequest {
+    /// The action (`run` / `cron`).
+    pub action: JobAction,
+    /// The `.qfs` config that defines the JOB (the saved-plan source).
+    pub config: PathBuf,
+    /// The JOB name (the `/server/jobs` row key) to run / emit a crontab line for.
+    pub name: String,
+    /// Apply the plan (`run` only; PREVIEW by default, mirroring `qfs run`).
+    pub commit: bool,
+    /// Acknowledge an irreversible effect in this unattended run (`run` only) — required for a
+    /// REMOVE / declared-irreversible CALL, fail-closed without it (the same floor as `qfs run`).
+    pub commit_irreversible: bool,
+    /// Global `--json` flag (output mode).
+    pub json: bool,
+    /// `--format json|table` (`run` only).
+    pub format: Option<String>,
+    /// `--quiet` (`run` only): suppress the success receipt; never the error body.
+    pub quiet: bool,
+}
+
 /// The injected **describe-registry provider** (t39): the binary supplies the
 /// [`qfs_core::MountRegistry`] of **describe-only drivers** (each driver's pure introspective
 /// facet, constructed cred-free) that `qfs describe <path>` consults. It lives in the binary
@@ -61,34 +105,110 @@ pub type DescribeProvider<'a> = dyn Fn() -> qfs_core::MountRegistry + 'a;
 /// edge adds zero transitive runtime weight. The argument is `include_examples`.
 pub type SkillProvider<'a> = dyn Fn(bool) -> String + 'a;
 
-/// A parsed `qfs account <verb>` request, handed to the binary-injected [`AccountLauncher`]. The
+/// A parsed `qfs connection <verb>` request, handed to the binary-injected [`ConnectionLauncher`]. The
 /// credential value itself is **never** carried here (it would leak into argv / history / `ps`);
-/// the launcher reads it from stdin/prompt. Driver + account selectors are safe metadata.
+/// the launcher reads it from stdin/prompt. Driver + connection selectors are safe metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AccountAction {
-    /// `account add <driver> <account>` — store (or replace) a credential.
-    Add { driver: String, account: String },
-    /// `account list [driver]` — list configured accounts (metadata only).
+pub enum ConnectionAction {
+    /// `connection add <driver> <connection>` — store (or replace) a credential.
+    Add { driver: String, connection: String },
+    /// `connection list [driver]` — list configured connections (metadata only).
     List { driver: Option<String> },
-    /// `account use <driver> <account>` — set the persistent active account.
-    Use { driver: String, account: String },
-    /// `account remove <driver> <account>` — delete (idempotent).
-    Remove { driver: String, account: String },
+    /// `connection use <driver> <connection>` — set the persistent active connection.
+    Use { driver: String, connection: String },
+    /// `connection remove <driver> <connection>` — delete (idempotent).
+    Remove { driver: String, connection: String },
+    /// `connection rotate <driver> <connection>` — re-mint the secret (read from stdin) + clear
+    /// revocation (t79). The value is NEVER carried here; the launcher reads it from stdin.
+    Rotate { driver: String, connection: String },
+    /// `connection revoke <driver> <connection>` — mark the connection unresolvable (t79).
+    Revoke { driver: String, connection: String },
+    /// `connection rekey` — re-wrap the store's data-key under a new passphrase (t79). The new
+    /// passphrase is NEVER carried here; the launcher reads it from stdin (old = `QFS_PASSPHRASE`).
+    Rekey,
 }
 
-/// The injected **account launcher**: the binary supplies the credential-store I/O (it depends on
+/// The injected **connection launcher**: the binary supplies the credential-store I/O (it depends on
 /// `qfs-secrets`'s encrypted `LocalStore`, which `qfs-cmd` may not — the dep_direction guard keeps
 /// `qfs-cmd` off the concrete backends). `qfs-cmd` only parses the verb and calls this, exactly
 /// like the shell / serve / describe launchers. Returns the process exit code.
-pub type AccountLauncher<'a> = dyn Fn(&AccountAction) -> i32 + 'a;
+pub type ConnectionLauncher<'a> = dyn Fn(&ConnectionAction) -> i32 + 'a;
 
-/// The injected **run-context provider**: the binary supplies the `(Engine, ReadRegistry)` for
-/// `qfs run` — the [`Engine`] whose mount registry has the real drivers (so a `FROM …` source
-/// resolves + plans + pushes down) and the [`qfs_exec::ReadRegistry`] of `ReadDriver` scan facets
-/// that execute the read. Both live in the binary (which owns the runtime-coupled local adapter) —
-/// NOT in qfs-cmd, which stays off qfs-driver-local. Mirrors the describe / shell / commit
-/// injections.
-pub type RunContextProvider<'a> = dyn Fn() -> (Engine, qfs_exec::ReadRegistry) + 'a;
+/// A parsed `qfs identity <verb>` request, handed to the binary-injected [`IdentityLauncher`] (t45).
+/// This is the AUTHENTICATION surface — local sign-up + a session-less `whoami` (decision §4.1:
+/// identity is not authorization; sessions land in t46). Like [`ConnectionAction`], the **password is
+/// never carried here** (it would leak into argv / shell history / `ps`); the launcher reads it from
+/// stdin. The email is a handle (safe metadata).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityAction {
+    /// `identity signup <email>` — create a user + a local password account. The password is read
+    /// from STDIN by the launcher, never argv.
+    Signup { email: String },
+    /// `identity whoami [email]` — print a user's email + id (NEVER the password hash). With no
+    /// email and no session yet (t46), it resolves the sole user if the deployment has exactly one.
+    Whoami { email: Option<String> },
+}
+
+/// The injected **identity launcher** (t45): the binary supplies the System-DB-backed identity store
+/// I/O (it depends on `qfs-store` + `qfs-identity`, which `qfs-cmd` may not — the dep_direction guard
+/// keeps `qfs-cmd` off the concrete backends). `qfs-cmd` only parses the verb and calls this, exactly
+/// like the connection launcher. Returns the process exit code.
+pub type IdentityLauncher<'a> = dyn Fn(&IdentityAction) -> i32 + 'a;
+
+/// A parsed `qfs invite <verb>` request, handed to the binary-injected [`InviteLauncher`] (t55, M5).
+/// This is the team-membership front door — a host operator MINTS a one-time, expiring invite, the
+/// invitee REDEEMS it to create their local identity + a membership (identity ≠ authorization, §4.1).
+/// Like [`IdentityAction`], the **password is never carried here** (the launcher reads it from STDIN
+/// at redeem). The redeem `token` IS carried (it is the one-time-URL secret the invitee presents) —
+/// it is single-use, burned on redeem, and never logged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InviteAction {
+    /// `invite create [--email <e>] [--scope host|project] [--project <p>] [--role <r>] [--ttl <s>]`
+    /// — mint an invite and print its one-time URL/token EXACTLY once. Metadata only (no secret on
+    /// argv); the token is generated + returned by the launcher.
+    Create {
+        /// The optional invitee email (the delivery target when mail is configured — a seam).
+        email: Option<String>,
+        /// The membership scope to seed (`host` default, or `project`).
+        scope: Option<String>,
+        /// The project ref for a project-scoped invite.
+        project: Option<String>,
+        /// The initial membership role label (`member` default).
+        role: Option<String>,
+        /// The invite time-to-live in seconds (the launcher applies a default if absent).
+        ttl_secs: Option<i64>,
+    },
+    /// `invite redeem <token> <email>` — redeem the one-time token to create the local user +
+    /// membership. The password is read from STDIN by the launcher, never argv.
+    Redeem {
+        /// The one-time token off the invite URL (single-use; burned on redeem).
+        token: String,
+        /// The email the redeemer signs up with (the new user's handle + local account subject).
+        email: String,
+    },
+    /// `invite revoke <id>` — revoke a still-pending invite so its token can no longer redeem.
+    Revoke {
+        /// The invite id to revoke.
+        id: i64,
+    },
+}
+
+/// The injected **invite launcher** (t55): the binary supplies the System-DB-backed invite store I/O
+/// and the CSPRNG that mints the one-time token (it depends on `qfs-store` + `qfs-identity`, which
+/// `qfs-cmd` may not). `qfs-cmd` only parses the verb and calls this, exactly like the identity
+/// launcher. Returns the process exit code.
+pub type InviteLauncher<'a> = dyn Fn(&InviteAction) -> i32 + 'a;
+
+/// The injected **run-context provider**: the binary supplies the
+/// `(Engine, ReadRegistry, SafetyMode)` for `qfs run` — the [`Engine`] whose mount registry has the
+/// real drivers (so a `/path …` source resolves + plans + pushes down), the
+/// [`qfs_exec::ReadRegistry`] of `ReadDriver` scan facets that execute the read, and the resolved
+/// selectable **safety mode** (t59) that governs the one-shot commit gate (the deployment setting
+/// from `/sys/settings`, falling back to the safe default). All live in the binary (which owns the
+/// runtime-coupled local adapter + the System DB) — NOT in qfs-cmd, which stays off qfs-driver-local.
+/// Mirrors the describe / shell / commit injections.
+pub type RunContextProvider<'a> =
+    dyn Fn() -> (Engine, qfs_exec::ReadRegistry, qfs_core::SafetyMode) + 'a;
 
 /// qfs — one binary that is both a CLI and a server, exposing every external
 /// service through one uniform, filesystem-shaped, pipe-SQL DSL (RFD-0001 §1).
@@ -117,7 +237,7 @@ enum Command {
     /// (read the statement from stdin). PREVIEW by default; `--commit` (or a trailing
     /// `COMMIT`) applies an effect plan.
     Run {
-        /// The statement to execute positionally, e.g. `FROM /mail/inbox |> SELECT subject`.
+        /// The statement to execute positionally, e.g. `/mail/inbox |> SELECT subject`.
         /// Use `-` to read the statement from stdin. Mutually exclusive with `-e`.
         stmt: Option<String>,
         /// The statement to execute (the `-e <stmt>` form). Mutually exclusive with the
@@ -169,46 +289,195 @@ enum Command {
         /// Path to the `.qfs` server config.
         config: PathBuf,
     },
-    /// Manage stored credentials per driver/account (t27, RFD-0001 §10). The account
+    /// Manage stored credentials per driver/connection (t27, RFD-0001 §10). The connection
     /// *name* is metadata (safe to print); the credential itself is never echoed.
-    Account {
+    Connection {
         #[command(subcommand)]
-        verb: AccountVerb,
+        verb: ConnectionVerb,
+    },
+    /// Manage local identity: sign up (email + password) and look yourself up (t45, roadmap M1).
+    ///
+    /// AUTHENTICATION ONLY (decision §4.1: identity is not authorization). A signed-up user can do
+    /// nothing privileged yet — there is local sign-up, **no session** (sessions land in t46, real
+    /// auth in M2). The password is read from STDIN (never argv); the password hash is never printed.
+    Identity {
+        #[command(subcommand)]
+        verb: IdentityVerb,
+    },
+    /// Manage team invites + membership (t55, roadmap M5). An operator mints a one-time, expiring
+    /// invite; the invitee redeems it to create their local identity and join the host.
+    ///
+    /// MEMBERSHIP, not authorization (§4.1): redeeming makes someone a *member*, never grants a
+    /// capability (the ACL is t57). The one-time token is minted by a CSPRNG, returned ONCE, and
+    /// stored only as a hash; redeem is single-use and expiring. Email delivery is a documented seam
+    /// — when mail is not configured, the printed one-time URL is the artifact.
+    Invite {
+        #[command(subcommand)]
+        verb: InviteVerb,
+    },
+    /// Run / schedule a saved JOB — the invokable unit an EXTERNAL scheduler drives (t65, decision
+    /// M revised). **qfs is not a scheduler**: a `CREATE JOB … EVERY … DO …` row is a saved named
+    /// plan + its intended cadence, not something qfs fires itself. OS `cron` (individual) and
+    /// Cloudflare Cron Triggers (managed) own the *when*; qfs supplies the safe *what*.
+    Job {
+        #[command(subcommand)]
+        verb: JobVerb,
     },
     // The absence of a subcommand starts the interactive shell (handled in `run`).
 }
 
-/// `qfs account <verb>` — the credential-store management verbs (t27). Each maps onto a
+/// `qfs job <verb>` — the saved-JOB invocation verbs (t65). Maps onto the injected [`JobLauncher`]
+/// over the booted config's `/server/jobs` rows. The internal scheduler daemon is RETIRED; these
+/// verbs are how an external scheduler (or a human) drives a defined job.
+#[derive(Subcommand, Debug)]
+enum JobVerb {
+    /// Run a saved JOB's plan once — the entrypoint an external scheduler's crontab line invokes.
+    ///
+    /// Loads the named `/server/jobs` plan from `config`, rehydrates it, and (with `--commit`)
+    /// applies it through the SAME policy gate + IrreversibleGuard the CLI one-shot uses. PREVIEW
+    /// by default (no apply). Non-interactive + exit-code-correct, suitable for a crontab line:
+    /// `0 * * * *  qfs job run /etc/qfs/app.qfs nightly --commit` (ensure `QFS_PASSPHRASE` + any
+    /// connection creds are in cron's environment).
+    Run {
+        /// The `.qfs` config that defines the JOB.
+        config: PathBuf,
+        /// The JOB name (the `/server/jobs` row key).
+        name: String,
+        /// Apply the plan (default is PREVIEW), mirroring `qfs run --commit`.
+        #[arg(long = "commit")]
+        commit: bool,
+        /// Acknowledge applying an irreversible effect (a `REMOVE` / `CALL`) in this unattended
+        /// run. Without it, a `--commit` of an irreversible plan fails closed (the same floor as
+        /// `qfs run --commit-irreversible`): an external trigger has no TTY to confirm on.
+        #[arg(long = "commit-irreversible")]
+        commit_irreversible: bool,
+        /// Output format: `json` or `table`. Default: `table` on a TTY, `json` when piped.
+        #[arg(long = "format", value_name = "FORMAT")]
+        format: Option<String>,
+        /// Suppress the success receipt; never suppresses the error body.
+        #[arg(long = "quiet", short = 'q')]
+        quiet: bool,
+    },
+    /// Emit the OS-cron crontab line that invokes this JOB on its `EVERY` cadence — the individual
+    /// counterpart of the `[triggers] crons` entry the managed (Cloudflare) wrangler generation
+    /// emits. Drop the printed line into a host crontab; qfs runs no scheduler of its own.
+    Cron {
+        /// The `.qfs` config that defines the JOB.
+        config: PathBuf,
+        /// The JOB name (the `/server/jobs` row key).
+        name: String,
+    },
+}
+
+/// `qfs connection <verb>` — the credential-store management verbs (t27). Each maps onto a
 /// [`qfs_core::Secrets`] backend + the resolution model; the credential value is read
 /// from a prompt / stdin (never an argv, which would leak into shell history and `ps`).
 #[derive(Subcommand, Debug)]
-enum AccountVerb {
-    /// Add (or replace) the credential for a driver's named account.
+enum ConnectionVerb {
+    /// Add (or replace) the credential for a driver's named connection.
     Add {
-        /// The driver this account belongs to, e.g. `mail`, `s3`.
+        /// The driver this connection belongs to, e.g. `mail`, `s3`.
         driver: String,
-        /// The account name, e.g. `work`, `personal`.
-        account: String,
+        /// The connection name, e.g. `work`, `personal`.
+        connection: String,
     },
-    /// List configured accounts (optionally for one driver). Prints selectors + metadata
+    /// List configured connections (optionally for one driver). Prints selectors + metadata
     /// only — never a credential.
     List {
         /// Restrict the listing to one driver.
         driver: Option<String>,
     },
-    /// Set the persistent active account for a driver (`account use`).
+    /// Set the persistent active connection for a driver (`connection use`).
     Use {
-        /// The driver to set the active account for.
+        /// The driver to set the active connection for.
         driver: String,
-        /// The account to make active.
-        account: String,
+        /// The connection to make active.
+        connection: String,
     },
-    /// Remove the credential for a driver's named account (idempotent).
+    /// Remove the credential for a driver's named connection (idempotent).
     Remove {
         /// The driver.
         driver: String,
-        /// The account to remove.
-        account: String,
+        /// The connection to remove.
+        connection: String,
+    },
+    /// Rotate (re-mint) the credential for a driver's named connection (t79): read a NEW secret from
+    /// stdin, re-seal it, and clear any revocation. The offboarding answer — replace, not un-grant.
+    Rotate {
+        /// The driver this connection belongs to.
+        driver: String,
+        /// The connection to re-mint.
+        connection: String,
+    },
+    /// Revoke a driver's named connection (t79): mark it unresolvable so a later bind fails closed
+    /// and the secret is never returned (offboarding / compromise). Other connections keep working.
+    Revoke {
+        /// The driver this connection belongs to.
+        driver: String,
+        /// The connection to revoke.
+        connection: String,
+    },
+    /// Re-wrap the credential store's data-key under a NEW passphrase (t79): read the new passphrase
+    /// from stdin; the current `QFS_PASSPHRASE` is the old one. Existing secrets stay decryptable; the
+    /// old passphrase stops unlocking. One re-wrap, never an N-way re-encryption of every secret.
+    Rekey,
+}
+
+/// `qfs identity <verb>` — the local-identity verbs (t45). Maps onto the injected
+/// [`IdentityLauncher`] over the System-DB identity store. The password is read from STDIN (never an
+/// argv, which would leak into shell history and `ps`); the password hash is never printed.
+#[derive(Subcommand, Debug)]
+enum IdentityVerb {
+    /// Sign up a new local user: creates a `users` row + a `local` password account. The password
+    /// is read from STDIN (e.g. `printf %s "$PW" | qfs identity signup a@b.com`), never argv.
+    Signup {
+        /// The new user's primary email (the unique handle and the local account's subject).
+        email: String,
+    },
+    /// Print a user's email + id (NEVER the password hash). With an `email`, looks that user up;
+    /// with none and exactly one user on this host, prints it (there is no session yet — t46).
+    Whoami {
+        /// The user to look up. Optional: omit it to resolve the sole user.
+        email: Option<String>,
+    },
+}
+
+/// `qfs invite <verb>` — the team-invite + membership verbs (t55). Maps onto the injected
+/// [`InviteLauncher`] over the System-DB invite store. The one-time token is minted by the launcher's
+/// CSPRNG and printed once at `create`; the redeem password is read from STDIN (never argv).
+#[derive(Subcommand, Debug)]
+enum InviteVerb {
+    /// Mint a one-time, expiring invite and print its URL/token EXACTLY once (store it now — it is
+    /// never shown again). Metadata only; no secret on argv.
+    Create {
+        /// The optional invitee email (the delivery target when mail is configured — a seam).
+        #[arg(long)]
+        email: Option<String>,
+        /// The membership scope to seed: `host` (default) or `project`.
+        #[arg(long)]
+        scope: Option<String>,
+        /// The project ref for a `--scope project` invite.
+        #[arg(long)]
+        project: Option<String>,
+        /// The initial membership role label (`member` by default — a label, not a grant; §4.1).
+        #[arg(long)]
+        role: Option<String>,
+        /// The invite lifetime in seconds (a default is applied if omitted).
+        #[arg(long = "ttl")]
+        ttl_secs: Option<i64>,
+    },
+    /// Redeem a one-time invite token to create the local user + membership. The password is read
+    /// from STDIN (e.g. `printf %s "$PW" | qfs invite redeem <token> a@b.com`), never argv.
+    Redeem {
+        /// The one-time token off the invite URL (single-use; burned on redeem).
+        token: String,
+        /// The email to sign up with (the new user's handle + local account subject).
+        email: String,
+    },
+    /// Revoke a still-pending invite so its token can no longer redeem (idempotent).
+    Revoke {
+        /// The invite id to revoke.
+        id: i64,
     },
 }
 
@@ -221,9 +490,9 @@ enum AccountVerb {
 /// process exit code; the binary forwards it to `std::process::exit`.
 #[must_use]
 // The binary's single composition-root entrypoint: each argument is a distinct injected seam
-// (shell / serve / describe / skill / account / commit-applier / run-context) the leaf binary
-// supplies so qfs-cmd stays off the concrete driver/runtime/secrets crates. The count is the
-// surface of that injection, not incidental coupling.
+// (shell / serve / describe / skill / connection / identity / invite / job / commit-applier /
+// run-context) the leaf binary supplies so qfs-cmd stays off the concrete driver/runtime/secrets
+// crates. The count is the surface of that injection, not incidental coupling.
 #[allow(clippy::too_many_arguments)]
 pub fn run<I, T>(
     args: I,
@@ -231,7 +500,10 @@ pub fn run<I, T>(
     serve: &ServeLauncher,
     describe: &DescribeProvider,
     skill: &SkillProvider,
-    account: &AccountLauncher,
+    connection: &ConnectionLauncher,
+    identity: &IdentityLauncher,
+    invite: &InviteLauncher,
+    job: &JobLauncher,
     apply: &qfs_exec::WorldApply,
     run_ctx: &RunContextProvider,
 ) -> i32
@@ -331,11 +603,31 @@ where
             tracing::debug!(target: "qfs::cmd", "dispatch serve via launcher");
             return serve(&config);
         }
-        // `account` is dispatched through the injected launcher (the binary owns the encrypted
+        // `connection` is dispatched through the injected launcher (the binary owns the encrypted
         // credential store; qfs-cmd stays off the concrete backend). Returns the exit code directly.
-        Some(Command::Account { verb }) => {
-            tracing::debug!(target: "qfs::cmd", "dispatch account via launcher");
-            return account(&account_action(&verb));
+        Some(Command::Connection { verb }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch connection via launcher");
+            return connection(&connection_action(&verb));
+        }
+        // `identity` is dispatched through the injected launcher (the binary owns the System-DB
+        // identity store; qfs-cmd stays off the concrete backend). Returns the exit code directly.
+        Some(Command::Identity { verb }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch identity via launcher");
+            return identity(&identity_action(&verb));
+        }
+        // `invite` is dispatched through the injected launcher (the binary owns the System-DB invite
+        // store + the token CSPRNG; qfs-cmd stays off the concrete backend). Returns the exit code.
+        Some(Command::Invite { verb }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch invite via launcher");
+            return invite(&invite_action(&verb));
+        }
+        // `job` is dispatched through the injected launcher (the binary owns the boot→rehydrate→
+        // build→policy-gate→IrreversibleGuard→apply path over qfs-host/qfs-exec/qfs-runtime;
+        // qfs-cmd stays off them). The internal scheduler daemon is RETIRED — this is how an
+        // external scheduler drives a defined job. Returns the exit code directly.
+        Some(Command::Job { verb }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch job via launcher");
+            return job(&job_request(&verb, cli.json));
         }
     };
 
@@ -414,13 +706,15 @@ fn dispatch_run(opts: RunOpts, apply: &qfs_exec::WorldApply, run_ctx: &RunContex
 
     // The run context: the binary supplies the Engine (mounts with the real drivers, so a `FROM`
     // source resolves + plans + pushes down) and the ReadRegistry (the scan facets). With no
-    // driver for a mount, a `FROM /x` resolves to a structured capability error (exit 3).
-    let (engine, reads) = run_ctx();
+    // driver for a mount, a `/x` resolves to a structured capability error (exit 3).
+    let (engine, reads, safety_mode) = run_ctx();
     let ctx = qfs_exec::ExecCtx {
         engine: &engine,
         reads: &reads,
         // The binary injects the real interpreter-backed commit; qfs-cmd stays off qfs-runtime.
         world_apply: Some(apply),
+        // The resolved selectable safety mode (t59) governs the one-shot commit gate.
+        safety_mode,
     };
 
     let _ = opts.quiet; // `--quiet` suppresses progress; the renderers emit no progress yet.
@@ -522,25 +816,109 @@ fn read_stdin() -> String {
     buf
 }
 
-/// Map the clap-parsed [`AccountVerb`] to the public [`AccountAction`] handed to the injected
-/// [`AccountLauncher`]. Pure (selectors only); the credential value is never carried — the
+/// Map the clap-parsed [`ConnectionVerb`] to the public [`ConnectionAction`] handed to the injected
+/// [`ConnectionLauncher`]. Pure (selectors only); the credential value is never carried — the
 /// launcher reads it from stdin/prompt, never from argv (which would leak into history / `ps`).
-fn account_action(verb: &AccountVerb) -> AccountAction {
+fn connection_action(verb: &ConnectionVerb) -> ConnectionAction {
     match verb {
-        AccountVerb::Add { driver, account } => AccountAction::Add {
+        ConnectionVerb::Add { driver, connection } => ConnectionAction::Add {
             driver: driver.clone(),
-            account: account.clone(),
+            connection: connection.clone(),
         },
-        AccountVerb::List { driver } => AccountAction::List {
+        ConnectionVerb::List { driver } => ConnectionAction::List {
             driver: driver.clone(),
         },
-        AccountVerb::Use { driver, account } => AccountAction::Use {
+        ConnectionVerb::Use { driver, connection } => ConnectionAction::Use {
             driver: driver.clone(),
-            account: account.clone(),
+            connection: connection.clone(),
         },
-        AccountVerb::Remove { driver, account } => AccountAction::Remove {
+        ConnectionVerb::Remove { driver, connection } => ConnectionAction::Remove {
             driver: driver.clone(),
-            account: account.clone(),
+            connection: connection.clone(),
+        },
+        ConnectionVerb::Rotate { driver, connection } => ConnectionAction::Rotate {
+            driver: driver.clone(),
+            connection: connection.clone(),
+        },
+        ConnectionVerb::Revoke { driver, connection } => ConnectionAction::Revoke {
+            driver: driver.clone(),
+            connection: connection.clone(),
+        },
+        ConnectionVerb::Rekey => ConnectionAction::Rekey,
+    }
+}
+
+/// Map the clap-parsed [`IdentityVerb`] to the public [`IdentityAction`] handed to the injected
+/// [`IdentityLauncher`]. Pure (handles only); the password is never carried — the launcher reads it
+/// from STDIN, never from argv (which would leak into history / `ps`).
+fn identity_action(verb: &IdentityVerb) -> IdentityAction {
+    match verb {
+        IdentityVerb::Signup { email } => IdentityAction::Signup {
+            email: email.clone(),
+        },
+        IdentityVerb::Whoami { email } => IdentityAction::Whoami {
+            email: email.clone(),
+        },
+    }
+}
+
+/// Map the clap-parsed [`InviteVerb`] to the public [`InviteAction`] handed to the injected
+/// [`InviteLauncher`]. Pure (selectors/handles only); the password is never carried — the launcher
+/// reads it from STDIN at redeem. The redeem token IS carried (it is the one-time-URL secret the
+/// invitee presents), single-use and never logged.
+fn invite_action(verb: &InviteVerb) -> InviteAction {
+    match verb {
+        InviteVerb::Create {
+            email,
+            scope,
+            project,
+            role,
+            ttl_secs,
+        } => InviteAction::Create {
+            email: email.clone(),
+            scope: scope.clone(),
+            project: project.clone(),
+            role: role.clone(),
+            ttl_secs: *ttl_secs,
+        },
+        InviteVerb::Redeem { token, email } => InviteAction::Redeem {
+            token: token.clone(),
+            email: email.clone(),
+        },
+        InviteVerb::Revoke { id } => InviteAction::Revoke { id: *id },
+    }
+}
+
+/// Map a parsed `qfs job <verb>` into the owned [`JobRequest`] the binary launcher executes (t65).
+/// Pure metadata transform — no boot, no I/O (the launcher owns those).
+fn job_request(verb: &JobVerb, json: bool) -> JobRequest {
+    match verb {
+        JobVerb::Run {
+            config,
+            name,
+            commit,
+            commit_irreversible,
+            format,
+            quiet,
+        } => JobRequest {
+            action: JobAction::Run,
+            config: config.clone(),
+            name: name.clone(),
+            commit: *commit,
+            commit_irreversible: *commit_irreversible,
+            json,
+            format: format.clone(),
+            quiet: *quiet,
+        },
+        JobVerb::Cron { config, name } => JobRequest {
+            action: JobAction::Cron,
+            config: config.clone(),
+            name: name.clone(),
+            commit: false,
+            commit_irreversible: false,
+            json,
+            format: None,
+            quiet: false,
         },
     }
 }
@@ -667,10 +1045,28 @@ mod tests {
         }
     }
 
-    /// A stub account launcher returning a sentinel exit code, so a test can assert the `account`
+    /// A stub connection launcher returning a sentinel exit code, so a test can assert the `connection`
     /// arm dispatched into the injected launcher (the real store I/O lives in the binary crate).
-    fn stub_account(_action: &AccountAction) -> i32 {
+    fn stub_connection(_action: &ConnectionAction) -> i32 {
         7
+    }
+
+    /// A stub identity launcher returning a distinct sentinel, so a test can assert the `identity`
+    /// arm dispatched into the injected launcher (the real System-DB store I/O lives in the binary).
+    fn stub_identity(_action: &IdentityAction) -> i32 {
+        9
+    }
+
+    /// A stub invite launcher returning a distinct sentinel, so a test can assert the `invite` arm
+    /// dispatched into the injected launcher (the real System-DB invite store I/O lives in the binary).
+    fn stub_invite(_action: &InviteAction) -> i32 {
+        11
+    }
+
+    /// A stub job launcher: echoes a fixed code (the real boot→build→gate→apply path lives in the
+    /// binary crate; here we only assert the clap dispatch + request plumbing).
+    fn stub_job(_req: &JobRequest) -> i32 {
+        12
     }
 
     /// A no-op world-apply: a `--commit` in a unit test "succeeds" without touching the World
@@ -681,12 +1077,16 @@ mod tests {
 
     /// A stub run-context: an empty engine + empty read registry (read tests use the qfs-exec
     /// black-box API; the binary supplies the real local-driver context).
-    fn stub_run_ctx() -> (Engine, qfs_exec::ReadRegistry) {
-        (Engine::new(), qfs_exec::ReadRegistry::new())
+    fn stub_run_ctx() -> (Engine, qfs_exec::ReadRegistry, qfs_core::SafetyMode) {
+        (
+            Engine::new(),
+            qfs_exec::ReadRegistry::new(),
+            qfs_core::SafetyMode::default(),
+        )
     }
 
-    /// Run with the no-op shell + serve launchers + empty describe + stub skill + stub account
-    /// providers (every non-shell/serve/describe/skill/account test path ignores them).
+    /// Run with the no-op shell + serve launchers + empty describe + stub skill + stub connection
+    /// providers (every non-shell/serve/describe/skill/connection test path ignores them).
     fn run_t<I, T>(args: I) -> i32
     where
         I: IntoIterator<Item = T>,
@@ -698,10 +1098,78 @@ mod tests {
             &|_cfg| 0,
             &empty_describe,
             &stub_skill,
-            &stub_account,
+            &stub_connection,
+            &stub_identity,
+            &stub_invite,
+            &stub_job,
             &noop_apply,
             &stub_run_ctx,
         )
+    }
+
+    #[test]
+    fn job_verbs_dispatch_through_the_injected_launcher() {
+        // t65: `qfs job run` / `qfs job cron` route to the injected JobLauncher (the binary owns
+        // the boot→build→gate→apply path). qfs-cmd only parses the verb + forwards the request.
+        let seen: std::cell::RefCell<Option<JobRequest>> = std::cell::RefCell::new(None);
+        let launcher = |req: &JobRequest| {
+            *seen.borrow_mut() = Some(req.clone());
+            7
+        };
+        let code = run(
+            [
+                "qfs",
+                "job",
+                "run",
+                "/etc/qfs/app.qfs",
+                "nightly",
+                "--commit",
+            ],
+            &noop_shell,
+            &|_cfg| 0,
+            &empty_describe,
+            &stub_skill,
+            &stub_connection,
+            &stub_identity,
+            &stub_invite,
+            &launcher,
+            &noop_apply,
+            &stub_run_ctx,
+        );
+        assert_eq!(
+            code, 7,
+            "job dispatches to the launcher and returns its code"
+        );
+        let req = seen.borrow().clone().expect("launcher saw a request");
+        assert_eq!(req.action, JobAction::Run);
+        assert_eq!(req.name, "nightly");
+        assert!(req.commit, "--commit plumbs through");
+        assert!(!req.commit_irreversible);
+        assert!(req.config.ends_with("app.qfs"));
+
+        // `qfs job cron` plumbs the Cron action (no commit flags).
+        let seen2: std::cell::RefCell<Option<JobRequest>> = std::cell::RefCell::new(None);
+        let launcher2 = |req: &JobRequest| {
+            *seen2.borrow_mut() = Some(req.clone());
+            0
+        };
+        let _ = run(
+            ["qfs", "job", "cron", "/etc/qfs/app.qfs", "nightly"],
+            &noop_shell,
+            &|_cfg| 0,
+            &empty_describe,
+            &stub_skill,
+            &stub_connection,
+            &stub_identity,
+            &stub_invite,
+            &launcher2,
+            &noop_apply,
+            &stub_run_ctx,
+        );
+        assert_eq!(
+            seen2.borrow().as_ref().expect("cron request").action,
+            JobAction::Cron
+        );
     }
 
     #[test]
@@ -739,7 +1207,10 @@ mod tests {
             &|_cfg| 0,
             &empty_describe,
             &stub_skill,
-            &stub_account,
+            &stub_connection,
+            &stub_identity,
+            &stub_invite,
+            &stub_job,
             &noop_apply,
             &stub_run_ctx,
         );
@@ -752,23 +1223,24 @@ mod tests {
 
     #[test]
     fn run_bad_syntax_is_parse_error_exit_two() {
-        // `qfs run -e 'anything'` reaches a structured parse error (exit 2), not a panic.
-        let code = run_t(["qfs", "run", "-e", "anything"]);
+        // `qfs run -e '<garbage>'` reaches a structured parse error (exit 2), not a panic. Post-t73
+        // a lone bare word is a valid source name, so use multi-token garbage that cannot parse.
+        let code = run_t(["qfs", "run", "-e", "this is not pipe sql"]);
         assert_eq!(code, 2);
     }
 
     #[test]
     fn run_relative_path_is_usage_error_exit_two() {
         // A relative-path address in one-shot mode is rejected with a usage error (exit 2).
-        let code = run_t(["qfs", "run", "-e", "FROM mail/inbox |> LIMIT 1"]);
+        let code = run_t(["qfs", "run", "-e", "mail/inbox |> LIMIT 1"]);
         assert_eq!(code, 2);
     }
 
     #[test]
     fn run_unknown_source_is_capability_exit_three() {
-        // With no read driver registered, an absolute `FROM /x` resolves to a structured
+        // With no read driver registered, an absolute `/x` resolves to a structured
         // capability error (exit 3) — never a panic.
-        let code = run_t(["qfs", "run", "-e", "FROM /mail/inbox |> LIMIT 1", "--json"]);
+        let code = run_t(["qfs", "run", "-e", "/mail/inbox |> LIMIT 1", "--json"]);
         assert_eq!(code, 3);
     }
 
@@ -787,7 +1259,10 @@ mod tests {
             },
             &empty_describe,
             &stub_skill,
-            &stub_account,
+            &stub_connection,
+            &stub_identity,
+            &stub_invite,
+            &stub_job,
             &noop_apply,
             &stub_run_ctx,
         );
@@ -799,50 +1274,128 @@ mod tests {
     }
 
     #[test]
-    fn account_verbs_map_to_the_public_action() {
+    fn connection_verbs_map_to_the_public_action() {
         // The clap verb maps 1:1 to the injected-launcher action (selectors only, no secret).
         assert_eq!(
-            account_action(&AccountVerb::Add {
+            connection_action(&ConnectionVerb::Add {
                 driver: "mail".into(),
-                account: "work".into()
+                connection: "work".into()
             }),
-            AccountAction::Add {
+            ConnectionAction::Add {
                 driver: "mail".into(),
-                account: "work".into()
+                connection: "work".into()
             }
         );
         assert_eq!(
-            account_action(&AccountVerb::List { driver: None }),
-            AccountAction::List { driver: None }
+            connection_action(&ConnectionVerb::List { driver: None }),
+            ConnectionAction::List { driver: None }
         );
         assert_eq!(
-            account_action(&AccountVerb::Use {
+            connection_action(&ConnectionVerb::Use {
                 driver: "s3".into(),
-                account: "prod".into()
+                connection: "prod".into()
             }),
-            AccountAction::Use {
+            ConnectionAction::Use {
                 driver: "s3".into(),
-                account: "prod".into()
+                connection: "prod".into()
             }
         );
         assert_eq!(
-            account_action(&AccountVerb::Remove {
+            connection_action(&ConnectionVerb::Remove {
                 driver: "mail".into(),
-                account: "work".into()
+                connection: "work".into()
             }),
-            AccountAction::Remove {
+            ConnectionAction::Remove {
                 driver: "mail".into(),
-                account: "work".into()
+                connection: "work".into()
             }
         );
     }
 
     #[test]
-    fn account_subcommand_parses_and_dispatches_to_the_launcher() {
-        // `qfs account …` parses cleanly and routes into the injected account launcher (the stub
+    fn connection_subcommand_parses_and_dispatches_to_the_launcher() {
+        // `qfs connection …` parses cleanly and routes into the injected connection launcher (the stub
         // returns the sentinel 7). The real encrypted-store I/O lives in the binary crate.
-        assert_eq!(run_t(["qfs", "account", "list"]), 7);
-        assert_eq!(run_t(["qfs", "account", "add", "mail", "work"]), 7);
+        assert_eq!(run_t(["qfs", "connection", "list"]), 7);
+        assert_eq!(run_t(["qfs", "connection", "add", "mail", "work"]), 7);
+    }
+
+    #[test]
+    fn identity_verbs_map_to_the_public_action() {
+        // The clap verb maps 1:1 to the injected-launcher action (handles only, no password).
+        assert_eq!(
+            identity_action(&IdentityVerb::Signup {
+                email: "a@b.com".into()
+            }),
+            IdentityAction::Signup {
+                email: "a@b.com".into()
+            }
+        );
+        assert_eq!(
+            identity_action(&IdentityVerb::Whoami { email: None }),
+            IdentityAction::Whoami { email: None }
+        );
+        assert_eq!(
+            identity_action(&IdentityVerb::Whoami {
+                email: Some("a@b.com".into())
+            }),
+            IdentityAction::Whoami {
+                email: Some("a@b.com".into())
+            }
+        );
+    }
+
+    #[test]
+    fn identity_subcommand_parses_and_dispatches_to_the_launcher() {
+        // `qfs identity …` parses cleanly and routes into the injected identity launcher (the stub
+        // returns the sentinel 9). The real System-DB store I/O lives in the binary crate.
+        assert_eq!(run_t(["qfs", "identity", "signup", "a@b.com"]), 9);
+        assert_eq!(run_t(["qfs", "identity", "whoami"]), 9);
+        assert_eq!(run_t(["qfs", "identity", "whoami", "a@b.com"]), 9);
+    }
+
+    #[test]
+    fn invite_verbs_map_to_the_public_action() {
+        // The clap verb maps 1:1 to the injected-launcher action (selectors/handles only, no secret).
+        assert_eq!(
+            invite_action(&InviteVerb::Create {
+                email: Some("a@b.com".into()),
+                scope: None,
+                project: None,
+                role: None,
+                ttl_secs: Some(3600)
+            }),
+            InviteAction::Create {
+                email: Some("a@b.com".into()),
+                scope: None,
+                project: None,
+                role: None,
+                ttl_secs: Some(3600)
+            }
+        );
+        assert_eq!(
+            invite_action(&InviteVerb::Redeem {
+                token: "tok".into(),
+                email: "a@b.com".into()
+            }),
+            InviteAction::Redeem {
+                token: "tok".into(),
+                email: "a@b.com".into()
+            }
+        );
+        assert_eq!(
+            invite_action(&InviteVerb::Revoke { id: 7 }),
+            InviteAction::Revoke { id: 7 }
+        );
+    }
+
+    #[test]
+    fn invite_subcommand_parses_and_dispatches_to_the_launcher() {
+        // `qfs invite …` parses cleanly and routes into the injected invite launcher (the stub
+        // returns the sentinel 11). The real System-DB store I/O lives in the binary crate.
+        assert_eq!(run_t(["qfs", "invite", "create", "--email", "a@b.com"]), 11);
+        assert_eq!(run_t(["qfs", "invite", "redeem", "tok", "a@b.com"]), 11);
+        assert_eq!(run_t(["qfs", "invite", "revoke", "5"]), 11);
     }
 
     #[test]
@@ -868,7 +1421,10 @@ mod tests {
                 &|_| 0,
                 &empty_describe,
                 &provider,
-                &stub_account,
+                &stub_connection,
+                &stub_identity,
+                &stub_invite,
+                &stub_job,
                 &noop_apply,
                 &stub_run_ctx
             ),
@@ -882,7 +1438,10 @@ mod tests {
                 &|_| 0,
                 &empty_describe,
                 &provider,
-                &stub_account,
+                &stub_connection,
+                &stub_identity,
+                &stub_invite,
+                &stub_job,
                 &noop_apply,
                 &stub_run_ctx
             ),

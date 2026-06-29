@@ -1,6 +1,6 @@
 [package]
 name = "qfs"
-version = "0.0.8"
+version = "0.0.9"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -31,6 +31,13 @@ qfs-cmd = { path = "../cmd" }
 qfs-core = { path = "../core" }
 qfs-exec = { path = "../exec" }
 qfs-driver-local = { path = "../driver-local" }
+# t68 first-class filesystem driver: the binary wires the `/fs` driver over operator-configured
+# NAMED roots (the allowlist). qfs-driver-fs is a qfs-runtime consumer that must stay a LEAF — only
+# the terminal binary may depend on it — so the operator config (QFS_FS_<NAME> → base dir) lives in
+# the binary (src/fs.rs) and its applier bridges into the interpreter HERE, exactly like the local /
+# sql / git composition. DESCRIBE is pure + cred-free (registered in the describe registry); the
+# live roots are injected only on the apply registry. std::fs writes dead-end in this terminal leaf.
+qfs-driver-fs = { path = "../driver-fs" }
 # t39 CO-t39-1 `qfs skill` composition root: the binary links the embedded agent skill so SKILL.md
 # (and the example corpus) genuinely SHIP in the artifact and an AI agent can discover the uniform
 # DESCRIBE->statement->PREVIEW->COMMIT loop by RUNNING the binary (`qfs skill`). This is a NORMAL dep
@@ -52,26 +59,58 @@ qfs-driver-github = { path = "../driver-github" }
 qfs-driver-slack = { path = "../driver-slack" }
 qfs-driver-ga = { path = "../driver-ga" }
 qfs-driver-objstore = { path = "../driver-objstore" }
+# t58 identity-directory driver: the binary wires the `/directories/<provider>/...` surface
+# (describe is PURE + cred-free, so it registers in the describe registry like the other
+# introspective facets). qfs-driver-directory is READ-FIRST — it carries a NoopApplier and NO
+# qfs-runtime dep, so it is NOT a runtime consumer; the binary is simply the allowlisted leaf that
+# may carry the `qfs-driver-*` edge (qfs-cmd stays off it). It ALSO supplies the live (in-memory)
+# `DirectorySource` the binary wraps into a t57 `MembershipResolver`, so `member_of('/directories/
+# <provider>/groups/<g>')` resolves against the directory — carried as owned group strings into the
+# policy `DecisionContext` (qfs-server stays off the driver crate; see src/directory.rs).
+qfs-driver-directory = { path = "../driver-directory" }
 qfs-pushdown = { path = "../pushdown" }
 # t32 serve composition root: the binary (the terminal sink, the HTTP sibling of the t28 shell
 # composition root) wires the HTTP serving binding (qfs-http). qfs-http is a LEAF that consumes
 # qfs-server + the qfs-exec read executor + tokio; putting its composition here keeps qfs-cmd
 # off qfs-exec/qfs-http and lets tokio dead-end in the terminal binary.
 qfs-http = { path = "../http" }
-# t33 serve composition root: the binary ALSO wires the cron JOB scheduler binding (qfs-cron, a
-# leaf consuming qfs-server + qfs-exec, the cron sibling of qfs-http). The binary builds the
-# CronBinding + the binary-local JobStore + the committer + the native daemon loop here, so
-# qfs-cron's feature-gated tokio dead-ends in the terminal binary and qfs-cmd stays off it. The
-# `native` feature (default-on) is required for the CronBinding + RecordingCommitter + daemon.
-qfs-cron = { path = "../cron" }
+# t65 (decision M revised): the internal cron JOB scheduler binding (qfs-cron) is RETIRED — qfs is
+# not a scheduler. A `/server/jobs` row is a SAVED named plan + cadence an EXTERNAL scheduler
+# invokes (OS cron via `qfs job run`; Cloudflare Cron Triggers via the managed Worker). The
+# `qfs job run/cron` entrypoint lives in src/job.rs over qfs-host (saved-plan extraction) + qfs-exec
+# (build_plan) + qfs-runtime (the real apply) — no daemon crate, no tokio interval loop.
 # t34 serve composition root: the binary ALSO wires the watchtower binding (qfs-watchtower, a leaf
-# consuming qfs-server + qfs-exec, the watchtower sibling of qfs-http/qfs-cron). The binary builds
+# consuming qfs-server + qfs-exec, the watchtower sibling of qfs-http). The binary builds
 # the WatchtowerBinding + the shared LocalBus + the injected Committer + the dispatch loop here, and
 # composes the webhook ingest into the qfs-http listener via a fallback closure (so qfs-watchtower
 # serves no HTTP itself and neither leaf depends on the other). qfs-watchtower's feature-gated tokio
 # (bus MPSC + watcher tasks) dead-ends in the terminal binary; qfs-cmd stays off it.
 qfs-watchtower = { path = "../watchtower" }
-# The shared secrets surface the watchtower resolves webhook signing secrets from (by handle).
+# t47 serve composition root: the binary ALSO wires the MCP serving binding (qfs-mcp, a leaf
+# consuming qfs-server + qfs-exec, the MCP sibling of qfs-http/qfs-cron/qfs-watchtower). The binary
+# implements + injects the McpEngine (describe registry / build_plan / the policy-gated +
+# IrreversibleGuard-checked, runtime-backed commit / the redacted connection list) and composes the
+# pure `POST /mcp` handler into the qfs-http listener via a fallback closure — so qfs-mcp serves no
+# HTTP itself, needs no tokio, and stays off qfs-runtime (the apply is the injected closure that
+# dead-ends the COMMIT interpreter in this terminal binary). Same composition-root rationale.
+qfs-mcp = { path = "../mcp" }
+# t48 serve composition root: the binary ALSO wires the OAuth authorization-server discovery routes.
+# qfs-oauth is a pure-ish leaf (RFC 8414 / RFC 9728 / JWKS builders + the ES256 JWS sign/verify
+# primitives over p256) with NO tokio/rusqlite; the binary loads/generates the active signing key
+# over the System-DB-backed `OauthKeyStore` (qfs-store), mints the key entropy from the OS CSPRNG it
+# owns, and composes the three GET routes into the qfs-http listener via the same Fallback seam t47
+# uses for `POST /mcp`. The private key is envelope-decrypted into a `Secret` here and never escapes.
+qfs-oauth = { path = "../oauth" }
+# t63 agent-fabric transport (roadmap M7, decisions L/N): the binary is the composition root for the
+# qfs-native outbound tunnel + relay. qfs-tunnel is the PURE protocol core (frame codec + relay
+# handshake + in-memory mux) with NO tokio; the binary (src/tunnel.rs) is where the LIVE outbound
+# TCP/TLS dial to qfs Cloud would dead-end — that dial loop is a DOCUMENTED SEAM (not yet wired to a
+# socket, honesty-first). The binary adapts the t50 bearer validation into the handshake's injected
+# TokenValidator (decision N — a qfs Cloud sign-in is required) and would dispatch inbound frames to
+# the local crates/http handler path. A pure leaf consumed only by this terminal binary.
+qfs-tunnel = { path = "../tunnel" }
+# The shared secrets surface the watchtower resolves webhook signing secrets from (by handle); also
+# the redacting `Secret` wrapper the binary carries the OAuth passphrase + decrypted signing key in.
 qfs-secrets = { path = "../secrets" }
 # t-exec wiring: the binary owns the REAL `qfs run --commit` apply path — it drives the qfs-runtime
 # interpreter over a live driver registry (local-fs today) and injects it into qfs-cmd as the
@@ -85,6 +124,16 @@ qfs-types = { path = "../types" }
 # here in the terminal leaf — the driver crates stay transport-agnostic + mockable, and qfs-cmd
 # stays off both. github/slack are already linked above (describe); this only adds the wire client.
 qfs-driver-http = { path = "../driver-http" }
+# google-drivers live commit wiring: the binary bridges the ONE reqwest transport onto
+# qfs-google-auth's runtime-free `HttpExchange` seam (src/transport.rs) and composes the OAuth
+# client + per-account `StoredTokenSource` + authenticated `GoogleApiClient` that the gmail/gdrive/ga
+# apply drivers issue calls through (src/google.rs, registered in src/commit.rs gated like
+# github/slack). qfs-google-auth is a PURE off-runtime leaf (it shares only the qfs-http-core DTOs +
+# qfs-secrets, NEVER reqwest/qfs-runtime/qfs-driver-http — the confinement guard pins this), so the
+# edge adds no runtime coupling; the wire client + the live loopback browser consent dead-end HERE in
+# the terminal leaf. The operator's Google Desktop OAuth app id/secret come from QFS_GOOGLE_CLIENT_ID
+# / QFS_GOOGLE_CLIENT_SECRET; absent either, the drivers are left UNREGISTERED (fail closed).
+qfs-google-auth = { path = "../google-auth" }
 # t-exec sql live commit: the binary wires the real SQLite-backed sql driver. qfs-driver-sql is the
 # vendor-free driver (trait + compiler + dialect). The production `SqlBackend` impl (SQLite) lives
 # in the binary (src/sql.rs): qfs-driver-sql is a qfs-runtime consumer, so the guard requires it be
@@ -97,22 +146,73 @@ qfs-driver-sql = { path = "../driver-sql" }
 # commits via the engine's plan_write seam; the apply leg shells to git, confined to the terminal
 # binary like the local driver's filesystem writes. Built from QFS_GIT_<repo> env config.
 qfs-driver-git = { path = "../driver-git" }
+# t53 administration driver: the binary wires the `/sys/*` admin surface (describe + the live read
+# facet + the policy-grant apply). qfs-driver-sys is the vendor-free driver (pure introspective half
+# + the SysApplier over the SysBackend seam) and a qfs-runtime consumer, so the dep-direction guard
+# requires it be a LEAF — only the terminal binary may depend on it. The production `SysBackend`
+# (rusqlite over the System DB + the Project DB's connection registry) lives in the binary
+# (src/sys.rs); rusqlite dead-ends HERE like the SQL backend. qfs-cmd/qfs-exec stay off it.
+qfs-driver-sys = { path = "../driver-sys" }
+# t64 AI-sessions driver (roadmap M7): the binary wires the `/claude/...` session surface (describe +
+# the live local read facet + the policy-gated instruction append). qfs-driver-claude is the
+# vendor-free driver (pure introspective half + the ClaudeApplier over the SessionSource seam) and a
+# qfs-runtime consumer, so the dep-direction guard requires it be a LEAF — only the terminal binary
+# may depend on it. The on-disk SessionSource (Claude Code's session state, opt-in / fail-closed via
+# QFS_CLAUDE_SESSIONS) lives in the binary (src/claude.rs); its std::fs reads/append dead-end HERE.
+# Decision K: qfs NEVER hosts or calls an LLM — this is a path façade + an append-log, no inference.
+qfs-driver-claude = { path = "../driver-claude" }
 # The real in-process SQLite engine, confined to this terminal binary. `bundled` compiles
 # libsqlite3 from source (no system-lib dependency) — the same dep+feature qfs-driver-sql uses for
 # its in-memory test backend, so the artifact already builds in this workspace.
 rusqlite = { version = "0.40", features = ["bundled"] }
+# t42 persistence foundation: the binary is the ONE place that opens a real DB path (decision F +
+# the dep-direction guard — qfs-store is a sync leaf; nothing in the spine names a file). The binary
+# resolves the System DB path (`src/store.rs`) and runs the embedded migrations on start. qfs-store
+# reuses the SAME bundled libsqlite3 build as `rusqlite` above, so the artifact carries one C SQLite.
+qfs-store = { path = "../store" }
+# t45 identity composition root: the binary wires the System-DB-backed identity store
+# (`SqliteIdentityStore` from qfs-store) and the identity DOMAIN core (qfs-identity) for `qfs identity
+# signup/whoami` — it validates the email/password, hashes with argon2id (qfs-identity), and injects
+# the launcher into qfs-cmd. qfs-cmd stays off both backends (the dep_direction guard). qfs-identity
+# is a pure leaf (no rusqlite/tokio); this edge adds only its argon2/secrets/crypto-core leaves.
+qfs-identity = { path = "../identity" }
+# t46 session composition root: the binary wires the System-DB-backed session store
+# (`SqliteSessionStore` from qfs-store) and the session DOMAIN core (qfs-session) — it generates the
+# opaque token from OS entropy (the `rand` CSPRNG below, owned by this leaf), stores only its hash,
+# and formats the secure cookie. qfs-session is a pure-ish leaf (no rusqlite/tokio/rand); the binary
+# injects the entropy so the core stays deterministic/testable. No endpoint is gated on a session
+# yet (gating is t50/t51) — the serve composition opens the store WITHOUT routing a path through it.
+qfs-session = { path = "../session" }
+# The CSPRNG (OS entropy) the binary uses to mint opaque session tokens. Confined to this terminal
+# leaf — qfs-session takes the random bytes as input and never owns a `rand`/`getrandom` edge itself.
+rand = "0.9"
+# t43: the SQLite `Secrets` backend (src/secret_store.rs) parses the `created_at` column back to an
+# OffsetDateTime for `AccountRecord` (the same RFC3339 metadata qfs-secrets uses). Parsing/formatting
+# only — no secret material ever touches `time`.
+time = { version = "0.3", features = ["parsing", "formatting"] }
 # t36 deployment host-adapter seam: the binary composes the daemon's TokioHost: RuntimeHost,
 # REUSING the existing qfs-http/qfs-cron/qfs-watchtower serve composition behind the trait, and
 # wires the fsync'd FileDurableStore + the on-disk AuditLedger. `host-daemon` is the EC2/Linux
 # build feature (mutually exclusive with `host-workers`); it pulls qfs-host's qfs-server-backed
 # conversion + daemon primitives. qfs-host is a leaf consumed only by this terminal binary.
 qfs-host = { path = "../host", features = ["host-daemon"] }
+# t47: the MCP composition serializes the cred-free describe report to the JSON value the
+# `describe` tool returns (the binary owns the describe registry; qfs-mcp owns the protocol).
+serde_json = { workspace = true }
+# t51: the embedded dashboard bridge derives `Deserialize` for its two thin request bodies
+# (`{ path }`, `{ statement, mode? }`) decoded from the browser-posted JSON. Decode only — no secret
+# material crosses this seam.
+serde = { workspace = true }
 # The serve composition builds a tokio runtime to drive the async listener + supervised wait.
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "signal", "macros"] }
 async-trait = { workspace = true }
 # Secret-free structured logging for the watchtower dispatch loop (the same target the serve
 # bindings log under). No secrets ever logged (RFD §10).
 tracing = { workspace = true }
+# t78: the audit-seal trigger + the consumer-side verify (src/worm.rs) wrap the secret-free seal /
+# witness / chain-mismatch failures in structured, AI-consumable error taxonomies (the same posture
+# as the domain leaves' `thiserror` enums). No secret or key material ever reaches an error.
+thiserror = { workspace = true }
 
 [dev-dependencies]
 # Temp-dir fixtures for the shell's end-to-end local read tests (never touches user files).

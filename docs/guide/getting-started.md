@@ -65,13 +65,13 @@ A read query previews as the query itself (reads change nothing). Longer queries
 each `|>` pipe on its own line:
 
 ```qfs
-FROM /mail/inbox
-|> WHERE subject LIKE '%invoice%'
-|> SELECT date, from, subject
+/mail/inbox
+|> where subject LIKE '%invoice%'
+|> select date, from, subject
 ```
 
 ```sh
-qfs run "FROM /mail/inbox |> WHERE subject LIKE '%invoice%' |> SELECT date, from, subject"
+qfs run "/mail/inbox |> WHERE subject LIKE '%invoice%' |> SELECT date, from, subject"
 ```
 
 ## 4. Commit
@@ -89,7 +89,7 @@ a one-shot command, requires an explicit extra acknowledgement so you can never 
 
 ```sh
 # Sending is irreversible — --commit alone is refused:
-qfs run "FROM /mail/drafts |> CALL mail.send" --commit --commit-irreversible
+qfs run "/mail/drafts |> CALL mail.send" --commit --commit-irreversible
 ```
 
 If you forget the extra flag on an irreversible plan, qfs **fails safely** and tells you why.
@@ -108,14 +108,20 @@ qfs describe /mail/drafts --json | jq .verbs
 ## Connecting a real service
 
 `describe` and `preview` need nothing. To **commit** against a live service, store a credential
-once:
+once. First export `QFS_PASSPHRASE` — the master passphrase that unlocks your local credential
+vault (it derives the argon2id key for the encrypted store; it is **not** a service credential).
+It must stay set for the shell that runs `connection add/list/remove`:
 
 ```sh
-qfs account add mail work        # prompts for the credential; it's never printed back
-qfs account list                 # shows account names only, never secrets
+read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE   # unlock the local vault, no shell-history leak
+printf %s "$TOKEN" | qfs connection add mail work   # credential VALUE via stdin, never argv
+qfs connection list                                 # shows connection names only, never secrets
 ```
 
-See [Accounts & credentials](/guide/accounts) for details.
+The credential value is read from **stdin** (not prompted, and never passed on argv where it would
+leak into the process table + shell history); qfs never prints it back.
+
+See [Connections & credentials](/guide/connections) for details, including the passphrase.
 
 ## Where to go next
 

@@ -5,121 +5,163 @@
 
 qfs is **one small pipe-SQL language** that works on every service. You write a query as a source followed by stages joined by `|>` (a pipe), and the same grammar reads mail, queries a database, joins across services, transforms formats, and writes changes.
 
-The grammar is **fixed and small** — adding a new service never adds new keywords. A new service is just a new path; a new action is a `CALL`; a new format is a `DECODE`/`ENCODE`. This page is generated from the binary itself, so it always matches the version you have installed.
+The grammar is **fixed and small** — adding a new service never adds new keywords. A new service is just a new path; a new action is a `call`; a new format is a `decode`/`encode`. This page is generated from the binary itself, so it always matches the version you have installed.
 
 ## Reserved keywords
 
-These 38 words make up the whole language. Because the set is fixed, anything you learn here keeps working as new services are added.
+These 39 words make up the whole language — written in **lowercase** (recognized case-insensitively, so an older uppercase query still works). Because the set is fixed, anything you learn here keeps working as new services are added.
 
 | # | keyword |
 |---|---------|
-| 1 | `FROM` |
-| 2 | `WHERE` |
-| 3 | `SELECT` |
-| 4 | `EXTEND` |
-| 5 | `SET` |
-| 6 | `AGGREGATE` |
-| 7 | `GROUP BY` |
-| 8 | `ORDER BY` |
-| 9 | `LIMIT` |
-| 10 | `DISTINCT` |
-| 11 | `JOIN` |
-| 12 | `UNION` |
-| 13 | `EXCEPT` |
-| 14 | `INTERSECT` |
-| 15 | `AS` |
-| 16 | `EXPAND` |
-| 17 | `INSERT INTO` |
-| 18 | `UPSERT INTO` |
-| 19 | `UPDATE` |
-| 20 | `REMOVE` |
-| 21 | `VALUES` |
-| 22 | `RETURNING` |
-| 23 | `CALL` |
-| 24 | `DECODE` |
-| 25 | `ENCODE` |
-| 26 | `PREVIEW` |
-| 27 | `COMMIT` |
-| 28 | `CREATE` |
-| 29 | `ENDPOINT` |
-| 30 | `TRIGGER` |
-| 31 | `JOB` |
-| 32 | `VIEW` |
-| 33 | `MATERIALIZED VIEW` |
-| 34 | `WEBHOOK` |
-| 35 | `POLICY` |
-| 36 | `DO` |
-| 37 | `EVERY` |
-| 38 | `ON` |
+| 1 | `where` |
+| 2 | `select` |
+| 3 | `extend` |
+| 4 | `set` |
+| 5 | `aggregate` |
+| 6 | `group by` |
+| 7 | `order by` |
+| 8 | `limit` |
+| 9 | `distinct` |
+| 10 | `join` |
+| 11 | `union` |
+| 12 | `except` |
+| 13 | `intersect` |
+| 14 | `as` |
+| 15 | `expand` |
+| 16 | `let` |
+| 17 | `insert into` |
+| 18 | `upsert into` |
+| 19 | `update` |
+| 20 | `remove` |
+| 21 | `values` |
+| 22 | `returning` |
+| 23 | `call` |
+| 24 | `transaction` |
+| 25 | `decode` |
+| 26 | `encode` |
+| 27 | `preview` |
+| 28 | `commit` |
+| 29 | `create` |
+| 30 | `endpoint` |
+| 31 | `trigger` |
+| 32 | `job` |
+| 33 | `view` |
+| 34 | `materialized view` |
+| 35 | `webhook` |
+| 36 | `policy` |
+| 37 | `do` |
+| 38 | `every` |
+| 39 | `on` |
 
 ## Grammar (EBNF)
 
-The pipe-SQL grammar. Every UPPERCASE terminal is a frozen reserved keyword above.
+The pipe-SQL grammar. Every quoted lowercase terminal is a frozen reserved keyword above; the quoted UPPERCASE terminals are the word operators (`AND`/`OR`/`NOT`/`LIKE`/`IN`/`ANY`/`BETWEEN`).
 
 ```text
 (* qfs pipe-SQL grammar (EBNF) — RFD-0001 §2/§3.                                  *)
-(* The closed core: every UPPERCASE terminal is a frozen reserved keyword         *)
-(* (see RESERVED_KEYWORDS); a new backend adds ZERO terminals here.               *)
+(* The closed core: every quoted lowercase terminal is a frozen reserved keyword   *)
+(* (see RESERVED_KEYWORDS, t74 decision S); a new backend adds ZERO terminals here. *)
 
-statement     = pipeline , [ plan_op ] ;
+(* A program is zero or more let bindings (M6 functional core, ticket t60) in       *)
+(* scope for the statements that follow them — one statement per line, no `;`.       *)
+program       = { binding } , statement ;
+(* A let binds a relation (a pipeline) OR a first-class VALUE — a lambda or a scalar     *)
+(* (M6, ticket t61, decision H "functions are values"). A named function is just a        *)
+(* let-bound lambda — there is NO `def` keyword.                                          *)
+binding       = "let" , name , "=" , ( pipeline | lambda | literal ) ;
 
-(* A pipeline is a source threaded through |> stages. *)
-pipeline      = [ "FROM" ] , source , { "|>" , stage } ;
+(* A statement is a pipeline (which may terminate in a write stage, decision Q), the      *)
+(* source-less verb-leading literal write, or a transaction block (M6, ticket t62); an     *)
+(* optional plan_op wraps any of them.                                                    *)
+statement     = ( pipeline | effect_literal | transaction ) , [ plan_op ] ;
 
-source        = path | id_ref ;
+(* ---- transactions (M6, ticket t62, decision G) ---- *)
+(* A reversible-only, all-or-nothing block: a `;`-separated sequence of effect            *)
+(* statements committed in source order. Every effect inside MUST be reversible —          *)
+(* an irreversible effect (remove, an irreversible call) is a hard eval-time error, never  *)
+(* a needs-an-ack prompt — so the block can always roll back. No nesting, no let inside.    *)
+transaction   = "transaction" , "{" , [ effect_stmt , { ";" , effect_stmt } , [ ";" ] ] , "}" ;
+effect_stmt   = effect_literal | ( pipeline , effect_stage ) ;
+
+(* A pipeline is a source threaded through |> stages. Decision R (t73): the source     *)
+(* position needs no `from` — a leading `/path` (or a let-bound name) IS the source.   *)
+pipeline      = source , { "|>" , stage } ;
+
+source        = path | id_ref | name ;   (* name = a let-bound relation *)
 path          = "/" , segment , { "/" , segment } ;   (* absolute only, no cwd *)
 id_ref        = "id:" , token ;
 
 stage         = query_stage | effect_stage | codec_stage | call_stage ;
 
 (* ---- query / transform (read) ---- *)
-query_stage   = "WHERE" , predicate
-              | "SELECT" , projection
-              | "EXTEND" , assignment
-              | "SET" , assignment
-              | "AGGREGATE" , agg_list
-              | "GROUP BY" , column_list
-              | "ORDER BY" , sort_list
-              | "LIMIT" , integer
-              | "DISTINCT"
-              | "JOIN" , source , "ON" , predicate
-              | "UNION" , source
-              | "EXCEPT" , source
-              | "INTERSECT" , source
-              | "EXPAND" , column ;
+query_stage   = "where" , predicate
+              | "select" , projection
+              | "extend" , assignment
+              | "set" , assignment
+              | "aggregate" , agg_list
+              | "group by" , column_list
+              | "order by" , sort_list
+              | "limit" , integer
+              | "distinct"
+              | "join" , source , "on" , predicate
+              | "union" , source
+              | "except" , source
+              | "intersect" , source
+              | "expand" , column ;
 
-(* ---- effects (write) ---- *)
-effect_stage  = "INSERT INTO" , target , [ "VALUES" , row_list ] [ "RETURNING" , projection ]
-              | "UPSERT INTO" , target , [ "VALUES" , row_list ] [ "RETURNING" , projection ]
-              | "UPDATE" , assignment
-              | "REMOVE" ;
+(* ---- effects (write) — decision Q (t72): a write reads as dataflow. With inflowing  *)
+(* rows it is a TERMINAL pipeline stage; the upstream relation is what it writes        *)
+(* (insert/upsert) or the rows it rewrites/removes in place (update/remove, whose target *)
+(* and where are the upstream `/path |> where …`). returning rides as a trailing stage.  *)
+effect_stage  = "insert into" , target
+              | "upsert into" , target
+              | "update" , "set" , assignment
+              | "remove"
+              | "returning" , projection ;
+
+(* The source-less LITERAL write leads with the verb (no inflowing rows to consume);     *)
+(* `values` supplies the rows inline. This is the only write form that is not a stage.    *)
+effect_literal= "insert into" , target , "values" , row_list , [ "returning" , projection ]
+              | "upsert into" , target , "values" , row_list , [ "returning" , projection ] ;
 
 (* ---- procedures (the irreducible state transitions) ---- *)
-call_stage    = "CALL" , qualified_proc , "(" , [ arg_list ] , ")" ;
+call_stage    = "call" , qualified_proc , "(" , [ arg_list ] , ")" ;
 qualified_proc= driver_id , "." , action ;          (* e.g. mail.send, git.merge *)
 
 (* ---- codecs (blob <-> relational) ---- *)
-codec_stage   = "DECODE" , format | "ENCODE" , format ;
+codec_stage   = "decode" , format | "encode" , format ;
 format        = "json" | "jsonl" | "yaml" | "toml" | "csv" | "md" ;
 
-(* ---- plan operator (PREVIEW is default; COMMIT applies) ---- *)
-plan_op       = "PREVIEW" | "COMMIT" ;
+(* ---- plan operator (preview is default; commit applies) ---- *)
+plan_op       = "preview" | "commit" ;
 
 (* ---- predicate / expression core ---- *)
+(* Decision O (t70): `=` ALWAYS binds (let / extend / set / named arg);             *)
+(* equivalence is the explicit `==`. Unlike SQL, a lone `=` never compares.         *)
 predicate     = expr , { ( "AND" | "OR" ) , expr } | "NOT" , predicate ;
 expr          = operand , [ comparison , operand ] ;
-comparison    = "=" | "<>" | "<" | ">" | "<=" | ">="
+comparison    = "==" | "<>" | "<" | ">" | "<=" | ">="
               | "LIKE" | "~" | "IN" | "ANY" | "BETWEEN" ;
-operand       = column | literal ;
+operand       = column | literal | call | lambda ;
+
+(* ---- lambdas as values + higher-order fns (M6, ticket t61, decision H) ---- *)
+(* Functions are values: a lambda rides the EXPRESSION grammar and reuses the `=>`   *)
+(* token — it adds ZERO keywords and ZERO operators (the closed core is untouched).   *)
+(* The parenthesised parameter list distinguishes it from a named arg / sub-expr.     *)
+lambda        = "(" , [ param , { "," , param } ] , ")" , "=>" , expr ;
+param         = name , [ ":" , type ] ;   (* `: type` is parsed-and-retained *)
+(* `map` / `filter` / `reduce` are ordinary stdlib functions (a `call`), NOT keywords: *)
+(*   map(collection, lambda) | filter(collection, lambda) | reduce(collection, lambda, init) *)
+call          = name , "(" , [ expr , { "," , expr } ] , ")" ;
 
 (* ---- server DDL (sugar over the write surface, RFD §8) ---- *)
-ddl           = "CREATE" , ( endpoint | trigger | job | view | webhook | policy ) ;
-endpoint      = "ENDPOINT" , name , "DO" , statement ;
-trigger       = "TRIGGER" , name , "ON" , event , "DO" , statement ;
-job           = "JOB" , name , "EVERY" , interval , "DO" , statement ;
-view          = ( "VIEW" | "MATERIALIZED VIEW" ) , name , "AS" , pipeline ;
-webhook       = "WEBHOOK" , name , "DO" , statement ;
-policy        = "POLICY" , name , predicate ;
+ddl           = "create" , ( endpoint | trigger | job | view | webhook | policy ) ;
+endpoint      = "endpoint" , name , "do" , statement ;
+trigger       = "trigger" , name , "on" , event , "do" , statement ;
+job           = "job" , name , "every" , interval , "do" , statement ;
+view          = ( "view" | "materialized view" ) , name , "as" , pipeline ;
+webhook       = "webhook" , name , "do" , statement ;
+policy        = "policy" , name , predicate ;
 
 (* Lowercase nonterminals (segment, token, projection, assignment, agg_list,       *)
 (* column_list, sort_list, integer, target, row_list, column, arg_list, action,    *)
@@ -128,15 +170,15 @@ policy        = "POLICY" , name , predicate ;
 
 ## Nothing happens until you commit
 
-Writing a statement never acts on its own. A statement *plans* an effect; `PREVIEW` (the default) shows you that plan without touching anything, and `COMMIT` applies it. Even a convenience alias like `SEND(...)` doesn't send — it just adds a `CALL mail.send` step to the plan you preview first. This is what makes the whole loop safe: **describe → write → preview → commit**.
+Writing a statement never acts on its own. A statement *plans* an effect; `preview` (the default) shows you that plan without touching anything, and `commit` applies it. Even a convenience alias like `send(...)` doesn't send — it just adds a `call mail.send` step to the plan you preview first. This is what makes the whole loop safe: **describe → write → preview → commit**.
 
 ## Extending qfs
 
 The language never grows new keywords. Everything new a service needs is one of three things:
 
 - **a path** — a new service mounted at a new prefix (e.g. `/mail`, `/s3`); see the [driver catalog](drivers.md).
-- **an action** — a `CALL service.action(..)` procedure (and optional alias).
-- **a format** — a `DECODE`/`ENCODE` codec; see the [driver catalog](drivers.md).
+- **an action** — a `call service.action(..)` procedure (and optional alias).
+- **a format** — a `decode`/`encode` codec; see the [driver catalog](drivers.md).
 
 Because the language stays fixed, you learn it once and every service speaks it.
 

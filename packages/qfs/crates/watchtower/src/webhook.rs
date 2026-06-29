@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use qfs_secrets::{AccountId, CredentialKey, DriverId, Secrets};
+use qfs_secrets::{ConnectionId, CredentialKey, DriverId, Secrets};
 use qfs_server::{Binding, BindingKind, ServerError, ServerState};
 
 use crate::bus::EventBus;
@@ -285,7 +285,7 @@ impl WebhookIngest {
             None => return false,
         };
         // Resolve the signing secret BY HANDLE (never inlined). A resolution failure fails closed.
-        let account = match AccountId::new(secret_handle) {
+        let account = match ConnectionId::new(secret_handle) {
             Ok(a) => a,
             Err(_) => return false,
         };

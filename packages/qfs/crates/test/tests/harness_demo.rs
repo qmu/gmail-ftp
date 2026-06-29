@@ -115,30 +115,69 @@ fn upsert_plan_golden_snapshot() {
         .snapshot("plan_upsert_users");
 }
 
+#[test]
+fn pipe_stage_and_verb_leading_writes_lower_to_one_plan() {
+    // Decision Q (t72): a write spelled as a terminal pipeline stage and the verb-leading
+    // spelling of the same write evaluate to the SAME effect `Plan` — the strongest proof that
+    // this is grammar shape, not new effect semantics. Compared by `Plan` value-equality (the
+    // plan carries no parser spans, so equal plans is the whole assertion).
+    let reg = registry();
+    let pairs = [
+        // INSERT/UPSERT: upstream pipeline body, explicit target.
+        (
+            "/db/src |> WHERE id > 0 |> UPSERT INTO /db/users",
+            "UPSERT INTO /db/users /db/src |> WHERE id > 0",
+        ),
+        // UPDATE: target + filter lifted from the upstream.
+        (
+            "/db/users |> WHERE id == 1 |> UPDATE SET name = 'x'",
+            "UPDATE /db/users SET name = 'x' WHERE id == 1",
+        ),
+        // REMOVE: target + filter lifted from the upstream (irreversible either way).
+        (
+            "/db/users |> WHERE id == 1 |> REMOVE",
+            "REMOVE /db/users WHERE id == 1",
+        ),
+    ];
+    for (pipe_form, verb_form) in pairs {
+        let pipe_plan = assert_plan(pipe_form, &reg);
+        let verb_plan = assert_plan(verb_form, &reg);
+        assert!(
+            pipe_plan.plan() == verb_plan.plan(),
+            "pipe-stage `{pipe_form}` and verb-leading `{verb_form}` must build one Plan:\n  \
+             pipe: {:?}\n  verb: {:?}",
+            pipe_plan.plan(),
+            verb_plan.plan()
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 2. Parser / grammar golden corpus (closed-core keywords, |>, CALL, DECODE, CREATE).
 // ---------------------------------------------------------------------------
 
 #[test]
 fn parser_golden_query_pipe() {
-    golden_parse("FROM /mail/inbox |> WHERE id > 5 |> LIMIT 10").snapshot("ast_query_pipe");
+    golden_parse("/mail/inbox |> WHERE id > 5 |> LIMIT 10").snapshot("ast_query_pipe");
 }
 
 #[test]
 fn parser_golden_decode_call() {
-    golden_parse("FROM /s3/data |> DECODE json |> CALL git.merge()").snapshot("ast_decode_call");
+    golden_parse("/s3/data |> DECODE json |> CALL git.merge()").snapshot("ast_decode_call");
 }
 
 #[test]
 fn parser_golden_create_endpoint() {
-    golden_parse("CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5")
+    golden_parse("CREATE ENDPOINT recent ON 'GET /recent' AS /mail/inbox |> LIMIT 5")
         .snapshot("ast_create_endpoint");
 }
 
 #[test]
 fn parser_golden_error_recovery() {
-    // A lowercase keyword is not in the frozen closed-core set — a stable recovery message.
-    error_snapshot("from /mail/inbox").snapshot("ast_error_lowercase_keyword");
+    // Keywords are lowercase and recognized case-insensitively (t74, decision S). An INCOMPLETE
+    // multi-word keyword (`group` with no `by`) is still outside the closed core — a stable
+    // structured recovery message.
+    error_snapshot("/mail/inbox |> group id").snapshot("ast_error_unknown_keyword");
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +197,7 @@ fn codec_roundtrip_all_formats() {
 
 #[test]
 fn handler_preview_endpoint_trigger_job() {
-    let ep = preview_handler("CREATE ENDPOINT hello ON 'GET /hello' AS FROM /mail/inbox");
+    let ep = preview_handler("CREATE ENDPOINT hello ON 'GET /hello' AS /mail/inbox");
     assert!(matches!(
         ep.nodes()[0].kind,
         EffectKind::ServerConfigWrite { .. }
@@ -179,7 +218,7 @@ fn handler_preview_endpoint_trigger_job() {
 #[test]
 fn handler_preview_golden() {
     // The plan a fired ENDPOINT binding would COMMIT, snapshotted.
-    let plan = preview_handler("CREATE ENDPOINT hello ON 'GET /hello' AS FROM /mail/inbox");
+    let plan = preview_handler("CREATE ENDPOINT hello ON 'GET /hello' AS /mail/inbox");
     let canon = canonicalize(plan);
     qfs_test::golden::assert_no_credential_shape(&qfs_test::golden::canonical_json(&canon));
     qfs_test::golden::assert_golden("plan_endpoint_hello", &canon);

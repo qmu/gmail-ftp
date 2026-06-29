@@ -97,7 +97,7 @@ pub use events::{
     SlackInbound,
 };
 pub use path::{ChannelRef, NodeKind, SlackNode, SlackPath, UserRef, MOUNT};
-pub use read::ReadPlan;
+pub use read::{read_rows, ReadPlan};
 pub use schema::{archetype_for, schema_for};
 
 /// The per-workspace Slack configuration — an owned DTO deserialized from qfs config, **one block

@@ -30,6 +30,7 @@
 
 mod aggregate;
 mod context;
+mod higher_order;
 mod registry;
 mod scalar;
 mod tablevalued;
@@ -41,6 +42,9 @@ pub use aggregate::{AggregateFactory, AggregateKind, AggregateState};
 pub use context::{EnvSource, MapEnv, NoEnv};
 pub use registry::{AliasDecl, Prelude, PreludeError, ResolvedAlias, StdlibRegistry};
 pub use tablevalued::{PlanNode, PlanNodeKind};
+
+// `BuiltinFn`/`BuiltinEval`/`FnSig`/`FnError` are re-exported by the crate root; the
+// higher-order kind rides alongside them for the lambda evaluator (M6, ticket t61).
 
 use qfs_types::{ColumnType, Value};
 
@@ -176,11 +180,18 @@ impl FnError {
     }
 }
 
-/// The declared signature of a built-in (RFD §5 typed dispatch). Kept deliberately small:
-/// the **arity policy** (fixed/variadic) and the **return type**. Per-argument type
-/// checks live in each function body (they reject ill-typed `Value`s with
-/// [`FnError::Type`]), so a heterogeneous signature (e.g. `COALESCE`) need not be encoded
-/// structurally here.
+/// The declared signature of a built-in (RFD §5 typed dispatch). Carries the **arity
+/// policy** (fixed/variadic), the **return type**, and — for the **plan-time static type
+/// checker** (decision T, ticket t75) — an optional **per-argument type contract**.
+///
+/// Per-argument *value* checks still live in each function body (they reject ill-typed
+/// `Value`s at evaluation with [`FnError::Type`]); [`FnSig::arg_types`] is the *static*,
+/// before-any-I/O counterpart: when a position carries a concrete expectation, the t75
+/// checker rejects a statically-known mismatched argument (`UPPER(<i64 column>)`) at
+/// **plan time**, never at commit. The contract is deliberately partial — a position left
+/// `None` (or beyond the declared slice, e.g. a variadic tail or a heterogeneous
+/// `COALESCE`) stays late-bound — so adding a contract to a built-in is purely additive and
+/// a non-annotated built-in keeps the t08 behaviour (return-type only).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnSig {
     /// The minimum number of positional arguments.
@@ -190,6 +201,11 @@ pub struct FnSig {
     pub max_args: Option<usize>,
     /// The built-in's return type (the column type a projection over it carries).
     pub returns: ColumnType,
+    /// The optional per-position **static** argument-type contract (t75). Position `i`
+    /// carrying `Some(ty)` is checked by the plan-time type checker against the inferred
+    /// type of the `i`-th argument; `None` (or an index beyond this slice) is unchecked /
+    /// late-bound. Empty (the default for every constructor) means "no static contract".
+    pub arg_types: Vec<Option<ColumnType>>,
 }
 
 impl FnSig {
@@ -200,6 +216,7 @@ impl FnSig {
             min_args: n,
             max_args: Some(n),
             returns,
+            arg_types: Vec::new(),
         }
     }
 
@@ -210,6 +227,7 @@ impl FnSig {
             min_args: min,
             max_args: Some(max),
             returns,
+            arg_types: Vec::new(),
         }
     }
 
@@ -220,7 +238,18 @@ impl FnSig {
             min_args: min,
             max_args: None,
             returns,
+            arg_types: Vec::new(),
         }
+    }
+
+    /// Builder: attach the **static** per-position argument-type contract (t75). Each entry
+    /// is the expected primitive type at that position, or `None` to leave it late-bound;
+    /// positions beyond the slice are unchecked (so a variadic tail stays open). Used by the
+    /// plan-time checker to reject a statically-mismatched argument before any I/O.
+    #[must_use]
+    pub fn with_arg_types(mut self, arg_types: Vec<Option<ColumnType>>) -> Self {
+        self.arg_types = arg_types;
+        self
     }
 
     /// Whether `argc` arguments satisfy this arity policy.
@@ -244,6 +273,29 @@ pub enum BuiltinEval {
     /// deferred [`PlanNode`] (gated by [`EvalCtx::capabilities_enabled`]) but performs
     /// **no** network/file I/O during evaluation.
     TableValued(fn(&[Value], &EvalCtx) -> Result<PlanNode, FnError>),
+    /// A **higher-order** built-in (`map`/`filter`/`reduce`, M6 ticket t61): it takes a
+    /// **function-typed** argument (a lambda) plus a collection, so it cannot be expressed as
+    /// a `Value → Value` [`BuiltinEval::Scalar`] (a lambda is not a [`Value`]). The actual
+    /// closure-application semantics live in the pure lambda evaluator
+    /// ([`crate::lambda`]); this variant exists so the function registry **knows** the name
+    /// (arity + return type for the typing pass) and the lambda evaluator can dispatch on
+    /// [`HigherOrderKind`]. Pure — it constructs values over an in-memory collection, never
+    /// any I/O (RFD §3 purity), so it stays in the read/transform half.
+    HigherOrder(HigherOrderKind),
+}
+
+/// Which higher-order built-in a [`BuiltinEval::HigherOrder`] is (M6, ticket t61). The pure
+/// lambda evaluator ([`crate::lambda`]) dispatches on this to apply the supplied lambda over
+/// the collection: `map` transforms each element, `filter` keeps the elements whose lambda
+/// result is truthy, `reduce` folds them through the lambda from an initial accumulator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HigherOrderKind {
+    /// `map(collection, fn)` — apply `fn` to each element, yielding a same-length collection.
+    Map,
+    /// `filter(collection, fn)` — keep the elements for which `fn` returns a truthy value.
+    Filter,
+    /// `reduce(collection, fn, init)` — left-fold the elements through `fn(acc, element)`.
+    Reduce,
 }
 
 /// A single registered built-in (RFD §3). Name + signature + the evaluation strategy.
@@ -285,6 +337,25 @@ impl BuiltinFn {
             name: name.to_string(),
             sig,
             eval: BuiltinEval::TableValued(f),
+        }
+    }
+
+    /// Construct a higher-order built-in (`map`/`filter`/`reduce`, M6 ticket t61).
+    fn higher_order(name: &str, sig: FnSig, kind: HigherOrderKind) -> Self {
+        Self {
+            name: name.to_string(),
+            sig,
+            eval: BuiltinEval::HigherOrder(kind),
+        }
+    }
+
+    /// The higher-order kind of this built-in (`map`/`filter`/`reduce`), or `None` for a
+    /// scalar/aggregate/table-valued built-in. Used by the lambda evaluator's dispatch.
+    #[must_use]
+    pub fn higher_order_kind(&self) -> Option<HigherOrderKind> {
+        match self.eval {
+            BuiltinEval::HigherOrder(kind) => Some(kind),
+            _ => None,
         }
     }
 

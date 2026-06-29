@@ -12,7 +12,7 @@ use qfs_plan::{
     preview, DriverId, EffectKind, EffectNode, NodeId, PlanBuilder, ProcId, Target, VfsPath,
 };
 use qfs_runtime::{CapabilitySet, DriverRegistry, Interpreter, SharedApplier};
-use qfs_secrets::{AccountId, CredentialKey, InMemoryStore, Secret, Secrets};
+use qfs_secrets::{ConnectionId, CredentialKey, InMemoryStore, Secret, Secrets};
 use qfs_types::{Column, Row, RowBatch, Schema, Value};
 
 use super::*;
@@ -62,7 +62,7 @@ fn store_with_token(token: &str) -> (Arc<dyn Secrets>, CredentialKey) {
     let store = InMemoryStore::new();
     let key = CredentialKey::new(
         qfs_secrets::DriverId::new("slack"),
-        AccountId::new("work").unwrap(),
+        ConnectionId::new("work").unwrap(),
     );
     store
         .put(&key, Secret::new(token.as_bytes().to_vec()))
@@ -882,7 +882,7 @@ fn planted_token_and_signing_secret_never_appear_in_a_serialized_plan_or_config_
     // The config Debug carries credential KEYS (selectors), never the token/signing-secret values.
     let key = CredentialKey::new(
         qfs_secrets::DriverId::new("slack"),
-        AccountId::new("work").unwrap(),
+        ConnectionId::new("work").unwrap(),
     );
     let cfg = SlackWsConfig::new("acme", "T123", key.clone(), key);
     let dbg = format!("{cfg:?}");

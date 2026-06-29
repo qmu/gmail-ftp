@@ -1,0 +1,31 @@
+[package]
+name = "qfs-tunnel"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs-native outbound tunnel + relay PROTOCOL CORE (t63, roadmap M7 — decisions L/N, part 3.3 fleet): the PURE, tokio-free leaf that owns the tunnel wire format and the relay registration handshake. A self-hosted qfs behind NAT/firewall opens an OUTBOUND connection to a qfs Cloud RELAY, which routes inbound MCP/agent traffic back down the tunnel — so a private node never opens an inbound port. This crate carries only the testable core: the length-prefixed frame codec (`TunnelFrame`/`FrameKind`, encode/decode round-trip), the request/response carried inside as `qfs_http_core::HttpRequest`/`HttpResponse` (so the SINGLE redaction authority is INHERITED, never re-implemented), the `RelayHello`/`RelayAccepted` handshake whose `cloud_token` is validated through an INJECTED `TokenValidator` seam (decision N — a qfs Cloud sign-in is required; a bad/absent token is refused), and the request/response multiplexing over an in-memory duplex (`FrameTransport` + `run_resident`). The relay is UNTRUSTED transport: the bearer/MCP auth + per-request `POLICY` gate still apply at the destination node — the tunnel adds reach, never a new trust boundary. NO tokio/reqwest/qfs-runtime: the live TCP/TLS dial to qfs Cloud is a DOCUMENTED SEAM wired by the `qfs` binary (src/tunnel.rs), where tokio dead-ends in the terminal leaf."
+
+[dependencies]
+# The single source of truth for the HTTP exchange DTOs (`HttpRequest`/`HttpResponse`/`HttpMethod`)
+# carried inside a tunnel frame AND for the header-redaction authority. By embedding these DTOs in a
+# frame's body, a frame's `Debug` INHERITS the redacting `Debug` — a bearer token in an
+# `Authorization` header is never rendered in cleartext in any log line (the redaction floor is
+# inherited, not re-implemented). qfs-http-core is a pure leaf (no reqwest/tokio/runtime), so
+# depending on it keeps qfs-tunnel a pure protocol leaf.
+qfs-http-core = { path = "../http-core" }
+# The redaction marker the handshake's manual `Debug` emits in place of the `cloud_token`, so a
+# `RelayHello` is never logged with the live qfs Cloud sign-in token (the same discipline
+# qfs-http-core applies to sensitive headers).
+qfs-secrets = { path = "../secrets" }
+# The handshake DTOs (`RelayHello`/`RelayAccepted`) are serde-serializable so the resident node and
+# the relay agree on one wire shape for the registration exchange (the "serde + length-prefixed
+# codec" the frames pair it with).
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

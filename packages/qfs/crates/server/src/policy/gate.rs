@@ -13,7 +13,8 @@ use std::collections::BTreeMap;
 use qfs_core::Plan;
 
 use super::audit::{FiredDecision, FiredPlanRecord};
-use super::enforce::{evaluate, PolicyDecision};
+use super::context::DecisionContext;
+use super::enforce::{evaluate, evaluate_with_context, PolicyDecision};
 use super::grammar::policy_from_def;
 use super::model::Policy;
 use crate::state::PolicyDef;
@@ -106,6 +107,19 @@ pub fn effect_summaries(plan: &Plan) -> Vec<String> {
 pub fn gate_plan(policy: &Policy, plan: &Plan) -> GateOutcome {
     GateOutcome {
         decision: evaluate(policy, plan),
+        effects: effect_summaries(plan),
+    }
+}
+
+/// Gate a built `plan` against `policy` for a **resolved** actor [`DecisionContext`] (t57). Same
+/// contract as [`gate_plan`], but the richer ACL axes (subject / realm-scope / `member_of`
+/// condition) are evaluated against `ctx`. Pure — `ctx` is resolved up front (the impure
+/// membership lookup is [`super::context::resolve_memberships`], called by the committer before
+/// this), so the gate itself does no I/O. The committer commits ONLY on `is_allow()`.
+#[must_use]
+pub fn gate_plan_with_context(policy: &Policy, plan: &Plan, ctx: &DecisionContext) -> GateOutcome {
+    GateOutcome {
+        decision: evaluate_with_context(policy, plan, ctx),
         effects: effect_summaries(plan),
     }
 }

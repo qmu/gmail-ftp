@@ -68,7 +68,7 @@ export default defineConfig({
         items: [
           { text: 'CLI reference', link: '/guide/cli' },
           { text: 'Interactive shell', link: '/guide/shell' },
-          { text: 'Accounts & credentials', link: '/guide/accounts' },
+          { text: 'Connections & credentials', link: '/guide/connections' },
         ],
       },
       {

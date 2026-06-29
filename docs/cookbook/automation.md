@@ -12,46 +12,79 @@ needed.
 **When mail arrives, post its subject to Slack:**
 
 ```qfs
-CREATE TRIGGER notify
-  ON /mail/inbox
-  DO INSERT INTO /slack/acme/general/messages VALUES (NEW.subject)
+create trigger notify
+  on /mail/inbox
+  do insert into /slack/acme/general/messages values (NEW.subject)
 ```
 
 **Only escalate high-priority mail** — triggers can filter on the new row with `NEW`:
 
 ```qfs
-CREATE TRIGGER escalate
-  ON inbox
-  WHERE NEW.priority > 3
-  DO INSERT INTO /slack/acme/ops/messages VALUES ('urgent mail')
+create trigger escalate
+  on inbox
+  where NEW.priority > 3
+  do insert into /slack/acme/ops/messages values ('urgent mail')
 ```
 
 **Archive every new row to another store:**
 
 ```qfs
-CREATE TRIGGER archive
-  ON /mail/inbox
-  DO UPSERT INTO /s3/archive/mail VALUES (NEW.id)
+create trigger archive
+  on /mail/inbox
+  do upsert into /s3/archive/mail values (NEW.id)
 ```
 
-## Job — run on a schedule
+## Job — a saved plan an external scheduler runs
 
-**Nightly cleanup of old scratch files** (`EVERY` takes a quoted interval):
+**qfs is not a scheduler.** A `JOB` is a *saved named plan plus its intended cadence* — qfs does not
+fire it itself. The `EVERY` interval is metadata an **external** scheduler reads; the *when* and the
+exactly-once guarantee belong to the platform, not to qfs.
+
+**Define the saved plan** (`EVERY` takes a quoted interval; attach a `POLICY` for least privilege):
 
 ```qfs
-CREATE JOB nightly
-  EVERY '1h'
-  DO REMOVE /tmp/scratch WHERE age > 7
+create policy cleanup ALLOW remove on 'local/*'
+create job nightly
+  every '1h'
+  do remove /tmp/scratch where age > 7
+  policy cleanup
 ```
+
+**Run it once** — the unit an external scheduler invokes. PREVIEW by default; `--commit` applies
+through the same policy gate + irreversible gate as `qfs run`:
+
+```sh
+qfs job run app.qfs nightly --commit
+# an irreversible plan (REMOVE / CALL) additionally needs --commit-irreversible (fail-closed)
+qfs job run app.qfs nightly --commit --commit-irreversible
+```
+
+**Individual / local — OS `cron`.** `qfs job cron` emits the crontab line for the saved cadence;
+drop it into a host crontab (ensure cron's environment carries `QFS_PASSPHRASE` and any connection
+credentials):
+
+```sh
+qfs job cron app.qfs nightly
+# 0 * * * *  qfs job run app.qfs nightly --commit
+```
+
+**Managed tier — Cloudflare Cron Triggers.** The same cadence becomes the `[triggers] crons` entry
+in the generated `wrangler.toml`; the platform owns distribution and exactly-once.
+
+::: warning Idempotency is yours now
+External schedulers are at-least-once (a Cron Trigger can double-fire on retry), and qfs keeps no
+internal run-ledger to dedup a re-fire. Keep effects idempotent — `UPSERT` / `@version`
+preconditions — so a re-run is a no-op.
+:::
 
 ## Endpoint — expose a query as an HTTP API
 
 **A read-only `GET /recent` that returns the latest inbox items:**
 
 ```qfs
-CREATE ENDPOINT recent
-  ON 'GET /recent'
-  AS FROM /mail/inbox |> LIMIT 5
+create endpoint recent
+  on 'GET /recent'
+  as /mail/inbox |> limit 5
 ```
 
 ## View — name and cache a query
@@ -59,15 +92,15 @@ CREATE ENDPOINT recent
 **A plain view** (a named query):
 
 ```qfs
-CREATE VIEW recent_mail
-  AS FROM /mail/inbox |> LIMIT 50
+create view recent_mail
+  as /mail/inbox |> limit 50
 ```
 
 **A materialized view** (cached result):
 
 ```qfs
-CREATE MATERIALIZED VIEW cached
-  AS FROM /mail/inbox |> LIMIT 50
+create materialized view cached
+  as /mail/inbox |> limit 50
 ```
 
 ## Policy — least privilege
@@ -78,16 +111,16 @@ path pattern.
 **Read-only API access:**
 
 ```qfs
-CREATE POLICY api
-  ALLOW SELECT
-  DENY INSERT, UPDATE, REMOVE, CALL
+create policy api
+  ALLOW select
+  DENY INSERT, update, remove, call
 ```
 
 **Allow uploads to one bucket prefix only:**
 
 ```qfs
-CREATE POLICY uploads
-  ALLOW UPSERT ON 's3/*'
+create policy uploads
+  ALLOW UPSERT on 's3/*'
 ```
 
 ::: tip Why this is safe

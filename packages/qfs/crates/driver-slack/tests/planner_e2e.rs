@@ -26,7 +26,7 @@ use qfs_plan::{
     preview, DriverId, EffectKind, EffectNode, NodeId, PlanBuilder, ProcId, Target, VfsPath,
 };
 use qfs_runtime::{CapabilitySet, DriverRegistry, Interpreter, LegStatus, Outcome, SharedApplier};
-use qfs_secrets::{AccountId, CredentialKey, InMemoryStore, Secret, Secrets};
+use qfs_secrets::{ConnectionId, CredentialKey, InMemoryStore, Secret, Secrets};
 use qfs_types::{CmpOp, ColRef, Column, Literal, Predicate, Row, RowBatch, Schema, Value};
 
 use qfs_driver_slack::{
@@ -80,7 +80,7 @@ fn store() -> (Arc<dyn Secrets>, CredentialKey) {
     let store = InMemoryStore::new();
     let key = CredentialKey::new(
         qfs_secrets::DriverId::new("slack"),
-        AccountId::new("work").unwrap(),
+        ConnectionId::new("work").unwrap(),
     );
     store
         .put(&key, Secret::new(BOT_TOKEN.as_bytes().to_vec()))

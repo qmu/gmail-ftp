@@ -62,6 +62,6 @@ qfs describe /mail/drafts
 qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com', 'Hi', 'Body text')"
 ```
 
-When you're ready to act on real services, [add an account](/guide/accounts).
+When you're ready to act on real services, [add a connection](/guide/connections).
 
 **Next:** [Your first queries →](/guide/getting-started)

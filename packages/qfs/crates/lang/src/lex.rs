@@ -23,9 +23,14 @@
 //! * **`@version` in paths.** `@` binds to the preceding path segment; the raw ref
 //!   text (git ref, S3 versionId, drive rev — RFD §4) is preserved without
 //!   interpretation.
-//! * **Multi-word keywords.** `GROUP BY`, `INSERT INTO`, … are emitted as separate
-//!   adjacent tokens (their lead words surface as uppercase [`Token::Ident`]);
-//!   composition is the parser's job (RFD §3).
+//! * **Keyword case (t74, decision S).** Closed-core keywords are recognized
+//!   **case-insensitively** and are canonically **lowercase** (`where`, `select`,
+//!   `insert into`, …): the word lexer folds a word's case before matching
+//!   [`Keyword::from_word`], so `SELECT`/`Select`/`select` all lex to the same
+//!   [`Token::Keyword`]. Identifiers, paths, and literals stay case-sensitive data.
+//! * **Multi-word keywords.** `group by`, `insert into`, … are emitted as separate
+//!   adjacent tokens (their lead words surface as [`Token::Ident`]); composition is
+//!   the parser's job (RFD §3).
 //!
 //! ## Security note (no-live-creds by construction)
 //! The lexer must never be fed credential material: errors quote source spans, so
@@ -51,7 +56,7 @@ use crate::token::{literal_word, LitType, PathSeg, SizeUnit, Token};
 /// ```
 /// use qfs_lang::lex::lex;
 /// use qfs_lang::token::Token;
-/// let toks = lex("FROM mail").expect("valid");
+/// let toks = lex("WHERE mail").expect("valid");
 /// assert_eq!(toks.len(), 2);
 /// assert!(matches!(toks[1].node, Token::Ident(ref s) if s == "mail"));
 /// ```
@@ -388,7 +393,7 @@ impl Lexer {
             return Ok(());
         }
 
-        // Reserved single-word keyword (case-sensitive UPPERCASE).
+        // Reserved single-word keyword (case-insensitive; canonical form is lowercase, t74).
         if let Some(kw) = Keyword::from_word(&word) {
             self.push(start, Token::Keyword(kw));
             return Ok(());
@@ -459,6 +464,13 @@ impl Lexer {
             self.bump();
             self.bump();
             Token::Arrow
+        } else if two('=', '=') {
+            // Maximal munch: `==` (equivalence) before a lone `=` (bind). The `=>`
+            // (Arrow) check above already won where applicable, so the three forms
+            // `=>` / `==` / `=` are each unambiguous (RFD decision O, ticket t70).
+            self.bump();
+            self.bump();
+            Token::EqEq
         } else {
             let single = match ch.c {
                 '=' => Token::Eq,
@@ -467,7 +479,11 @@ impl Lexer {
                 '~' => Token::Tilde,
                 '(' => Token::LParen,
                 ')' => Token::RParen,
+                '{' => Token::LBrace,
+                '}' => Token::RBrace,
+                ';' => Token::Semicolon,
                 ',' => Token::Comma,
+                ':' => Token::Colon,
                 '.' => Token::Dot,
                 '*' => Token::Star,
                 other => {

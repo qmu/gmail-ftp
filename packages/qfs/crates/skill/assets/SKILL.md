@@ -14,8 +14,8 @@ github, slack, sql, git, object storage, and the qfs server itself — is reache
 
 ```text
 qfs describe /mail/drafts -json     # step 1 — the contract
-qfs run 'INSERT INTO /mail/drafts …'  # step 2+3 — PREVIEW by default
-qfs run 'INSERT INTO /mail/drafts …' --commit   # step 4 — apply
+qfs run 'insert into /mail/drafts …'  # step 2+3 — PREVIEW by default
+qfs run 'insert into /mail/drafts …' --commit   # step 4 — apply
 ```
 
 `DESCRIBE` is **pure**: no credentials, no I/O, no network. You can always describe a node to
@@ -68,6 +68,15 @@ The four archetypes (RFD §5):
    contract bug to fix in the driver, never prose to bolt onto this skill. DESCRIBE is the only
    thing you read.
 
+6. **Cloud connections require sign-in (M4).** A driver that reaches an external service over OAuth
+   (gmail, gdrive, ga, github, slack, objstore, cf) is a **cloud** driver: it is unusable until you
+   have signed in to qfs identity (`qfs identity signup <email>`) **and** added a connection for it
+   (`qfs connection add <driver> <name>`), which records your consent against that connection. An
+   unauthenticated operator fails closed — a cloud driver will not bind a credential at COMMIT
+   without a consented, signed-in connection. Local drivers (`local`, `git`, `sql`, `sys`) are
+   ungated. (DESCRIBE/PREVIEW stay pure — sign-in and consent happen only at bind/commit time, never
+   from a `preview`.)
+
 ---
 
 ## Worked examples (one per driver — identical four steps)
@@ -88,8 +97,8 @@ network, no live creds**.
    ```
 2. **Statement** — create the draft, then send it (the `SEND` alias desugars to `CALL mail.send`):
    ```text
-   INSERT INTO /mail/drafts VALUES ('alice@example.com', 'Hi', 'Body text')
-   FROM /mail/drafts |> CALL mail.send
+   insert into /mail/drafts values ('alice@example.com', 'Hi', 'Body text')
+   /mail/drafts |> call mail.send
    ```
 3. **PREVIEW** — the draft `INSERT` is reversible (affected 1); the `CALL mail.send` is an
    **irreversible** node. PREVIEW shows `irreversible: true` on the send.
@@ -105,7 +114,7 @@ network, no live creds**.
    `UPSERT` blob write (RFD §6); the corpus pins that closed-core form:
    ```text
    cp /local/report.pdf /drive/my/Reports/
-   -- lowers to: UPSERT INTO /drive/my/Reports/report.pdf VALUES (<bytes>)
+   -- lowers to: upsert into /drive/my/Reports/report.pdf values (<bytes>)
    ```
 3. **PREVIEW** — the plan is **copy → verify → delete**; for `cp` the delete leg is absent
    (a copy keeps the source). Affected: 1 object uploaded.
@@ -117,7 +126,7 @@ network, no live creds**.
    "object_graph_workflow"`, a `merge` procedure with `irreversible: true`.
 2. **Statement** — squash-merge a PR (an object-graph state transition):
    ```text
-   FROM /github/acme/web/pulls/42 |> CALL github.merge(method => 'squash')
+   /github/acme/web/pulls/42 |> call github.merge(method => 'squash')
    ```
 3. **PREVIEW** — one **irreversible** `CALL` node. Affected: 1 PR.
 4. **COMMIT** — needs `--commit --commit-irreversible`. A merge cannot be undone — treat it as a gate.
@@ -130,19 +139,19 @@ network, no live creds**.
    special case. Use the bare form in a write target.)
 2. **Statement** — append a message to a channel:
    ```text
-   INSERT INTO /slack/acme/general/messages VALUES ('Deploy finished')
+   insert into /slack/acme/general/messages values ('Deploy finished')
    ```
 3. **PREVIEW** — one reversible `INSERT` (append). Affected: 1 message.
 4. **COMMIT** — `--commit` posts it. An append log only supports `SELECT(tail)` + `INSERT(append)`
    — DESCRIBE will not show `UPDATE`/`REMOVE`, so don't reach for them.
 
-### sql — relational_table, pushdown (`FROM /sql/pg/orders |> WHERE total > 100 |> SELECT id,total`)
+### sql — relational_table, pushdown (`/sql/pg/orders |> WHERE total > 100 |> SELECT id,total`)
 
 1. **DESCRIBE** `qfs describe /sql/pg/orders -json` → `"archetype": "relational_table"`,
    `pushdown.where: true`, `pushdown.project: true`. This is a **pure read** — no COMMIT at all.
 2. **Statement** — a filtered, projected read (the predicate + projection push **down** to Postgres):
    ```text
-   FROM /sql/pg/orders |> WHERE total > 100 |> SELECT id, total
+   /sql/pg/orders |> where total > 100 |> select id, total
    ```
 3. **PREVIEW** — a read has no effect plan; PREVIEW is the query itself. The pushdown summary tells
    you `WHERE total > 100` runs in the database, not locally.
@@ -154,8 +163,8 @@ network, no live creds**.
    is relational/append, the worktree is a versioned blob namespace (`version_support: versioned`).
 2. **Statement** — record a commit, and read a file as-of a ref (the `@<ref>` temporal coordinate):
    ```text
-   INSERT INTO /git/myrepo/commits VALUES ('add feature', 'main')
-   FROM /git/myrepo@v1.0/README.md
+   insert into /git/myrepo/commits values ('add feature', 'main')
+   /git/myrepo@v1.0/README.md
    ```
 3. **PREVIEW** — the commit `INSERT` is one reversible node (a new commit; history is append-only).
    The `@v1.0` read is pure.
@@ -168,7 +177,7 @@ network, no live creds**.
    relational binding table. The server is configured **by writing rows**, like any other node.
 2. **Statement** — a `CREATE TRIGGER` desugars to exactly one `/server/triggers` config write:
    ```text
-   CREATE TRIGGER notify ON inbox DO INSERT INTO /log VALUES ('mail arrived')
+   create trigger notify on inbox do insert into /log values ('mail arrived')
    ```
 3. **PREVIEW** — one reversible `/server` config-write node. This is the **PREVIEW-as-CI-test**
    pattern (RFD §8): you assert the plan a fired handler would commit, with no socket and no backend.

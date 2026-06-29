@@ -53,7 +53,7 @@ use crate::stdlib::{BuiltinEval, FnError, StdlibRegistry};
 /// names only — never a driver SDK struct (RFD §9).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanSource {
-    /// `FROM /driver/...` — a logical scan of a path (a description, not a read).
+    /// `/driver/...` — a logical scan of a path (a description, not a read).
     Scan {
         /// The driver this relation reads from.
         driver: DriverId,
@@ -213,6 +213,34 @@ pub enum EvalError {
         /// A machine-facing description of why the driver could not lower the write.
         detail: String,
     },
+    /// A `TRANSACTION { … }` block (M6, ticket t62, decision G) contained an **irreversible**
+    /// effect. A transaction promises all-or-nothing rollback, so every effect inside MUST be
+    /// reversible — an irreversible one (a `REMOVE`, an irreversible `CALL`) is rejected here, at
+    /// plan time, *before* anything touches the world (the strongest safety posture; outside a
+    /// transaction the same effect would merely need an extra ack). Carries the offending effect's
+    /// secret-free label so the author (human or AI) can lift it OUT of the block.
+    IrreversibleInTransaction {
+        /// The offending effect's stable label (e.g. `REMOVE`, `CALL`).
+        effect: String,
+    },
+    /// A lambda (M6, ticket t61) was applied with the wrong number of arguments — e.g. a
+    /// `(x) => …` one-param lambda called with two arguments, or a `reduce` lambda that does
+    /// not take `(acc, element)`. A *typed*, AI-consumable error, never a panic. Carries the
+    /// declared parameter count and the count supplied.
+    LambdaArity {
+        /// The number of parameters the lambda declares.
+        expected: usize,
+        /// The number of arguments supplied at application.
+        found: usize,
+    },
+    /// A value used in **function position** (the lambda argument of `map`/`filter`/`reduce`,
+    /// or the callee of an application) was not a function/lambda (M6, ticket t61) — e.g.
+    /// `map(coll, 3)`. Carries a secret-free description of the offending value's shape so the
+    /// author can supply a lambda instead.
+    NotAFunction {
+        /// A machine-facing description of the non-function value's shape.
+        detail: String,
+    },
 }
 
 impl EvalError {
@@ -226,6 +254,9 @@ impl EvalError {
             EvalError::UnroutedPath { .. } => "unrouted_path",
             EvalError::NonLiteralValues { .. } => "non_literal_values",
             EvalError::DriverWrite { .. } => "driver_write",
+            EvalError::IrreversibleInTransaction { .. } => "irreversible_in_transaction",
+            EvalError::LambdaArity { .. } => "lambda_arity",
+            EvalError::NotAFunction { .. } => "not_a_function",
         }
     }
 }
@@ -342,6 +373,23 @@ impl<'r> Evaluator<'r> {
         Ok(builtin.sig.returns.clone())
     }
 
+    /// Type-check a filter/predicate expression at **plan time** against `schema` (decision T,
+    /// ticket t75). The static primitive type checker is the **stdlib-wired tightening** —
+    /// mirroring t08's `fn(...)` return typing: without a function registry the expression stays
+    /// late-bound (the t07 behaviour, so `Evaluator::new` is unchanged); with one wired, the plan
+    /// pass enforces the primitive type lattice (comparisons, built-in argument types, lambda
+    /// parameters/bodies) before any effect node is constructed. Pure — no I/O.
+    ///
+    /// # Errors
+    /// [`EvalError::Type`] for an incomparable comparison / predicate operand, or
+    /// [`EvalError::Fn`] for a call typed against a bad argument / aggregate context.
+    fn typecheck_predicate(&self, expr: &Expr, schema: &Schema) -> Result<(), EvalError> {
+        if let Some(stdlib) = self.stdlib {
+            crate::typeck::check_expr(expr, &crate::typeck::TyEnv::new(), schema, Some(stdlib))?;
+        }
+        Ok(())
+    }
+
     /// Evaluate a statement to its [`EvalValue`] (RFD §3 entry point). Resolution (the
     /// t06 capability/procedure gate) runs **first**, so a denied verb or unknown
     /// procedure never reaches a plan; then the pure fold builds the relation/plan.
@@ -350,22 +398,105 @@ impl<'r> Evaluator<'r> {
     /// [`EvalError`] for any unresolvable name, capability denial, ill-typed stage, or
     /// unrouted path.
     pub fn eval(&self, stmt: &Statement) -> Result<EvalValue, EvalError> {
-        // Resolve-time gate first (RFD §5): denied verbs / unknown procs fail before a
-        // plan exists.
+        // Resolve-time gate first (RFD §5): denied verbs / unknown procs / unbound names
+        // fail before a plan exists.
         self.resolver.resolve_statement(stmt)?;
-        self.eval_inner(stmt)
+        let env = Env::default();
+        self.eval_inner(stmt, &env)
     }
 
-    fn eval_inner(&self, stmt: &Statement) -> Result<EvalValue, EvalError> {
+    fn eval_inner(&self, stmt: &Statement, env: &Env) -> Result<EvalValue, EvalError> {
         match stmt {
-            Statement::Query(pipeline) => Ok(EvalValue::Relation(self.fold_query(pipeline)?)),
-            Statement::Effect(effect) => Ok(EvalValue::Plan(self.eval_write(effect)?)),
+            Statement::Query(pipeline) => Ok(EvalValue::Relation(self.fold_query(pipeline, env)?)),
+            Statement::Effect(effect) => Ok(EvalValue::Plan(self.eval_write(effect, env)?)),
             // PREVIEW/COMMIT are transparent to evaluation: the plan they wrap is the
             // inner statement's plan (the dry-run/apply distinction is t10's interpreter).
-            Statement::Plan(PlanWrap { inner, .. }) => self.eval_inner(inner),
+            Statement::Plan(PlanWrap { inner, .. }) => self.eval_inner(inner, env),
+            // A `LET` binding (M6, t60): fold the bound relation once, bind it for the body's
+            // scope (lexical, shadowing allowed — `with` returns a child env), then evaluate
+            // the body. The binding flows in as a `PlanSource` (a selector/relation), never a
+            // secret — so the purity floor holds: a `LET` introduces no I/O and no effect node.
+            Statement::Let { name, value, body } => {
+                let rel = self.eval_relation(value, env)?;
+                let inner = env.with(name, rel);
+                self.eval_inner(body, &inner)
+            }
+            // A `TRANSACTION { … }` block (M6, t62): lower the body into ONE plan in commit-point
+            // (source) order, then enforce the reversible-only invariant. This is the parse/eval-
+            // time gate — no I/O, fully dry-runnable; an irreversible effect inside is a hard error.
+            Statement::Transaction { body, .. } => {
+                Ok(EvalValue::Plan(self.eval_transaction(body, env)?))
+            }
             // Server DDL desugars to `/server/...` effects in a later epic; here it
             // evaluates to an empty plan (no effect node to construct yet, ticket scope).
             Statement::Ddl(_) => Ok(EvalValue::Plan(Plan::pure())),
+        }
+    }
+
+    /// Lower a `TRANSACTION { … }` block (M6, ticket t62, decision G) into ONE effect [`Plan`] and
+    /// enforce the **reversible-only** invariant. Each body statement is an effect (grammar-
+    /// enforced); its sub-plan is sequenced after the previous one with [`Plan::then`], so the
+    /// nodes carry a deterministic **commit-point ordering** (the block's source order) that
+    /// [`topo_order`](qfs_plan::topo_order) recovers for the all-or-nothing apply.
+    ///
+    /// The guard then walks every node: if any is inherently irreversible
+    /// ([`EffectKind::is_inherently_irreversible`] — `REMOVE` always) OR carries the per-node
+    /// [`EffectNode::irreversible`] flag (a driver/proc that declared a `CALL` irreversible at
+    /// plan time), the whole block is rejected with [`EvalError::IrreversibleInTransaction`] and
+    /// **zero** effects are applied — a transaction promises rollback, so it may hold no effect
+    /// that cannot be undone. This is *stricter* than the outside-transaction
+    /// [`IrreversibleGuard`](crate::IrreversibleGuard), which only requires an extra ack.
+    ///
+    /// # Errors
+    /// [`EvalError`] for any unresolvable/ill-typed body effect, or
+    /// [`EvalError::IrreversibleInTransaction`] if any effect inside is irreversible.
+    fn eval_transaction(&self, body: &[Statement], env: &Env) -> Result<Plan, EvalError> {
+        let mut plan = Plan::pure();
+        // Each member plan is built by its own `PlanBuilder` starting node ids at 0, so the ids
+        // would collide when combined. Shift every member into a fresh, contiguous id range before
+        // sequencing so the assembled DAG has unique ids (the `validate`/topo invariant holds).
+        let mut next_base: u32 = 0;
+        for stmt in body {
+            // Each member is an effect (the grammar admits nothing else); fold its plan in. A
+            // non-plan value would be a grammar/invariant break, surfaced structurally not by panic.
+            let member = match self.eval_inner(stmt, env)? {
+                EvalValue::Plan(p) => p,
+                EvalValue::Relation(_) => {
+                    return Err(EvalError::NonLiteralValues {
+                        detail: "a TRANSACTION body holds only effect statements".to_string(),
+                    })
+                }
+            };
+            let (member, used) = relabel_plan(member, next_base);
+            next_base += used;
+            // Sequence: `then` makes every later effect depend on the earlier ones, so the
+            // commit-point order is exactly the block's source order (the topo walk is total).
+            plan = plan.then(member);
+        }
+        // Reversible-only gate (decision G): fire on the inherent classification AND the per-node
+        // flag, so a driver that marks a `CALL` irreversible at plan time is caught too.
+        if let Some(node) = plan
+            .nodes()
+            .iter()
+            .find(|n| n.irreversible || n.kind.is_inherently_irreversible())
+        {
+            return Err(EvalError::IrreversibleInTransaction {
+                effect: node.kind.label().to_string(),
+            });
+        }
+        Ok(plan)
+    }
+
+    /// Evaluate a `LET` binding's value to its relation [`PlanSource`]. The grammar restricts
+    /// a binding value to a relation (a `Statement::Query` pipeline), so this always folds a
+    /// query; the non-relation arm is unreachable in practice (an effect value fails to parse)
+    /// and is mapped to a structured error rather than panicking (lib code stays panic-free).
+    fn eval_relation(&self, stmt: &Statement, env: &Env) -> Result<PlanSource, EvalError> {
+        match self.eval_inner(stmt, env)? {
+            EvalValue::Relation(rel) => Ok(rel),
+            EvalValue::Plan(_) => Err(EvalError::NonLiteralValues {
+                detail: "a LET binds a relation, not an effect".to_string(),
+            }),
         }
     }
 
@@ -374,17 +505,24 @@ impl<'r> Evaluator<'r> {
     /// Left-fold a read pipeline into a [`PlanSource`], threading the output schema
     /// through each `|>` stage (RFD §2.2). The source schema comes from the driver's
     /// pure `describe`; each op transforms it via the t05 schema algebra.
-    fn fold_query(&self, pipeline: &Pipeline) -> Result<PlanSource, EvalError> {
-        let mut src = self.eval_source(&pipeline.source)?;
+    fn fold_query(&self, pipeline: &Pipeline, env: &Env) -> Result<PlanSource, EvalError> {
+        let mut src = self.eval_source(&pipeline.source, env)?;
         for op in &pipeline.ops {
-            src = self.fold_op(src, op)?;
+            src = self.fold_op(src, op, env)?;
         }
         Ok(src)
     }
 
-    /// Evaluate a pipeline source into the base [`PlanSource`] (RFD §2.2).
-    fn eval_source(&self, source: &Source) -> Result<PlanSource, EvalError> {
+    /// Evaluate a pipeline source into the base [`PlanSource`] (RFD §2.2). A bare-identifier
+    /// source (`FROM <name>`) resolves to its `LET`-bound relation in `env` (M6, t60) — the
+    /// stored selector flows in, never re-reading a mount.
+    fn eval_source(&self, source: &Source, env: &Env) -> Result<PlanSource, EvalError> {
         match source {
+            // A `LET`-bound name substitutes its stored relation (t60). Resolution already
+            // validated the name; a miss here is still a structured error, never a panic.
+            Source::Name(name) => env.get(name).cloned().ok_or_else(|| {
+                EvalError::Resolve(ResolveError::UnknownBinding { name: name.clone() })
+            }),
             Source::Path(path) => {
                 let full = render_path(
                     &path
@@ -408,17 +546,25 @@ impl<'r> Evaluator<'r> {
             Source::Values(values) => Ok(PlanSource::Values {
                 schema: values_schema(values),
             }),
-            Source::Subquery(inner) => self.fold_query(inner),
+            Source::Subquery(inner) => self.fold_query(inner, env),
         }
     }
 
     /// Fold one pipe op onto the current relation, computing its output schema (RFD §3).
-    fn fold_op(&self, input: PlanSource, op: &PipeOp) -> Result<PlanSource, EvalError> {
+    fn fold_op(&self, input: PlanSource, op: &PipeOp, env: &Env) -> Result<PlanSource, EvalError> {
         match op {
-            // Schema-preserving filter.
-            PipeOp::Where(_) => Ok(PlanSource::Filter {
-                input: Box::new(input),
-            }),
+            // Schema-preserving filter. The filter predicate is **type-checked at plan time**
+            // against the input schema (decision T, ticket t75) when the function registry is
+            // wired: a mismatched comparison (`WHERE total == 'paid'` over an `i64` column), a
+            // built-in handed a bad argument type, or a lambda applied to the wrong element
+            // type is a structured plan-time error here — before any I/O, so a type-failing
+            // pipeline never reaches preview/commit.
+            PipeOp::Where(predicate) => {
+                self.typecheck_predicate(predicate, input.schema())?;
+                Ok(PlanSource::Filter {
+                    input: Box::new(input),
+                })
+            }
             // Projection narrows to the named columns (t05 `project` is the source of truth).
             // `SELECT` types `fn(...)` projections as scalars; `AGGREGATE` types them under
             // the aggregate-context rule (t08 dispatch).
@@ -470,7 +616,7 @@ impl<'r> Evaluator<'r> {
             }),
             // Set operations: unify the two sides' schemas column-wise (RFD §4).
             PipeOp::Union(p) | PipeOp::Except(p) | PipeOp::Intersect(p) => {
-                let rhs = self.fold_query(p)?;
+                let rhs = self.fold_query(p, env)?;
                 let schema = Schema::unify(input.schema(), rhs.schema())?;
                 Ok(PlanSource::SetOp {
                     lhs: Box::new(input),
@@ -479,7 +625,7 @@ impl<'r> Evaluator<'r> {
                 })
             }
             PipeOp::Join(join) => {
-                let rhs = self.eval_source(&join.source)?;
+                let rhs = self.eval_source(&join.source, env)?;
                 let mut cols = input.schema().columns.clone();
                 cols.extend(rhs.schema().columns.clone());
                 let schema = Schema::new(cols);
@@ -514,7 +660,23 @@ impl<'r> Evaluator<'r> {
     /// pipeline (no `_` arm). The effect node depends on any input relation (an
     /// `INSERT … FROM <query>` body), `REMOVE` is flagged inherently irreversible, and the
     /// optional `RETURNING` projection schema is attached.
-    fn eval_write(&self, effect: &EffectStmt) -> Result<Plan, EvalError> {
+    fn eval_write(&self, effect: &EffectStmt, env: &Env) -> Result<Plan, EvalError> {
+        // Plan-time type check of an `UPDATE … SET … WHERE` / `REMOVE … WHERE` filter (decision T,
+        // ticket t75): the filter predicate is checked against the target's described schema before
+        // any effect node is built, so a mismatched key comparison fails at plan time, never at
+        // commit. Skipped for an unrouted target (no schema to check against — late-bound).
+        if self.stdlib.is_some() {
+            if let EffectBody::SetWhere {
+                filter: Some(filter),
+                ..
+            } = &effect.body
+            {
+                if let Ok(schema) = self.effect_input_schema(effect, env) {
+                    self.typecheck_predicate(filter, &schema)?;
+                }
+            }
+        }
+
         let full = render_path(
             &effect
                 .target
@@ -543,7 +705,7 @@ impl<'r> Evaluator<'r> {
         // dependency the write hangs off (the `INSERT … FROM <query>` case).
         let dep: Option<NodeId> = match &effect.body {
             EffectBody::Pipeline(p) => {
-                let rel = self.fold_query(p)?;
+                let rel = self.fold_query(p, env)?;
                 let read =
                     EffectNode::new(builder.next_id(), EffectKind::Read, source_target(&rel))
                         .with_affected(Affected::Unknown);
@@ -558,7 +720,7 @@ impl<'r> Evaluator<'r> {
         // in order (the applier maps the row's named columns onto the backend columns). WITHOUT
         // this, an `INSERT … VALUES` reaches the applier with an empty payload — a silent no-op.
         let values_args: Option<RowBatch> = match &effect.body {
-            EffectBody::Values(v) => Some(self.values_row_batch(effect, v)?),
+            EffectBody::Values(v) => Some(self.values_row_batch(effect, v, env)?),
             EffectBody::SetWhere { set, filter } => Some(setwhere_row_batch(set, filter.as_ref())?),
             EffectBody::Pipeline(_) => None,
         };
@@ -598,7 +760,7 @@ impl<'r> Evaluator<'r> {
 
         // The RETURNING projection schema, computed against the effect's input schema.
         if let Some(returning) = &effect.returning {
-            let input_schema = self.effect_input_schema(effect)?;
+            let input_schema = self.effect_input_schema(effect, env)?;
             let schema = self.project_schema(&input_schema, returning, false)?;
             plan = plan.returning(schema);
         }
@@ -616,6 +778,7 @@ impl<'r> Evaluator<'r> {
         &self,
         effect: &EffectStmt,
         values: &Values,
+        env: &Env,
     ) -> Result<RowBatch, EvalError> {
         let width = values.rows.first().map_or(0, Vec::len);
         // Column names: explicit list, else the target's described columns in order.
@@ -630,7 +793,7 @@ impl<'r> Evaluator<'r> {
                 // than the row — so a PREVIEW works with no mount (mirroring `values_schema`), never
                 // erroring just because the row payload is being built.
                 let described = self
-                    .effect_input_schema(effect)
+                    .effect_input_schema(effect, env)
                     .map(|s| s.columns)
                     .unwrap_or_default();
                 (0..width)
@@ -657,9 +820,9 @@ impl<'r> Evaluator<'r> {
     /// The schema the effect reads/writes against — the sub-pipeline's output schema for a
     /// `FROM`-bodied effect, otherwise the target node's described schema. Used to type a
     /// `RETURNING` projection.
-    fn effect_input_schema(&self, effect: &EffectStmt) -> Result<Schema, EvalError> {
+    fn effect_input_schema(&self, effect: &EffectStmt, env: &Env) -> Result<Schema, EvalError> {
         if let EffectBody::Pipeline(p) = &effect.body {
-            return Ok(self.fold_query(p)?.schema().clone());
+            return Ok(self.fold_query(p, env)?.schema().clone());
         }
         let full = render_path(
             &effect
@@ -740,6 +903,31 @@ impl<'r> Evaluator<'r> {
     }
 }
 
+/// The lexical binding environment for `LET` (M6, ticket t60): a bound name → its evaluated
+/// relation [`PlanSource`]. A bare-identifier source (`FROM <name>`) substitutes the stored
+/// relation rather than re-reading a mount, so a `LET`-bound relation is folded **once** and
+/// reused. Cheap to extend by value ([`Env::with`]) so each `LET` body gets its own immutable
+/// child env — shadowing is a plain re-insert and the parent env is never mutated. A bound
+/// value is a relation description (a selector), never a secret, so the purity floor holds.
+#[derive(Debug, Clone, Default)]
+struct Env {
+    bindings: std::collections::HashMap<String, PlanSource>,
+}
+
+impl Env {
+    /// A child env with `name` bound to `rel` (shadowing any same-named outer binding).
+    fn with(&self, name: &str, rel: PlanSource) -> Self {
+        let mut bindings = self.bindings.clone();
+        bindings.insert(name.to_string(), rel);
+        Self { bindings }
+    }
+
+    /// The relation bound to `name`, if it is in scope.
+    fn get(&self, name: &str) -> Option<&PlanSource> {
+        self.bindings.get(name)
+    }
+}
+
 // ---- Free helpers (pure) ----
 
 /// The `Target` of a relation source (its scanned driver/path), or a synthetic empty
@@ -756,6 +944,22 @@ fn source_target(rel: &PlanSource) -> Target {
         PlanSource::SetOp { lhs, .. } | PlanSource::Join { lhs, .. } => source_target(lhs),
         PlanSource::Values { .. } => Target::new(DriverId::new(""), VfsPath::new("")),
     }
+}
+
+/// Shift every [`NodeId`] in `plan` up by `base`, returning the relabelled plan and the number of
+/// ids it consumed (its node count) so the next member can continue the contiguous range. Used to
+/// combine independently-built member plans inside a `TRANSACTION` block (each member's
+/// [`PlanBuilder`] restarts ids at 0, so they must be disjointified before sequencing).
+fn relabel_plan(mut plan: Plan, base: u32) -> (Plan, u32) {
+    let count = plan.nodes.len() as u32;
+    for node in &mut plan.nodes {
+        node.id = NodeId(node.id.index() + base);
+    }
+    for (parent, child) in &mut plan.deps {
+        *parent = NodeId(parent.index() + base);
+        *child = NodeId(child.index() + base);
+    }
+    (plan, count)
 }
 
 /// Render a segment list into a `/seg/seg` mount path string for the router.
@@ -796,8 +1000,8 @@ fn describe_schema(driver: &dyn Driver, vfs: &str) -> Result<Schema, EvalError> 
 /// column names are honoured; otherwise positional `col0, col1, …` names are synthesised.
 /// Lower an `UPDATE … SET … WHERE …` / `REMOVE … WHERE …` body into the effect's row payload. The
 /// row carries the `SET` columns (the new values) plus the equality-key columns extracted from the
-/// `WHERE` (`col = <const>` leaves) — exactly what a key-addressed applier (e.g. the SQL driver)
-/// splits into `SET <non-key>` + `WHERE <key>`. A bare `REMOVE … WHERE id = 1` yields a one-column
+/// `WHERE` (`col == <const>` leaves) — exactly what a key-addressed applier (e.g. the SQL driver)
+/// splits into `SET <non-key>` + `WHERE <key>`. A bare `REMOVE … WHERE id == 1` yields a one-column
 /// `[id]` row; a non-equality filter contributes no key column (the applier then rejects an
 /// un-keyed whole-table write, honestly). Constants only — a non-literal `SET`/`WHERE` value is a
 /// structured [`EvalError::NonLiteralValues`].
@@ -822,7 +1026,7 @@ fn setwhere_row_batch(
     Ok(RowBatch::new(Schema::new(cols), vec![Row::new(vals)]))
 }
 
-/// Collect `col = <const>` equality leaves from a `WHERE` predicate (recursing through `AND`),
+/// Collect `col == <const>` equality leaves from a `WHERE` predicate (recursing through `AND`),
 /// returning each as `(column, value)`. Non-equality leaves, `OR`, and non-constant right-hand
 /// sides are skipped — they carry no key the applier can address by, which the applier surfaces as
 /// an honest "supply the key column(s)" rejection rather than a wrong-row write.

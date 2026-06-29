@@ -21,7 +21,7 @@
 //! bare identifier matching a declared route param, and that identifier **must be distinct
 //! from any column name** the query references (so the rewrite cannot ambiguously substitute a
 //! column). The natural authoring form:
-//! `CREATE ENDPOINT GET /items/:p_id AS (FROM /mock/items |> WHERE id = p_id)` — the route
+//! `CREATE ENDPOINT GET /items/:p_id AS (/mock/items |> WHERE id = p_id)` — the route
 //! param `:p_id` is distinct from the `id` column, so the LHS `id` stays a column and the RHS
 //! `p_id` is the param slot bound from the path segment. EVERY [`Expr::Col`] whose identifier
 //! is a declared param is substituted; a param name colliding with a column name would
@@ -73,6 +73,17 @@ pub fn bind_params(stmt: &mut Statement, args: &QueryArgs) {
             }
         }
         Statement::Plan(PlanWrap { inner, .. }) => bind_params(inner, args),
+        // A `LET` program (M6, t60): bind params through both the bound value and the body.
+        Statement::Let { value, body, .. } => {
+            bind_params(value, args);
+            bind_params(body, args);
+        }
+        // A `TRANSACTION { … }` block (M6, t62): bind params through every effect member.
+        Statement::Transaction { body, .. } => {
+            for member in body {
+                bind_params(member, args);
+            }
+        }
     }
 }
 
@@ -89,6 +100,8 @@ fn rewrite_source(s: &mut Source, args: &QueryArgs) {
         Source::Path(_) => {}
         Source::Values(v) => rewrite_values(v, args),
         Source::Subquery(p) => rewrite_pipeline(p, args),
+        // A bare `LET`-bound name (M6, t60) is a structural reference, never a value slot.
+        Source::Name(_) => {}
     }
 }
 
@@ -189,6 +202,9 @@ fn rewrite_expr(e: &mut Expr, args: &QueryArgs) {
             rewrite_expr(expr, args);
             rewrite_expr(pattern, args);
         }
+        // A lambda body (M6, t61) is walked like any sub-expression so a bound param slot
+        // inside it is still substituted.
+        Expr::Lambda { body, .. } => rewrite_expr(body, args),
         // A literal is already a value; a path is struct navigation, not a param slot.
         Expr::Lit(_) | Expr::Path(_) => {}
     }
@@ -239,6 +255,17 @@ fn collect_stmt(stmt: &Statement, out: &mut std::collections::BTreeSet<String>) 
             }
         }
         Statement::Plan(PlanWrap { inner, .. }) => collect_stmt(inner, out),
+        // A `LET` program (M6, t60): collect referenced columns from value + body.
+        Statement::Let { value, body, .. } => {
+            collect_stmt(value, out);
+            collect_stmt(body, out);
+        }
+        // A `TRANSACTION { … }` block (M6, t62): collect referenced columns from every member.
+        Statement::Transaction { body, .. } => {
+            for member in body {
+                collect_stmt(member, out);
+            }
+        }
     }
 }
 
@@ -254,6 +281,8 @@ fn collect_source(s: &Source, out: &mut std::collections::BTreeSet<String>) {
         Source::Path(_) => {}
         Source::Values(v) => collect_values(v, out),
         Source::Subquery(p) => collect_pipeline(p, out),
+        // A bare `LET`-bound name (M6, t60) references no declared column.
+        Source::Name(_) => {}
     }
 }
 
@@ -343,6 +372,9 @@ fn collect_expr(e: &Expr, out: &mut std::collections::BTreeSet<String>) {
             collect_expr(expr, out);
             collect_expr(pattern, out);
         }
+        // A lambda body (M6, t61) is walked so any bare column it references is collected
+        // for the access-widening shadow check.
+        Expr::Lambda { body, .. } => collect_expr(body, out),
         Expr::Lit(_) | Expr::Path(_) => {}
     }
 }
@@ -377,6 +409,17 @@ fn collect_src_paths_stmt(stmt: &Statement, out: &mut Vec<String>) {
             }
         }
         Statement::Plan(PlanWrap { inner, .. }) => collect_src_paths_stmt(inner, out),
+        // A `LET` program (M6, t60): collect source paths from value + body.
+        Statement::Let { value, body, .. } => {
+            collect_src_paths_stmt(value, out);
+            collect_src_paths_stmt(body, out);
+        }
+        // A `TRANSACTION { … }` block (M6, t62): collect source paths from every member.
+        Statement::Transaction { body, .. } => {
+            for member in body {
+                collect_src_paths_stmt(member, out);
+            }
+        }
     }
 }
 
@@ -398,6 +441,8 @@ fn collect_src_paths_source(s: &Source, out: &mut Vec<String>) {
         Source::Path(p) => out.push(path_string(p)),
         Source::Values(_) => {}
         Source::Subquery(p) => collect_src_paths_pipeline(p, out),
+        // A bare `LET`-bound name (M6, t60) is not a mount path — nothing to collect.
+        Source::Name(_) => {}
     }
 }
 

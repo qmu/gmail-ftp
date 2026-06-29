@@ -12,6 +12,9 @@
 //! policy, or an empty policy, **denies every effect** (fail closed). A policy only *widens*
 //! the closed default via explicit `ALLOW` rules.
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use qfs_core::Realm;
 use serde::{Deserialize, Serialize};
 
 /// A universal write/read verb (RFD §3/§5). The closed-core verb taxonomy the policy
@@ -277,9 +280,316 @@ impl DriverGlob {
     }
 }
 
+/// **Who** a [`Rule`] is *for* (t57 — the actor/subject dimension, decision I / roadmap §1.2).
+/// The richer ACL grows a *who* axis over today's *what* (verb) and *where* (driver/path): a
+/// rule may be scoped to a single user (`qfs-identity` `UserId`-shaped, carried as an OWNED
+/// string id — t45), a coarse role label (t55 `Role`, again as an owned string, NOT a pulled
+/// identity type — the dep-direction guard keeps `qfs-server` off `qfs-identity`), or a group.
+///
+/// ## Default-deny preserved
+/// [`Subject::Anyone`] is the *unscoped* subject — a rule with no `FOR` clause applies to every
+/// actor (exactly the pre-t57 behaviour, so an old policy is unchanged). A `User`/`Role`/`Group`
+/// subject **narrows** the rule to a matching actor: under the anonymous decision context (no
+/// actor resolved) such a rule never matches, so the plan falls to default-deny (fail closed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Subject {
+    /// The unscoped subject — applies to every actor (the pre-t57 `FOR`-less rule).
+    Anyone,
+    /// A single user, by owned id string (`UserId` rendered — the binary maps the live
+    /// `qfs-identity` `UserId` onto this; the policy layer never pulls the identity crate).
+    User(String),
+    /// A coarse role label (t55 `Role`: `owner`/`admin`/`member`, or a project role). Resolved
+    /// against the actor's (inheritance-expanded) role set in the decision context.
+    Role(String),
+    /// A named group/team. Resolved against the actor's group set in the decision context.
+    Group(String),
+}
+
+impl Default for Subject {
+    /// The unscoped subject (every actor) — keeps a `FOR`-less rule behaving as before t57.
+    fn default() -> Self {
+        Subject::Anyone
+    }
+}
+
+impl Subject {
+    /// Whether this subject is the unscoped `Anyone` (no `FOR` clause).
+    #[must_use]
+    pub fn is_anyone(&self) -> bool {
+        matches!(self, Subject::Anyone)
+    }
+
+    /// The canonical, secret-free round-trip form: `user:<id>` / `role:<name>` / `group:<name>`.
+    /// [`Subject::Anyone`] renders as `anyone` (callers omit the whole `FOR` clause for it).
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Subject::Anyone => "anyone".to_string(),
+            Subject::User(u) => format!("user:{u}"),
+            Subject::Role(r) => format!("role:{r}"),
+            Subject::Group(g) => format!("group:{g}"),
+        }
+    }
+
+    /// Parse the canonical `user:`/`role:`/`group:` form (or `anyone`). `None` for anything
+    /// else (a malformed stored subject — the caller drops the rule fail-closed).
+    #[must_use]
+    pub fn from_label(word: &str) -> Option<Self> {
+        if word == "anyone" {
+            return Some(Subject::Anyone);
+        }
+        let (kind, name) = word.split_once(':')?;
+        if name.is_empty() {
+            return None;
+        }
+        Some(match kind {
+            "user" => Subject::User(name.to_string()),
+            "role" => Subject::Role(name.to_string()),
+            "group" => Subject::Group(name.to_string()),
+            _ => return None,
+        })
+    }
+}
+
+/// A **realm-scoped path glob** (t57 row/path-level scope, built on t71 decision P realms). The
+/// finest ACL axis: a rule may be narrowed to a sub-tree of *one* [`Realm`] — e.g. only
+/// `/members/alice/...`. Matching is realm-gated (a glob anchored in [`Realm::Members`] never
+/// matches a `/projects/...` node) **and** segment-wise within the realm.
+///
+/// Segment grammar: a literal segment must equal; `*` matches exactly one segment; a trailing
+/// `**` matches the remaining segments (a sub-tree). The glob is stored as the full
+/// realm-qualified path (`/members/alice/**`) so it round-trips verbatim through `/sys/policies`.
+///
+/// Stored as the canonical full realm-qualified path string ([`ScopeGlob::pattern`]) so it
+/// round-trips verbatim through `/sys/policies` as plain data — the [`Realm`] axis is *derived*
+/// from the leading segment on demand ([`ScopeGlob::realm`]), keeping the DTO serde-trivial and
+/// `qfs-core`'s `Realm` free of a serde contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeGlob {
+    /// The canonical full realm-qualified path glob (`/members/alice/**`). Always leading-slash
+    /// normalized; never empty (constructed only via [`ScopeGlob::parse`]).
+    pattern: String,
+}
+
+impl ScopeGlob {
+    /// Parse a full realm-qualified path glob (`/members/alice/**`, `/me/mail/*`). A bare path
+    /// (no leading realm segment) anchors in [`Realm::Me`] (the self realm — t71). `None` if the
+    /// path is empty/`/` (a scope must name at least a realm/segment).
+    #[must_use]
+    pub fn parse(path: &str) -> Option<Self> {
+        let segs: Vec<&str> = path
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+        if segs.is_empty() {
+            return None;
+        }
+        Some(ScopeGlob {
+            pattern: format!("/{}", segs.join("/")),
+        })
+    }
+
+    /// The canonical full realm-qualified path glob (`/members/alice/**`).
+    #[must_use]
+    pub fn render(&self) -> String {
+        self.pattern.clone()
+    }
+
+    /// The [`Realm`] this scope is anchored in (the leading segment). A bare path is the self
+    /// realm ([`Realm::Me`]). This is the realm gate axis: a node in a different realm never
+    /// matches (decision P / §1.3).
+    #[must_use]
+    pub fn realm(&self) -> Realm {
+        Self::peel(&self.pattern).0
+    }
+
+    /// Split a path into its `(realm, realm-relative segments)`: the leading realm segment names
+    /// the realm; a bare path is the self realm and keeps all its segments. This is the single
+    /// peel both the glob and the node path go through, so the principal segment (`alice` in
+    /// `/members/alice/...`) is realm-relative on **both** sides and matches positionally.
+    #[must_use]
+    fn peel(path: &str) -> (Realm, Vec<&str>) {
+        let mut segs = path
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty());
+        let Some(first) = segs.next() else {
+            return (Realm::Me, Vec::new());
+        };
+        match Realm::from_segment(first) {
+            Some(r) => (r, segs.collect()),
+            None => {
+                let mut v = vec![first];
+                v.extend(segs);
+                (Realm::Me, v)
+            }
+        }
+    }
+
+    /// Whether this scope matches a node's full target `path`. The node's realm (peeled from its
+    /// leading segment) must equal this scope's realm — the **realm gate**, so a `/members/...`
+    /// scope never matches a `/projects/...` node — AND the realm-relative segments must
+    /// glob-match.
+    #[must_use]
+    pub fn matches_path(&self, path: &str) -> bool {
+        let (glob_realm, glob_segs) = Self::peel(&self.pattern);
+        let (node_realm, node_segs) = Self::peel(path);
+        if glob_realm != node_realm {
+            return false;
+        }
+        glob_segments_match(&glob_segs, &node_segs)
+    }
+}
+
+/// Segment-wise glob match: `*` matches one segment, a trailing `**` matches the remaining
+/// segments (a sub-tree), a literal must equal. An empty glob matches every node (the whole
+/// realm). The glob must consume the whole node path unless it ends in `**`.
+fn glob_segments_match(glob: &[&str], node: &[&str]) -> bool {
+    if glob.is_empty() {
+        return true;
+    }
+    let mut gi = 0;
+    let mut ni = 0;
+    while gi < glob.len() {
+        let g = glob[gi];
+        if g == "**" {
+            // Trailing `**` swallows the rest (zero or more segments).
+            return true;
+        }
+        let Some(&n) = node.get(ni) else {
+            return false;
+        };
+        if g != "*" && g != n {
+            return false;
+        }
+        gi += 1;
+        ni += 1;
+    }
+    // The glob is exhausted: it matches only if the node is also exhausted (no trailing `**`).
+    ni == node.len()
+}
+
+/// A **conditional grant** (t57 `WHERE` clause). A rule may carry a pure predicate that must
+/// hold for the grant to apply. The only predicate in t57 is the [`member_of`](Condition::MemberOf)
+/// hook — a *function-valued* predicate (parsed as an ordinary `member_of('/directories/...')`
+/// call, NOT a new keyword) whose truth is **resolved into the decision context** (never fetched
+/// inside the pure enforcer). t58 supplies the live `/directories/...` resolver; t57 ships the
+/// hook + a mockable resolver seam.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Condition {
+    /// No condition — the grant always applies (the `WHERE`-less rule).
+    Always,
+    /// `member_of('/directories/...')` — the grant applies only when the acting actor is a
+    /// member of the named directory group. The directory path is an owned, secret-free ref.
+    MemberOf(String),
+}
+
+impl Default for Condition {
+    /// The unconditional grant — keeps a `WHERE`-less rule behaving as before t57.
+    fn default() -> Self {
+        Condition::Always
+    }
+}
+
+impl Condition {
+    /// Whether this is the unconditional [`Condition::Always`].
+    #[must_use]
+    pub fn is_always(&self) -> bool {
+        matches!(self, Condition::Always)
+    }
+
+    /// The directory ref this condition tests, if it is a `member_of(...)`. Used by the gate to
+    /// pre-resolve membership into the decision context (so the enforcer stays I/O-free).
+    #[must_use]
+    pub fn member_of_ref(&self) -> Option<&str> {
+        match self {
+            Condition::Always => None,
+            Condition::MemberOf(dir) => Some(dir.as_str()),
+        }
+    }
+
+    /// The canonical round-trip form for the `WHERE` clause, or `None` for [`Condition::Always`]
+    /// (callers omit the whole `WHERE`). Renders as `member_of('/directories/...')` — the same
+    /// surface the grammar parses.
+    #[must_use]
+    pub fn label(&self) -> Option<String> {
+        match self {
+            Condition::Always => None,
+            Condition::MemberOf(dir) => Some(format!("member_of('{dir}')")),
+        }
+    }
+}
+
+/// A **role-inheritance graph** (t57 roles/groups/inheritance — decision flagged in the ticket).
+/// Maps a role to the roles it *directly* inherits. [`RoleGraph::expand`] takes the actor's
+/// directly-granted roles and returns their transitive closure.
+///
+/// ## Pinned semantics: inheritance is **additive-only** (allow-union).
+/// A child role is a *super-set* of its parents' grants — inheritance only ever **adds** roles
+/// to the actor's effective set, never subtracts. This is the conservative reading the ticket's
+/// open decision flagged: it keeps a parent's `ALLOW` reachable from a child without letting a
+/// child silently *remove* a parent grant (subtraction is expressed by an explicit `DENY` rule,
+/// which still wins by precedence — see [`super::enforce`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleGraph {
+    /// role → the roles it directly inherits.
+    parents: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl RoleGraph {
+    /// An empty graph (no inheritance).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Declare that `role` directly inherits `parent` (builder). Self-edges are ignored.
+    #[must_use]
+    pub fn inherits(mut self, role: impl Into<String>, parent: impl Into<String>) -> Self {
+        let role = role.into();
+        let parent = parent.into();
+        if role != parent {
+            self.parents.entry(role).or_default().insert(parent);
+        }
+        self
+    }
+
+    /// The transitive closure of `roles` under inheritance (additive union). Cycle-safe: a
+    /// visited set bounds the walk, so a `a→b→a` declaration terminates.
+    #[must_use]
+    pub fn expand(&self, roles: &BTreeSet<String>) -> BTreeSet<String> {
+        let mut out: BTreeSet<String> = BTreeSet::new();
+        let mut stack: Vec<String> = roles.iter().cloned().collect();
+        while let Some(role) = stack.pop() {
+            if !out.insert(role.clone()) {
+                continue; // already expanded
+            }
+            if let Some(parents) = self.parents.get(&role) {
+                for p in parents {
+                    if !out.contains(p) {
+                        stack.push(p.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 /// One policy rule (RFD §8): grant/deny a [`VerbSet`] on a [`DriverGlob`]. Ordered within a
 /// [`Policy`] — later rules refine earlier ones (the enforcer evaluates top-down and returns
 /// the first matching rule's effectivity).
+///
+/// ## t57 — the richer axes (`who` / `where` / conditional)
+/// Beyond the `what` (verbs) and driver scope, a rule now optionally narrows to a [`Subject`]
+/// (`FOR role:admin`), a realm-scoped path [`ScopeGlob`] (`AT /members/alice/**`), and a
+/// conditional grant [`Condition`] (`WHERE member_of('/directories/...')`). All three default to
+/// the *unscoped* value, so a rule built the pre-t57 way (`Rule::allow`) is byte-for-byte the
+/// same policy. A narrowed rule only matches when the resolved decision context satisfies every
+/// axis — otherwise the effect falls to the fail-closed default-deny.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rule {
     /// Whether this rule allows or denies.
@@ -294,10 +604,20 @@ pub struct Rule {
     /// `ALLOW CALL`. An explicit `ALLOW SELECT,INSERT,REMOVE,CALL` *does* grant them.
     #[serde(default)]
     pub all_token: bool,
+    /// **Who** the rule is for (t57). [`Subject::Anyone`] = the unscoped `FOR`-less rule.
+    #[serde(default)]
+    pub subject: Subject,
+    /// The optional realm-scoped path scope (t57). `None` = every path (the `AT`-less rule).
+    #[serde(default)]
+    pub scope: Option<ScopeGlob>,
+    /// The optional conditional grant (t57). [`Condition::Always`] = the `WHERE`-less rule.
+    #[serde(default)]
+    pub condition: Condition,
 }
 
 impl Rule {
     /// An allow rule over a verb set and driver glob (explicit verb list — `all_token = false`).
+    /// The t57 axes default to unscoped (`FOR anyone`, every path, no condition).
     #[must_use]
     pub fn allow(verbs: VerbSet, driver: DriverGlob) -> Self {
         Rule {
@@ -305,10 +625,13 @@ impl Rule {
             verbs,
             driver,
             all_token: false,
+            subject: Subject::Anyone,
+            scope: None,
+            condition: Condition::Always,
         }
     }
 
-    /// A deny rule over a verb set and driver glob.
+    /// A deny rule over a verb set and driver glob (t57 axes default to unscoped).
     #[must_use]
     pub fn deny(verbs: VerbSet, driver: DriverGlob) -> Self {
         Rule {
@@ -316,6 +639,9 @@ impl Rule {
             verbs,
             driver,
             all_token: false,
+            subject: Subject::Anyone,
+            scope: None,
+            condition: Condition::Always,
         }
     }
 
@@ -323,6 +649,27 @@ impl Rule {
     #[must_use]
     pub fn as_all_token(mut self) -> Self {
         self.all_token = true;
+        self
+    }
+
+    /// Narrow this rule to a [`Subject`] (the `FOR` clause — builder, t57).
+    #[must_use]
+    pub fn for_subject(mut self, subject: Subject) -> Self {
+        self.subject = subject;
+        self
+    }
+
+    /// Narrow this rule to a realm-scoped path (the `AT` clause — builder, t57).
+    #[must_use]
+    pub fn scoped(mut self, scope: ScopeGlob) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+
+    /// Attach a conditional grant (the `WHERE` clause — builder, t57).
+    #[must_use]
+    pub fn when(mut self, condition: Condition) -> Self {
+        self.condition = condition;
         self
     }
 
@@ -446,5 +793,111 @@ mod tests {
             assert_eq!(Verb::from_label(v.label()), Some(v));
         }
         assert_eq!(Verb::from_label("BANANA"), None);
+    }
+
+    #[test]
+    fn subject_label_roundtrips() {
+        for s in [
+            Subject::Anyone,
+            Subject::User("u1".into()),
+            Subject::Role("admin".into()),
+            Subject::Group("eng".into()),
+        ] {
+            assert_eq!(Subject::from_label(&s.label()), Some(s));
+        }
+        assert_eq!(Subject::from_label("nope:"), None);
+        assert_eq!(Subject::from_label("bogus:x"), None);
+    }
+
+    #[test]
+    fn scope_glob_matches_within_its_realm_only() {
+        let scope = ScopeGlob::parse("/members/alice/**").unwrap();
+        assert_eq!(scope.realm(), Realm::Members);
+        // Same realm + principal sub-tree ⇒ match.
+        assert!(scope.matches_path("/members/alice/inbox"));
+        assert!(scope.matches_path("/members/alice/inbox/deep/leaf"));
+        // Same realm, different principal ⇒ no match.
+        assert!(!scope.matches_path("/members/bob/inbox"));
+        // Different realm ⇒ no match (the realm gate, decision P).
+        assert!(!scope.matches_path("/projects/alice/inbox"));
+        // A bare (self-realm) node ⇒ no match against a Members scope.
+        assert!(!scope.matches_path("/mail/inbox"));
+    }
+
+    #[test]
+    fn scope_glob_single_star_is_one_segment() {
+        let scope = ScopeGlob::parse("/me/mail/*").unwrap();
+        assert_eq!(scope.realm(), Realm::Me);
+        assert!(scope.matches_path("/me/mail/inbox"));
+        // `*` is exactly one segment — a deeper path does not match a single star.
+        assert!(!scope.matches_path("/me/mail/inbox/x"));
+        // A bare path anchors in the self realm, so `/mail/...` matches a `/me/...` scope.
+        let bare = ScopeGlob::parse("/mail/*").unwrap();
+        assert_eq!(bare.realm(), Realm::Me);
+        assert!(bare.matches_path("/mail/inbox"));
+    }
+
+    #[test]
+    fn scope_glob_round_trips_through_render() {
+        for p in [
+            "/members/alice/**",
+            "/projects/acme/orders/*",
+            "/me/mail/inbox",
+        ] {
+            let g = ScopeGlob::parse(p).unwrap();
+            assert_eq!(g.render(), p);
+        }
+        assert!(ScopeGlob::parse("/").is_none());
+        assert!(ScopeGlob::parse("").is_none());
+    }
+
+    #[test]
+    fn condition_label_round_trips() {
+        let c = Condition::MemberOf("/directories/google/groups/eng".into());
+        assert_eq!(
+            c.label().as_deref(),
+            Some("member_of('/directories/google/groups/eng')")
+        );
+        assert_eq!(c.member_of_ref(), Some("/directories/google/groups/eng"));
+        assert_eq!(Condition::Always.label(), None);
+        assert!(Condition::Always.is_always());
+    }
+
+    #[test]
+    fn role_graph_expand_is_transitive_and_cycle_safe() {
+        let g = RoleGraph::new()
+            .inherits("owner", "admin")
+            .inherits("admin", "member")
+            // a self-edge and a cycle must not loop forever.
+            .inherits("member", "member")
+            .inherits("member", "owner");
+        let expanded = g.expand(&BTreeSet::from(["owner".to_string()]));
+        assert!(expanded.contains("owner"));
+        assert!(expanded.contains("admin"));
+        assert!(expanded.contains("member"));
+        assert_eq!(expanded.len(), 3);
+    }
+
+    #[test]
+    fn richer_rule_serde_round_trips() {
+        // The richer axes must survive a serde round-trip (the `/sys/policies` JSON shape).
+        let rule = Rule::allow(VerbSet::one(Verb::Insert), DriverGlob::new("mail"))
+            .for_subject(Subject::Role("admin".into()))
+            .scoped(ScopeGlob::parse("/members/alice/**").unwrap())
+            .when(Condition::MemberOf("/directories/x".into()));
+        let json = serde_json::to_string(&rule).unwrap();
+        let back: Rule = serde_json::from_str(&json).unwrap();
+        assert_eq!(rule, back);
+    }
+
+    #[test]
+    fn pre_t57_rule_deserializes_without_new_fields() {
+        // A rule serialized before t57 (no subject/scope/condition keys) must rehydrate to the
+        // unscoped defaults — `#[serde(default)]` is the forward-compat guarantee.
+        let legacy = r#"{"effect":"allow","verbs":2,"driver":"mail","all_token":false}"#;
+        let rule: Rule = serde_json::from_str(legacy).unwrap();
+        assert_eq!(rule.subject, Subject::Anyone);
+        assert_eq!(rule.scope, None);
+        assert_eq!(rule.condition, Condition::Always);
     }
 }

@@ -103,11 +103,11 @@ fn reads_with_mail() -> ReadRegistry {
 
 #[test]
 fn headline_read_returns_rows_through_real_executor() {
-    // `FROM /mail/inbox |> LIMIT 1` returns {"rows":[…]} end-to-end: parse -> resolve -> plan
+    // `/mail/inbox |> LIMIT 1` returns {"rows":[…]} end-to-end: parse -> resolve -> plan
     // -> scan -> residual -> rows. The fake over-returns 3 rows; LIMIT 1 trims to 1.
     let engine = engine_with_mail();
     let reads = reads_with_mail();
-    let stmt = parse("FROM /mail/inbox |> LIMIT 1").unwrap();
+    let stmt = parse("/mail/inbox |> LIMIT 1").unwrap();
     let rows = block_on_read(&stmt, &engine.mounts, &reads).unwrap();
     assert_eq!(
         rows.len(),
@@ -123,7 +123,7 @@ fn residual_where_refilters_over_returned_rows() {
     // WHERE id > 1 re-filters to ids 2 and 3.
     let engine = engine_with_mail();
     let reads = reads_with_mail();
-    let stmt = parse("FROM /mail/inbox |> WHERE id > 1").unwrap();
+    let stmt = parse("/mail/inbox |> WHERE id > 1").unwrap();
     let rows = block_on_read(&stmt, &engine.mounts, &reads).unwrap();
     assert_eq!(rows.len(), 2);
     let ids: Vec<i64> = rows
@@ -142,7 +142,7 @@ fn headline_json_envelope_is_rows_object() {
     // The stable JSON contract: {"rows":[{id,subject}, …]}.
     let engine = engine_with_mail();
     let reads = reads_with_mail();
-    let stmt = parse("FROM /mail/inbox |> LIMIT 1").unwrap();
+    let stmt = parse("/mail/inbox |> LIMIT 1").unwrap();
     let rows = block_on_read(&stmt, &engine.mounts, &reads).unwrap();
     let json = serde_json::to_value(&rows).unwrap();
     assert!(json["rows"].is_array());
@@ -163,12 +163,29 @@ fn run_with_ack(
     commit: bool,
     irreversible_ack: bool,
 ) -> (i32, String, String) {
+    run_full(
+        src,
+        fmt,
+        commit,
+        irreversible_ack,
+        qfs_core::SafetyMode::default(),
+    )
+}
+
+fn run_full(
+    src: &str,
+    fmt: OutputFormat,
+    commit: bool,
+    irreversible_ack: bool,
+    safety_mode: qfs_core::SafetyMode,
+) -> (i32, String, String) {
     let engine = engine_with_mail();
     let reads = reads_with_mail();
     let ctx = ExecCtx {
         engine: &engine,
         reads: &reads,
         world_apply: None,
+        safety_mode,
     };
     let source = StmtSource::Expr(src.to_string());
     let mut out: Vec<u8> = Vec::new();
@@ -189,7 +206,7 @@ fn run_with_ack(
 
 #[test]
 fn oneshot_read_json_exit_zero_with_rows() {
-    let (code, out, err) = run("FROM /mail/inbox |> LIMIT 1", OutputFormat::Json, false);
+    let (code, out, err) = run("/mail/inbox |> LIMIT 1", OutputFormat::Json, false);
     assert_eq!(code, 0);
     assert!(err.is_empty(), "data goes to stdout, not stderr");
     let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
@@ -198,7 +215,7 @@ fn oneshot_read_json_exit_zero_with_rows() {
 
 #[test]
 fn oneshot_read_table_renders_columns() {
-    let (code, out, _err) = run("FROM /mail/inbox", OutputFormat::Table, false);
+    let (code, out, _err) = run("/mail/inbox", OutputFormat::Table, false);
     assert_eq!(code, 0);
     assert!(out.contains("id"));
     assert!(out.contains("subject"));
@@ -216,7 +233,7 @@ fn oneshot_parse_error_exit_two_with_kind_parse() {
 
 #[test]
 fn oneshot_relative_path_usage_exit_two() {
-    let (code, _out, err) = run("FROM mail/inbox |> LIMIT 1", OutputFormat::Json, false);
+    let (code, _out, err) = run("mail/inbox |> LIMIT 1", OutputFormat::Json, false);
     assert_eq!(code, 2);
     let v: serde_json::Value = serde_json::from_str(err.trim()).unwrap();
     assert_eq!(v["error"]["kind"], "usage");
@@ -226,7 +243,7 @@ fn oneshot_relative_path_usage_exit_two() {
 #[test]
 fn oneshot_unknown_source_capability_exit_three() {
     // /nope has no mounted driver → planner rejects with unknown_source → exit 3.
-    let (code, _out, err) = run("FROM /nope/x |> LIMIT 1", OutputFormat::Json, false);
+    let (code, _out, err) = run("/nope/x |> LIMIT 1", OutputFormat::Json, false);
     assert_eq!(code, 3);
     let v: serde_json::Value = serde_json::from_str(err.trim()).unwrap();
     assert_eq!(v["error"]["kind"], "capability");
@@ -333,4 +350,108 @@ fn golden_insert_plan_preview_json() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["verb"], "INSERT");
     assert_eq!(v["preview"]["is_pure"], false);
+}
+
+// ---- t75: the static type checker is ACTIVE on the PRODUCTION plan path ----
+
+#[test]
+fn build_plan_rejects_mismatched_set_where_at_plan_time() {
+    // The headline t75 guarantee proven through the REAL production plan builder
+    // (`qfs_exec::build_plan`, which `qfs run`, the server, and MCP all funnel through), NOT a
+    // `with_stdlib` unit fixture. `subject` is a `Text` column (FakeMail's describe schema), so
+    // `REMOVE /mail/inbox WHERE subject == 1` compares `Text` to an `Int` literal — an
+    // incomparable-types error that must surface at PLAN TIME, before any effect node is applied.
+    let engine = engine_with_mail();
+    let stmt = parse("REMOVE /mail/inbox WHERE subject == 1").unwrap();
+    let err = qfs_exec::build_plan(&stmt, &engine)
+        .expect_err("a mismatched WHERE comparison must fail at plan time");
+    assert_eq!(err.code, "incomparable_types");
+    assert_eq!(err.kind, qfs_exec::ErrorKind::Usage);
+
+    // The same REMOVE with a correctly-typed key column (`id` is `Int`) plans cleanly — the
+    // checker accepts the well-typed program.
+    let ok = parse("REMOVE /mail/inbox WHERE id == 1").unwrap();
+    let plan = qfs_exec::build_plan(&ok, &engine).expect("a well-typed plan builds");
+    assert!(!plan.nodes().is_empty(), "REMOVE yields an effect plan");
+}
+
+#[test]
+fn oneshot_commit_of_mistyped_where_fails_before_apply() {
+    // End-to-end through the one-shot COMMIT path: a `--commit` of a type-failing destructive
+    // effect must fail at plan time (exit 2, usage) and apply ZERO effects — the type error is
+    // caught before the applier is ever reached, so `committed` never becomes true.
+    let (code, _out, err) = run_with_ack(
+        "COMMIT REMOVE /mail/inbox WHERE subject == 1",
+        OutputFormat::Json,
+        true,
+        true,
+    );
+    assert_eq!(code, 2, "a plan-time type error is a usage-class failure");
+    let e: serde_json::Value = serde_json::from_str(err.trim()).unwrap();
+    assert_eq!(e["error"]["code"], "incomparable_types");
+}
+
+// ---- t59: the selectable safety modes govern the REAL one-shot commit path ----
+
+#[test]
+fn t59_approve_everything_refuses_a_reversible_commit_autonomous_applies() {
+    use qfs_core::SafetyMode;
+    // Baseline: under the default Autonomous-in-policy mode, a reversible single-row INSERT commits
+    // with no ack (exit 0, committed via the in-memory engine).
+    let (code, out, _err) = run_full(
+        "INSERT INTO /mail/inbox VALUES (9, 'x')",
+        OutputFormat::Json,
+        true,
+        false,
+        SafetyMode::AutonomousInPolicy,
+    );
+    assert_eq!(code, 0, "autonomous auto-commits a reversible write");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(out.trim()).unwrap()["committed"],
+        true
+    );
+
+    // Same statement under Approve-everything: the most restrictive preset HOLDS even this
+    // reversible write — fail closed (exit 4, approval_required), ZERO effects applied.
+    let (code, out, err) = run_full(
+        "INSERT INTO /mail/inbox VALUES (9, 'x')",
+        OutputFormat::Json,
+        true,
+        false,
+        SafetyMode::ApproveEverything,
+    );
+    assert_eq!(
+        code, 4,
+        "approve-everything refuses a write autonomous would apply"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(out.trim()).unwrap()["committed"],
+        false
+    );
+    let e: serde_json::Value = serde_json::from_str(err.trim()).unwrap();
+    assert_eq!(e["error"]["kind"], "commit_required");
+    assert_eq!(e["error"]["code"], "approval_required");
+}
+
+#[test]
+fn t59_policy_only_auto_commits_an_irreversible_write_without_the_ack() {
+    use qfs_core::SafetyMode;
+    // Under Policy-only (unattended CI), an irreversible REMOVE auto-commits with NO ack — the
+    // write Autonomous-in-policy would have held. The policy floor still applies (the capability
+    // set allows REMOVE here, the CLI one-shot's within-policy posture).
+    let (code, out, _err) = run_full(
+        "REMOVE /mail/inbox",
+        OutputFormat::Json,
+        true,
+        false,
+        SafetyMode::PolicyOnly,
+    );
+    assert_eq!(
+        code, 0,
+        "policy-only auto-commits an irreversible write unattended"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(out.trim()).unwrap()["committed"],
+        true
+    );
 }

@@ -1,0 +1,41 @@
+[package]
+name = "qfs-oauth"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs OAuth 2.1 authorization-server domain leaf (roadmap M2 / t48): the discovery + key-publication half of making a qfs server its OWN authorization server (decision C, §4.1). Pure-ish: RFC 8414 Authorization-Server-Metadata + RFC 9728 Protected-Resource-Metadata document builders (serde), a JWKS document builder (public key -> JWK with kid/alg/use=sig; multi-key for rotation), and the thin ES256 JWS sign/verify primitives built over the vetted pure-Rust RustCrypto `p256` ECDSA + qfs-crypto-core's SHA-256 (kid thumbprint) — NO heavy JWT SDK, NO hand-rolled curve. The private signing key is carried only inside the redacting, zeroized `Secret` (qfs-secrets), NEVER a bare String/Vec<u8>; only PUBLIC JWK material is ever serialized. Issues NO tokens yet (that is t49/t50) — this crate ships the static discovery documents + signing-key machinery. NO tokio (the async HTTP binding lives in the binary), NO rusqlite (key I/O is the binary-injected qfs-store layer). A leaf."
+
+[dependencies]
+# The dependency-free SHA-256 (`sha256`, t34) that computes the RFC 7638 JWK thumbprint backing the
+# `kid`, plus the constant-time compare for any digest equality. A TRUE pure leaf (zero deps).
+qfs-crypto-core = { path = "../crypto-core" }
+# The redacting, zeroized-on-drop wrapper for the AS PRIVATE signing key. The unwrapped key scalar
+# lives ONLY inside `Secret`; this crate reconstructs the p256 key from it for signing and never
+# holds a bare `Vec<u8>`/`String` of private material (decision E / RFD §10).
+qfs-secrets = { path = "../secrets" }
+# The vetted, pure-Rust RustCrypto P-256 (NIST secp256r1) ECDSA implementation — keygen + sign +
+# verify for ES256. Pure Rust (no C, wasm-clean) so there is no native-link hazard; the thin JWS
+# compact serialization is built over it here rather than pulling a heavy JWT SDK (decision C).
+# `ecdh` (t80, decision U / §4.5): the SAME vetted curve also backs the per-recipient (E2E) DEK wrap
+# — ECDH key agreement → a per-recipient KEK that seals a connection's data-key only to a member's
+# public key. REUSES the already-vendored p256 tree; no second curve crate, no hand-rolled asymmetric
+# crypto (the non-negotiable). Pure Rust, wasm-clean.
+p256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
+# AEAD for the per-recipient DEK wrap (t80): once ECDH derives the per-recipient KEK, ChaCha20-Poly1305
+# seals the data-key under it — the SAME vetted AEAD `qfs-secrets`' envelope uses, so the E2E wrap and
+# the at-rest envelope share one cipher choice + threat model. Pure Rust (wasm-clean), no native link.
+chacha20poly1305 = "0.10"
+# base64url (no padding) for the JWS header.payload.signature segments + the JWK coordinate / kid
+# thumbprint encodings (RFC 7515/7517/7638). In the offline cache; kept out of the zero-dep crypto leaf.
+base64 = "0.22"
+# Owned serde DTOs for the RFC 8414 / RFC 9728 / JWKS documents + the JWS claims.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Structured, secret-free error taxonomy (AI-consumable; never carries key material).
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

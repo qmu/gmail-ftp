@@ -18,13 +18,13 @@ run`, which is always absolute). Each command is just shorthand for a pipe-SQL s
 | `ls [path]` | List a namespace | `SELECT` over the listing |
 | `cd <path>` | Change current directory | — |
 | `pwd` | Print current directory | — |
-| `cat <path>` | Read a file or rows | `FROM <path>` |
-| `cp <src> <dst>` | Copy (across services too) | `UPSERT INTO <dst> FROM <src>` |
+| `cat <path>` | Read a file or rows | `<path>` |
+| `cp <src> <dst>` | Copy (across services too) | `UPSERT INTO <dst> <src>` |
 | `mv <src> <dst>` | Move | copy then remove |
 | `rm <path>` | Delete | `REMOVE <path>` |
 | `describe <path>` | Inspect a path | `qfs describe` |
 
-Because `cp` is just an `UPSERT … FROM …`, copying *between services* works exactly like copying
+Because `cp` is just an `UPSERT INTO <dst> <src>`, copying *between services* works exactly like copying
 within one:
 
 ```text

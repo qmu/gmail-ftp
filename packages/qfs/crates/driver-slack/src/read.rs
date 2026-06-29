@@ -1,4 +1,4 @@
-//! The Slack **read path** (RFD-0001 §5): turn a `SELECT … FROM /slack/...` into a pure,
+//! The Slack **read path** (RFD-0001 §5): turn a `SELECT … /slack/...` into a pure,
 //! self-documenting [`ReadPlan`] and decode a list response's JSON into owned DTO [`Row`]s.
 //!
 //! ## Cursor pagination as a pure bounded fan-out
@@ -10,11 +10,49 @@
 
 use qfs_types::{Row, RowBatch, Schema};
 
+use crate::client::SlackClient;
 use crate::dto::{FileDto, MessageDto, ReactionDto, UserDto};
 use crate::error::SlackError;
-use crate::path::NodeKind;
+use crate::path::{NodeKind, SlackPath};
 use crate::pushdown::{build_params, PushdownResult};
 use crate::schema::schema_for;
+
+/// Execute a `FROM /slack/<ws>/<node>` **collection read** end to end — the single in-crate entry
+/// point the binary's async `ReadDriver` adapter drives, mirroring [`qfs_driver_local::scan_rows`].
+/// It composes the pure-then-I/O stages this module and its siblings already own, so the binary
+/// adapter never re-derives the path→plan→fetch→decode logic:
+///
+/// 1. [`SlackPath::parse_str`] — parse the addressed node (pure, no I/O, no token).
+/// 2. [`ReadPlan::list`] — lower `predicate` into pushed params + a truthful residual (pure).
+/// 3. [`SlackClient::list`] — the **only** I/O: the credentialed, cursor-paginated read call (the
+///    real client resolves the bot token lazily at request-build time, so a missing/locked
+///    credential surfaces here as [`SlackError::Auth`] — fail closed, never empty rows, never a
+///    panic).
+/// 4. [`decode_list`] — the Slack JSON → owned typed [`RowBatch`] boundary (no vendor type escapes).
+///
+/// The pushed query may honestly over-return relative to any unpushable predicate/limit; the
+/// executor re-applies the residual locally (the t20 property), exactly like the local scan.
+///
+/// ## The `#channel`/`@user` resolution seam (honesty)
+/// The workspace-global nodes (`users`, `files`) read fully through this seam. A message-log node
+/// (`<#channel>/messages`, `dms/<user>/messages`, …) additionally needs the channel/peer id passed
+/// to the Slack Web API as a request param; that symbolic-`#name`→id resolution is **I/O performed
+/// by the live client at request time** (the same resolution the commit applier does), so it is a
+/// documented live seam rather than something this pure composition synthesizes.
+///
+/// # Errors
+/// [`SlackError`] on a malformed path, an auth/transport/HTTP/body failure, or a decode failure.
+pub fn read_rows(
+    client: &dyn SlackClient,
+    path: &str,
+    predicate: Option<&qfs_types::Predicate>,
+) -> Result<RowBatch, SlackError> {
+    let parsed = SlackPath::parse_str(path)?;
+    let kind = parsed.kind();
+    let plan = ReadPlan::list(kind, predicate);
+    let value = client.list(kind, plan.params())?;
+    decode_list(kind, &value)
+}
 
 /// A pure, self-documenting read: which node, the pushed query params, and the **residual**
 /// predicate the engine re-checks locally. One node — the planner batches the cursor fan-out at
@@ -163,4 +201,49 @@ pub fn decode_users(value: &serde_json::Value) -> Vec<UserDto> {
             deleted: bln(v, "deleted"),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod read_rows_tests {
+    //! `read_rows` against the in-memory [`MockSlackClient`] — offline, no socket, no credential.
+    //! Proves the path→plan→fetch→decode composition the binary adapter drives returns the right
+    //! typed rows for a representative workspace-global `FROM /slack/<ws>/users` path, and records
+    //! the exact list call.
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use crate::client::{MockSlackClient, RecordedCall};
+    use qfs_types::Value;
+
+    #[test]
+    fn reads_the_users_directory_into_typed_rows() {
+        // FROM /slack/acme/users — the representative workspace-global read (no channel needed).
+        let client = MockSlackClient::new().with_list(serde_json::json!({
+            "members": [
+                { "id": "U1", "name": "alice", "real_name": "Alice", "is_bot": false,
+                  "deleted": false },
+                { "id": "U2", "name": "bot", "real_name": "Bot", "is_bot": true, "deleted": false },
+            ]
+        }));
+        let batch = read_rows(&client, "/slack/acme/users", None).unwrap();
+        assert_eq!(batch.rows.len(), 2, "two user rows decoded");
+        // The first column of the users schema is `id`.
+        assert_eq!(batch.rows[0].values[0], Value::Text("U1".to_string()));
+        match client.recorded().as_slice() {
+            [RecordedCall::List { kind, .. }] => assert_eq!(*kind, NodeKind::Users),
+            other => panic!("expected one recorded List call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_workspace_node_is_rejected() {
+        // A path that names no recognized /slack node fails with a structured path error, never an
+        // empty batch — and performs no I/O.
+        let client = MockSlackClient::new();
+        let err = read_rows(&client, "/slack/acme/not-a-node", None).unwrap_err();
+        assert_eq!(err.code(), "slack_invalid_path");
+        assert!(
+            client.recorded().is_empty(),
+            "a rejected path performs no I/O"
+        );
+    }
 }

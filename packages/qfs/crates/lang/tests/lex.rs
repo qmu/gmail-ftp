@@ -35,15 +35,14 @@ fn assert_spans_round_trip(src: &str, toks: &[Spanned<Token>]) {
 
 #[test]
 fn golden_full_query_pipeline() {
-    let src =
-        "FROM /mail/inbox |> WHERE size > 25 MB AND subject ~ 'invoice' |> SELECT id, subject";
+    // Decision R (t73): no `FROM` — the leading `/path` is the source.
+    let src = "/mail/inbox |> WHERE size > 25 MB AND subject ~ 'invoice' |> SELECT id, subject";
     let toks = lex(src).expect("valid");
     assert_spans_round_trip(src, &toks);
     let got = nodes(src);
     assert_eq!(
         got,
         vec![
-            Token::Keyword(Keyword::From),
             Token::Path(vec![
                 PathSeg::new("mail", None, false),
                 PathSeg::new("inbox", None, false),
@@ -71,13 +70,12 @@ fn golden_full_query_pipeline() {
 
 #[test]
 fn golden_path_with_version() {
-    let src = "FROM /git/repo@v1.2/src |> SELECT path";
+    let src = "/git/repo@v1.2/src |> SELECT path";
     let toks = lex(src).expect("valid");
     assert_spans_round_trip(src, &toks);
     let got = nodes(src);
-    assert_eq!(got[0], Token::Keyword(Keyword::From), "leading keyword");
     assert_eq!(
-        got[1],
+        got[0],
         Token::Path(vec![
             PathSeg::new("git", None, false),
             PathSeg::new("repo", Some("v1.2".into()), false),
@@ -135,6 +133,55 @@ fn golden_typed_literal_between() {
     );
 }
 
+/// RFD decision O (ticket t70): the three `=`-shaped forms must each lex
+/// unambiguously under maximal munch — `=>` (named-arg / lambda arrow) and `==`
+/// (equivalence comparison) and a lone `=` (assignment / binding). Locks the lexer
+/// precedence so none of the three can shadow another.
+#[test]
+fn golden_eq_eqeq_arrow_disambiguate() {
+    // Lone `=` is the binding/assignment token.
+    assert_eq!(
+        nodes("a = 1"),
+        vec![Token::Ident("a".into()), Token::Eq, Token::Int(1),]
+    );
+    // `==` is the equivalence comparator (one token, maximal munch).
+    assert_eq!(
+        nodes("a == 1"),
+        vec![Token::Ident("a".into()), Token::EqEq, Token::Int(1),]
+    );
+    // `=>` still wins as the arrow.
+    assert_eq!(
+        nodes("a => 1"),
+        vec![Token::Ident("a".into()), Token::Arrow, Token::Int(1),]
+    );
+    // All three adjacent: `==` then `=>` then a lone `=`.
+    let src = "== => =";
+    let toks = lex(src).expect("valid");
+    assert_spans_round_trip(src, &toks);
+    assert_eq!(nodes(src), vec![Token::EqEq, Token::Arrow, Token::Eq]);
+}
+
+#[test]
+fn lambda_param_list_lexes_colon_as_its_own_token() {
+    // `(addr: string) => …` — the type-annotation `:` is structural punctuation (M6 t61),
+    // lexed as a standalone `Token::Colon` adjacent to the surrounding idents/parens.
+    let src = "(addr: string) => x";
+    let toks = lex(src).expect("valid");
+    assert_spans_round_trip(src, &toks);
+    assert_eq!(
+        nodes(src),
+        vec![
+            Token::LParen,
+            Token::Ident("addr".into()),
+            Token::Colon,
+            Token::Ident("string".into()),
+            Token::RParen,
+            Token::Arrow,
+            Token::Ident("x".into()),
+        ]
+    );
+}
+
 #[test]
 fn golden_named_proc_arg_arrow() {
     let src = "CALL github.merge(method=>'squash')";
@@ -159,13 +206,12 @@ fn golden_named_proc_arg_arrow() {
 
 #[test]
 fn golden_glob_path_with_latest() {
-    let src = "FROM /s3/bucket/*.json@latest";
+    let src = "/s3/bucket/*.json@latest";
     let toks = lex(src).expect("valid");
     assert_spans_round_trip(src, &toks);
     let got = nodes(src);
-    assert_eq!(got[0], Token::Keyword(Keyword::From));
     assert_eq!(
-        got[1],
+        got[0],
         Token::Path(vec![
             PathSeg::new("s3", None, false),
             PathSeg::new("bucket", None, false),
@@ -177,10 +223,10 @@ fn golden_glob_path_with_latest() {
 
 #[test]
 fn span_round_trips_to_exact_substring() {
-    let src = "FROM /mail/inbox |> SELECT id";
+    let src = "/mail/inbox |> SELECT id";
     let toks = lex(src).expect("valid");
-    // The FROM keyword span is exactly "FROM".
-    assert_eq!(&src[toks[0].span.range()], "FROM");
+    // The leading path span is exactly "/mail/inbox" (decision R: no `FROM`).
+    assert_eq!(&src[toks[0].span.range()], "/mail/inbox");
     // The pipe span is exactly "|>".
     let pipe = toks.iter().find(|t| t.node == Token::Pipe).unwrap();
     assert_eq!(&src[pipe.span.range()], "|>");
@@ -194,11 +240,11 @@ fn span_round_trips_to_exact_substring() {
 
 #[test]
 fn comments_are_skipped_but_tokens_round_trip() {
-    let src = "FROM /mail  -- the inbox\n|> SELECT id  # trailing";
+    let src = "/mail  -- the inbox\n|> SELECT id  # trailing";
     let toks = lex(src).expect("valid");
     assert_spans_round_trip(src, &toks);
     let got: Vec<Token> = toks.into_iter().map(|s| s.node).collect();
-    assert_eq!(got[0], Token::Keyword(Keyword::From));
+    assert_eq!(got[0], Token::Path(vec![PathSeg::new("mail", None, false)]));
     assert_eq!(got.last(), Some(&Token::Ident("id".into())));
     // No comment text leaked into a token.
     assert!(!got
@@ -296,7 +342,7 @@ fn empty_input_lexes_to_empty_stream() {
 fn never_panics_on_arbitrary_input() {
     let corpus = [
         "",
-        "🦀 FROM /x |> SELECT y",
+        "🦀 /x |> SELECT y",
         "'\\",
         "////@@@@",
         "<<<>>><=>=<>|>|>|",

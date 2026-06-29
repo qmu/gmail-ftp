@@ -664,7 +664,9 @@ fn scenario8_audit_one_per_fire_deny_coordinates_secret_free() {
         .find(|r| !r.decision.is_allow())
         .expect("a deny record");
     match &deny_rec.decision {
-        FiredDecision::Deny { verb, driver, rule } => {
+        FiredDecision::Deny {
+            verb, driver, rule, ..
+        } => {
             assert_eq!(verb, "REMOVE", "deny names the offending verb");
             assert_eq!(driver, "log", "deny names the offending driver");
             // REMOVE matched no rule under ALLOW INSERT ⇒ default-deny ⇒ rule index None.

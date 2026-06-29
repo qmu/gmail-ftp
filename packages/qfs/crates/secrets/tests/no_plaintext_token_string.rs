@@ -13,7 +13,7 @@
 //!   sanctioned home of key material and is exempt: it is bytes-by-construction, not a token
 //!   `String` field).
 //! - `crates/plan/src/*.rs` — the pure `Plan`/`Effect` types that travel to PREVIEW/audit and must
-//!   never embed a secret (RFD §3 purity invariant: a plan carries only an account *selector*).
+//!   never embed a secret (RFD §3 purity invariant: a plan carries only a connection *selector*).
 //!
 //! It mirrors the `dep_direction`/deny-test style: a fail-closed, reviewable mechanical assertion
 //! rather than relying on a reviewer to spot a plaintext token. A genuinely-needed token field

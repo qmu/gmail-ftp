@@ -20,37 +20,37 @@ use qfs_parser::parse_statement;
 /// The full acceptance corpus: every form the criteria enumerate.
 const CORPUS: &[&str] = &[
     // multi-op query
-    "FROM /mail/inbox |> WHERE id = 1 |> SELECT id, subject AS title |> JOIN /contacts ON id = c |> AGGREGATE count(id) AS n |> ORDER BY n DESC |> LIMIT 10",
+    "/mail/inbox |> WHERE id == 1 |> SELECT id, subject AS title |> JOIN /contacts ON id == c |> AGGREGATE count(id) AS n |> ORDER BY n DESC |> LIMIT 10",
     // EXPAND
-    "FROM /mail/inbox |> EXPAND attachments",
+    "/mail/inbox |> EXPAND attachments",
     // DISTINCT
-    "FROM /t |> DISTINCT",
+    "/t |> DISTINCT",
     // set operators
-    "FROM /a |> UNION FROM /b",
-    "FROM /a |> EXCEPT FROM /b",
-    "FROM /a |> INTERSECT FROM /b",
+    "/a |> UNION /b",
+    "/a |> EXCEPT /b",
+    "/a |> INTERSECT /b",
     // effect verbs
     "INSERT INTO /t VALUES (1, 2) RETURNING id",
     "UPSERT INTO /s3/bucket/key VALUES ('blob')",
-    "UPDATE /sql/pg/orders SET status = 'done' WHERE id = 7",
+    "UPDATE /sql/pg/orders SET status = 'done' WHERE id == 7",
     "REMOVE /mail/spam WHERE age > 30",
     // codecs
-    "FROM /fs/data.json |> DECODE json |> ENCODE yaml",
+    "/fs/data.json |> DECODE json |> ENCODE yaml",
     // CALL
-    "FROM /mail/drafts |> CALL github.merge(method => 'squash')",
+    "/mail/drafts |> CALL github.merge(method => 'squash')",
     // registry fn
-    "FROM /t |> SELECT upper(name)",
+    "/t |> SELECT upper(name)",
     // @version and AS OF
-    "FROM /git/repo@main/src",
-    "FROM /sql/pg/orders AS OF '2026-01-01'",
+    "/git/repo@main/src",
+    "/sql/pg/orders AS OF '2026-01-01'",
     // struct path access
-    "FROM /t |> WHERE a.b.c = 1",
+    "/t |> WHERE a.b.c == 1",
     // every CREATE form
-    "CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5",
+    "CREATE ENDPOINT recent ON 'GET /recent' AS /mail/inbox |> LIMIT 5",
     "CREATE TRIGGER notify ON inbox DO INSERT INTO /log VALUES ('x')",
     "CREATE JOB nightly EVERY '1h' DO REMOVE /tmp WHERE age > 7",
-    "CREATE VIEW recent AS FROM /mail/inbox",
-    "CREATE MATERIALIZED VIEW cached AS FROM /mail/inbox",
+    "CREATE VIEW recent AS /mail/inbox",
+    "CREATE MATERIALIZED VIEW cached AS /mail/inbox",
     "CREATE WEBHOOK inbound ON '/hooks/x'",
     "CREATE POLICY leastpriv",
     // plan wrappers
@@ -81,20 +81,20 @@ fn corpus_parses_and_serialises_deterministically() {
 fn pinned_goldens() {
     let cases: &[(&str, &str)] = &[
         (
-            "FROM /mail/inbox |> WHERE id = 1 |> LIMIT 5",
-            r#"{"Query":{"source":{"Path":{"segments":[{"name":"mail","version":null,"glob":false},{"name":"inbox","version":null,"glob":false}],"as_of":null,"span":[5,16]}},"ops":[{"Where":{"Binary":{"op":"Eq","lhs":{"Col":"id"},"rhs":{"Lit":{"Int":1}}}}},{"Limit":5}]}}"#,
+            "/mail/inbox |> WHERE id == 1 |> LIMIT 5",
+            r#"{"Query":{"source":{"Path":{"segments":[{"name":"mail","version":null,"glob":false},{"name":"inbox","version":null,"glob":false}],"as_of":null,"span":[0,11]}},"ops":[{"Where":{"Binary":{"op":"Eq","lhs":{"Col":"id"},"rhs":{"Lit":{"Int":1}}}}},{"Limit":5}]}}"#,
         ),
         (
-            "FROM /git/repo@main/src",
-            r#"{"Query":{"source":{"Path":{"segments":[{"name":"git","version":null,"glob":false},{"name":"repo","version":"main","glob":false},{"name":"src","version":null,"glob":false}],"as_of":null,"span":[5,23]}},"ops":[]}}"#,
+            "/git/repo@main/src",
+            r#"{"Query":{"source":{"Path":{"segments":[{"name":"git","version":null,"glob":false},{"name":"repo","version":"main","glob":false},{"name":"src","version":null,"glob":false}],"as_of":null,"span":[0,18]}},"ops":[]}}"#,
         ),
         (
             "INSERT INTO /t VALUES (1, 2) RETURNING id",
             r#"{"Effect":{"verb":"Insert","target":{"segments":[{"name":"t","version":null,"glob":false}],"as_of":null,"span":[12,14]},"body":{"Values":{"columns":null,"rows":[[{"Lit":{"Int":1}},{"Lit":{"Int":2}}]]}},"returning":[{"Expr":{"expr":{"Col":"id"},"alias":null}}]}}"#,
         ),
         (
-            "FROM /mail/drafts |> CALL mail.send",
-            r#"{"Query":{"source":{"Path":{"segments":[{"name":"mail","version":null,"glob":false},{"name":"drafts","version":null,"glob":false}],"as_of":null,"span":[5,17]}},"ops":[{"Call":{"driver":"mail","action":"send","args":[],"span":[21,35]}}]}}"#,
+            "/mail/drafts |> CALL mail.send",
+            r#"{"Query":{"source":{"Path":{"segments":[{"name":"mail","version":null,"glob":false},{"name":"drafts","version":null,"glob":false}],"as_of":null,"span":[0,12]}},"ops":[{"Call":{"driver":"mail","action":"send","args":[],"span":[16,30]}}]}}"#,
         ),
         (
             "PREVIEW REMOVE /mail/spam WHERE age > 30",

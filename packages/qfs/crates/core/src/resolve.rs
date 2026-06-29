@@ -44,7 +44,7 @@ use qfs_parser::{
 use qfs_plan::WriteVerb;
 use qfs_types::DriverId;
 
-use crate::registry::MountRegistry;
+use crate::registry::{MountRegistry, Realm};
 
 /// A resolved, namespaced callable identity — what a `CALL` or a desugared alias binds
 /// to (RFD §3). `driver` is the plan [`DriverId`] (e.g. `mail`); `proc` is the
@@ -139,6 +139,13 @@ pub enum ResolveError {
         /// The alias surface name whose receiver could not be resolved.
         name: String,
     },
+    /// A pipeline read `FROM <name>` a bare identifier that is **not** a `LET` binding in
+    /// scope (M6, ticket t60). A typo in a bound name is a structured, AI-consumable error
+    /// here — never a silent empty relation. Carries the unbound name the pipeline used.
+    UnknownBinding {
+        /// The bare-identifier source with no matching `LET` binding in scope.
+        name: String,
+    },
     /// An effect verb was planned against a node whose driver does not declare it — the
     /// resolve-time capability gate (RFD §5). Wraps the structured driver-side error.
     UnsupportedVerb {
@@ -164,6 +171,7 @@ impl ResolveError {
             ResolveError::AliasNotProvided { .. } => "alias_not_provided",
             ResolveError::AmbiguousAlias { .. } => "ambiguous_alias",
             ResolveError::UnknownReceiver { .. } => "unknown_receiver",
+            ResolveError::UnknownBinding { .. } => "unknown_binding",
             ResolveError::UnsupportedVerb { .. } => "unsupported_verb",
         }
     }
@@ -221,27 +229,48 @@ impl<'r> Resolver<'r> {
     /// surfaces as the corresponding [`ResolveError`] arm.
     pub fn resolve_statement(&self, stmt: &Statement) -> Result<Vec<ResolvedCall>, ResolveError> {
         let mut out = Vec::new();
-        self.resolve_statement_into(stmt, &mut out)?;
+        let scope = Scope::default();
+        self.resolve_statement_into(stmt, &scope, &mut out)?;
         Ok(out)
     }
 
     fn resolve_statement_into(
         &self,
         stmt: &Statement,
+        scope: &Scope,
         out: &mut Vec<ResolvedCall>,
     ) -> Result<(), ResolveError> {
         match stmt {
-            Statement::Query(pipeline) => self.resolve_pipeline(pipeline, out),
-            Statement::Effect(effect) => self.resolve_effect(effect, out),
-            Statement::Plan(PlanWrap { inner, .. }) => self.resolve_statement_into(inner, out),
+            Statement::Query(pipeline) => self.resolve_pipeline(pipeline, scope, out),
+            Statement::Effect(effect) => self.resolve_effect(effect, scope, out),
+            Statement::Plan(PlanWrap { inner, .. }) => {
+                self.resolve_statement_into(inner, scope, out)
+            }
+            // A `LET` binding (M6, t60): the `value` resolves in the *outer* scope (no
+            // recursive/forward reference — `name` is not yet bound), then the `body`
+            // resolves with `name` added (shadowing the outer scope if it repeats).
+            Statement::Let { name, value, body } => {
+                self.resolve_statement_into(value, scope, out)?;
+                let inner = scope.with(name);
+                self.resolve_statement_into(body, &inner, out)
+            }
+            // A `TRANSACTION { … }` block (M6, t62): each body member is an effect statement —
+            // resolve every one (capability/procedure gate) so a denied verb inside the block
+            // fails before a plan exists, exactly as it would outside the block.
+            Statement::Transaction { body, .. } => {
+                for member in body {
+                    self.resolve_statement_into(member, scope, out)?;
+                }
+                Ok(())
+            }
             // Server DDL desugars to `/server/...` effects downstream (later epic). Its
             // optional `DO`/`AS` clauses are themselves statements — resolve those.
             Statement::Ddl(ddl) => {
                 if let Some(do_plan) = &ddl.do_plan {
-                    self.resolve_statement_into(do_plan, out)?;
+                    self.resolve_statement_into(do_plan, scope, out)?;
                 }
                 if let Some(as_query) = &ddl.as_query {
-                    self.resolve_statement_into(as_query, out)?;
+                    self.resolve_statement_into(as_query, scope, out)?;
                 }
                 Ok(())
             }
@@ -254,15 +283,26 @@ impl<'r> Resolver<'r> {
     fn resolve_pipeline(
         &self,
         pipeline: &Pipeline,
+        scope: &Scope,
         out: &mut Vec<ResolvedCall>,
     ) -> Result<(), ResolveError> {
+        // A bare-identifier source must name a `LET` binding in scope (t60) — a typo is a
+        // structured error, not a silent empty relation. A **reserved realm** name
+        // (decision P / §1.3) is the exception: it resolves to its fixed realm and is
+        // always a legal source, never unbound — and never shadowed by a `LET` binding of
+        // the same spelling (the realm ranks above the lexical realm).
+        if let Source::Name(name) = &pipeline.source {
+            if Realm::from_segment(name).is_none() && !scope.contains(name) {
+                return Err(ResolveError::UnknownBinding { name: name.clone() });
+            }
+        }
         let receiver = self.source_receiver(&pipeline.source);
         // A subquery source carries its own nested calls — resolve them first.
         if let Source::Subquery(inner) = &pipeline.source {
-            self.resolve_pipeline(inner, out)?;
+            self.resolve_pipeline(inner, scope, out)?;
         }
         for op in &pipeline.ops {
-            self.resolve_pipe_op(op, receiver.as_ref(), out)?;
+            self.resolve_pipe_op(op, scope, receiver.as_ref(), out)?;
         }
         Ok(())
     }
@@ -271,6 +311,7 @@ impl<'r> Resolver<'r> {
     fn resolve_pipe_op(
         &self,
         op: &PipeOp,
+        scope: &Scope,
         receiver: Option<&ReceiverDriver>,
         out: &mut Vec<ResolvedCall>,
     ) -> Result<(), ResolveError> {
@@ -280,13 +321,18 @@ impl<'r> Resolver<'r> {
                 Ok(())
             }
             // A nested pipeline (UNION/EXCEPT/INTERSECT/JOIN sub-source) is a fresh
-            // receiver context — resolve it with its own source.
+            // receiver context — resolve it with its own source (and the same binding scope).
             PipeOp::Union(p) | PipeOp::Except(p) | PipeOp::Intersect(p) => {
-                self.resolve_pipeline(p, out)
+                self.resolve_pipeline(p, scope, out)
             }
             PipeOp::Join(join) => {
+                if let Source::Name(name) = &join.source {
+                    if Realm::from_segment(name).is_none() && !scope.contains(name) {
+                        return Err(ResolveError::UnknownBinding { name: name.clone() });
+                    }
+                }
                 if let Source::Subquery(inner) = &join.source {
-                    self.resolve_pipeline(inner, out)?;
+                    self.resolve_pipeline(inner, scope, out)?;
                 }
                 self.resolve_expr_fns(&join.on, receiver, out)
             }
@@ -381,6 +427,10 @@ impl<'r> Resolver<'r> {
                 self.resolve_expr_fns(expr, receiver, out)?;
                 self.resolve_expr_fns(pattern, receiver, out)
             }
+            // A lambda body (M6, t61) is walked for nested prelude-alias `fn`s like any
+            // sub-expression; its parameters introduce no callable to resolve here (a lambda
+            // is a pure value, never an effect — RFD §3 purity).
+            Expr::Lambda { body, .. } => self.resolve_expr_fns(body, receiver, out),
             Expr::Lit(_) | Expr::Col(_) | Expr::Path(_) => Ok(()),
         }
     }
@@ -529,8 +579,9 @@ impl<'r> Resolver<'r> {
         match source {
             Source::Path(path) => self.path_receiver(path),
             // VALUES has no driver; a subquery's receiver is itself ambiguous in the
-            // general (multi-driver) case, so fail closed for alias purposes.
-            Source::Values(_) | Source::Subquery(_) => None,
+            // general (multi-driver) case; a `LET`-bound name's receiver is the bound
+            // relation's (not tracked here) — all fail closed for alias purposes (t60).
+            Source::Values(_) | Source::Subquery(_) | Source::Name(_) => None,
         }
     }
 
@@ -558,6 +609,7 @@ impl<'r> Resolver<'r> {
     fn resolve_effect(
         &self,
         effect: &EffectStmt,
+        scope: &Scope,
         out: &mut Vec<ResolvedCall>,
     ) -> Result<(), ResolveError> {
         // The canonical, exhaustive verb mappings (t09 O2) — referenced so a new verb
@@ -590,9 +642,34 @@ impl<'r> Resolver<'r> {
         // An unrouted target path is a path/mount-resolution concern (deferred, ticket
         // scope); no callable to resolve. Effect bodies may contain a sub-pipeline.
         if let qfs_parser::EffectBody::Pipeline(p) = &effect.body {
-            self.resolve_pipeline(p, out)?;
+            self.resolve_pipeline(p, scope, out)?;
         }
         Ok(())
+    }
+}
+
+/// A lexical binding scope for `LET` (M6, ticket t60): the set of names bound and in scope
+/// at a point in the program. Resolution consults it **before** the mount registry so a
+/// bound name resolves to its relation rather than being mistaken for a mount path. Cheap to
+/// extend by value ([`Scope::with`]) so each `LET` body gets its own immutable scope —
+/// shadowing is a plain re-insert, and the parent scope is never mutated.
+#[derive(Debug, Clone, Default)]
+struct Scope {
+    names: std::collections::BTreeSet<String>,
+}
+
+impl Scope {
+    /// A new scope with `name` added (shadowing any same-named outer binding). Returns an
+    /// owned child so the parent is untouched (lexical, non-recursive scoping).
+    fn with(&self, name: &str) -> Self {
+        let mut names = self.names.clone();
+        names.insert(name.to_string());
+        Self { names }
+    }
+
+    /// Whether `name` is a binding in scope.
+    fn contains(&self, name: &str) -> bool {
+        self.names.contains(name)
     }
 }
 

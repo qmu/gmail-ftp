@@ -279,7 +279,12 @@ impl<G: PolicyGate> Dispatcher<G> {
         audit.record_fired(FiredPlanRecord {
             handler: format!("trigger:{}", trigger.name),
             policy: trigger.policy.clone().unwrap_or_default(),
-            decision: FiredDecision::Deny { verb, driver, rule },
+            decision: FiredDecision::Deny {
+                verb,
+                driver,
+                rule,
+                detail: None,
+            },
             effects,
             ts: now_secs(),
         });

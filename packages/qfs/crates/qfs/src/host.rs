@@ -2,8 +2,10 @@
 //! the terminal binary.
 //!
 //! This formalizes the EXISTING serve composition behind the [`qfs_host::RuntimeHost`] trait — it
-//! does NOT rebuild it. The HTTP listener (`qfs-http`), the cron interval (`qfs-cron`), and the
-//! watchtower bus + `/hooks/...` ingest (`qfs-watchtower`) are wired in [`crate::serve`]; the
+//! does NOT rebuild it. The HTTP listener (`qfs-http`) and the watchtower bus + `/hooks/...` ingest
+//! (`qfs-watchtower`) are wired in [`crate::serve`]; the JOB cause has no internal scheduler since
+//! t65 (decision M revised — an external scheduler invokes `qfs job run`), so `schedule_jobs` only
+//! records the saved-JOB definitions to the ledger. The
 //! `TokioHost`'s `serve_endpoints`/`schedule_jobs`/`consume_events` are the trait projection of
 //! those already-wired causes (they record the cause attachment to the on-disk audit ledger so the
 //! daemon's startup is observable). The two NEW daemon primitives the host adds are the fsync'd
@@ -19,8 +21,9 @@ use qfs_host::{
 };
 
 /// The EC2/Linux daemon host (RFD §8). Owns the fsync'd durable store + the on-disk audit ledger;
-/// its cause-attachment methods formalize the existing `qfs-http`/`qfs-cron`/`qfs-watchtower`
-/// serve composition behind the [`RuntimeHost`] trait (it does not rebuild them).
+/// its cause-attachment methods formalize the existing `qfs-http`/`qfs-watchtower` serve
+/// composition behind the [`RuntimeHost`] trait (it does not rebuild them); the JOB cause is
+/// external since t65 (no internal scheduler — `schedule_jobs` only records the definitions).
 pub struct TokioHost {
     durable: FileDurableStore,
     ledger: AuditLedger,
@@ -64,7 +67,10 @@ impl RuntimeHost for TokioHost {
     }
 
     async fn schedule_jobs(&self, set: &BindingSet) -> Result<(), HostError> {
-        // The qfs-cron interval daemon is wired in crate::serve; record the attached JOB causes.
+        // t65 (decision M revised): there is NO internal scheduler daemon to wire — qfs is not a
+        // scheduler. A JOB cause is a SAVED named plan + cadence an external scheduler invokes (OS
+        // cron via `qfs job run`; Cloudflare Cron Triggers via the managed Worker). We still record
+        // the attached JOB causes to the ledger (the definitions are intact; only the *when* moved).
         self.ledger
             .append(&format!("host attach jobs={}", set.jobs.len()))?;
         Ok(())

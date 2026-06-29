@@ -1,7 +1,7 @@
 //! The carried wasm-gating mechanical guard (t38; the precedent carried since t25/t33).
 //!
-//! Each wasm-gated leaf — `qfs-cron` (`native`), `qfs-watchtower` (`native`), `qfs-host`
-//! (`host-daemon`), `qfs-driver-slack` (`runtime`) — gates its non-wasm-clean deps (above all
+//! Each wasm-gated leaf — `qfs-watchtower` (`native`), `qfs-host` (`host-daemon`),
+//! `qfs-driver-slack` (`runtime`) — gates its non-wasm-clean deps (above all
 //! **tokio**) behind an *optional* feature, so that with `--no-default-features` only the pure
 //! core compiles and it builds for `wasm32-unknown-unknown`. The load-bearing fence is the
 //! **absence** of that feature (the deps are `optional`), not any marker (the t25/slack lesson).
@@ -25,7 +25,7 @@ use std::process::Command;
 /// With that feature OFF (the `--no-default-features` wasm invocation), the closure must be
 /// tokio-free.
 const GATED_LEAVES: &[(&str, &str)] = &[
-    ("qfs-cron", "native"),
+    // t65: qfs-cron (the retired internal scheduler) is gone; the surviving gated leaves remain.
     ("qfs-watchtower", "native"),
     ("qfs-host", "host-daemon"),
     ("qfs-driver-slack", "runtime"),

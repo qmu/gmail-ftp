@@ -9,9 +9,9 @@ locally — so a Postgres table and a GitHub repo combine as easily as two datab
 **Match orders to the GitHub issues that track them:**
 
 ```qfs
-FROM /sql/pg/orders
-|> JOIN /github/acme/web/issues ON id = issue_id
-|> SELECT id, title, status
+/sql/pg/orders
+|> join /github/acme/web/issues on id == issue_id
+|> select id, title, status
 ```
 
 ## Join a database to git history
@@ -19,9 +19,9 @@ FROM /sql/pg/orders
 **Match user accounts to the commits they authored:**
 
 ```qfs
-FROM /sql/pg/users
-|> JOIN /git/myrepo/commits ON id = author_id
-|> SELECT name, message
+/sql/pg/users
+|> join /git/myrepo/commits on id == author_id
+|> select name, message
 ```
 
 ## Enrich a service with a local file
@@ -29,9 +29,9 @@ FROM /sql/pg/users
 **Join live orders to a regions lookup CSV on your laptop:**
 
 ```qfs
-FROM /sql/pg/orders
-|> JOIN /local/regions.csv ON region = code
-|> SELECT id, region, total
+/sql/pg/orders
+|> join /local/regions.csv on region == code
+|> select id, region, total
 ```
 
 ## Combine the same shape from two services
@@ -39,8 +39,8 @@ FROM /sql/pg/orders
 **Everyone, across two databases, de-duplicated:**
 
 ```qfs
-FROM /sql/pg/users
-|> UNION FROM /sql/mysql/users
+/sql/pg/users
+|> union /sql/mysql/users
 ```
 
 ## Move data between services
@@ -50,9 +50,9 @@ Because reads and writes share one language, "copy from here to there" spans ser
 **Snapshot a database table into object storage as JSONL:**
 
 ```qfs
-FROM /sql/pg/orders
-|> SELECT id, total, status
-|> ENCODE jsonl
+/sql/pg/orders
+|> select id, total, status
+|> encode jsonl
 ```
 
 …then write those bytes to a bucket with an `UPSERT INTO /s3/...`. (Today these are two steps; the

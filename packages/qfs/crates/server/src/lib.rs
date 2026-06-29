@@ -53,9 +53,11 @@ pub use lower::lower_statement;
 // The t35 policy engine: the owned DTOs, the pure enforcer, the fire-path gate helper, and the
 // fired-plan audit record.
 pub use policy::{
-    effect_summaries, evaluate, gate_plan, policy_from_ddl, policy_from_def,
-    policy_to_rule_strings, resolve_policy, DriverGlob, Effectivity, FiredDecision,
-    FiredPlanRecord, GateOutcome, Policy, PolicyDecision, PolicyTable, Rule, Verb, VerbSet,
+    effect_summaries, evaluate, evaluate_shared_use, evaluate_with_context, gate_plan,
+    gate_plan_with_context, policy_from_ddl, policy_from_def, policy_to_rule_strings,
+    resolve_memberships, resolve_policy, Condition, DecisionContext, DriverGlob, Effectivity,
+    FiredDecision, FiredPlanRecord, GateOutcome, MembershipResolver, Policy, PolicyDecision,
+    PolicyTable, RoleGraph, Rule, ScopeGlob, SharedUseDecision, Subject, Verb, VerbSet,
 };
 // The canonical config-row / plan-build primitives now live in closed core (t31); re-export
 // them from `qfs-core` so the server's public surface is unchanged for consumers.

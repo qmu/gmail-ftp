@@ -11,7 +11,7 @@ use qfs_driver::{check_capability, Archetype, Driver, Path, Verb};
 use qfs_plan::{Affected, EffectKind, EffectNode, NodeId, Target, VfsPath};
 use qfs_runtime::SharedApplier;
 use qfs_secrets::{
-    AccountId, CredentialKey, DriverId as SecDriverId, InMemoryStore, Secret, Secrets,
+    ConnectionId, CredentialKey, DriverId as SecDriverId, InMemoryStore, Secret, Secrets,
 };
 
 /// A planted token, unmistakable if it ever surfaces in a Debug/log surface.
@@ -25,7 +25,10 @@ fn empty_secrets() -> Arc<dyn Secrets> {
 /// A secrets store holding `PLANTED_TOKEN` under `(github, work)` — the auth path.
 fn secrets_with_token() -> Arc<dyn Secrets> {
     let store = InMemoryStore::new();
-    let key = CredentialKey::new(SecDriverId::new("github"), AccountId::new("work").unwrap());
+    let key = CredentialKey::new(
+        SecDriverId::new("github"),
+        ConnectionId::new("work").unwrap(),
+    );
     store.put(&key, Secret::from(PLANTED_TOKEN)).unwrap();
     Arc::new(store)
 }

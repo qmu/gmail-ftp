@@ -123,7 +123,7 @@ fn fetch_catalog_records_property_and_powers_describe() {
 
 #[test]
 fn representative_report_compiles_to_correct_run_report_request() {
-    // SELECT country, sessions FROM /ga/123 |> WHERE date BETWEEN '2024-01-01' AND '2024-01-31'
+    // SELECT country, sessions /ga/123 |> WHERE date BETWEEN '2024-01-01' AND '2024-01-31'
     //   AND country = 'JP' AND sessions > 100 |> ORDER BY sessions DESC |> LIMIT 10
     let predicate = Predicate::And(
         Box::new(Predicate::And(

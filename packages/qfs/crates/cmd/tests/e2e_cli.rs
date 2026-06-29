@@ -14,8 +14,8 @@
 //!
 //! ## Why scenario 1 uses the qfs-exec black-box API, not the binary
 //! The binary now wires the **local** read facet (see `from_local_reads_a_real_directory`, which
-//! drives `FROM /local/<dir>` through the real binary), but the other drivers' read registration is
-//! still pending, so `FROM /mail/<src>` through the binary resolves to a capability error. To
+//! drives `/local/<dir>` through the real binary), but the other drivers' read registration is
+//! still pending, so `/mail/<src>` through the binary resolves to a capability error. To
 //! exercise the real parse→resolve→plan→scan→residual→rows path with controlled over-returning
 //! data, that one scenario drives the executor's public black-box API (`run_oneshot`/
 //! `block_on_read`) against a Planner-owned in-memory fake mail driver — and this header SAYS SO.
@@ -227,9 +227,9 @@ mod read_path {
 
     #[test]
     fn limit_residual_trims_over_returned_rows() {
-        // FROM /mail/inbox |> LIMIT 1 — fake returns 4, residual LIMIT must trim to exactly 1.
+        // /mail/inbox |> LIMIT 1 — fake returns 4, residual LIMIT must trim to exactly 1.
         let (eng, rd) = (engine(), reads());
-        let stmt = parse("FROM /mail/inbox |> LIMIT 1").unwrap();
+        let stmt = parse("/mail/inbox |> LIMIT 1").unwrap();
         let rows = block_on_read(&stmt, &eng.mounts, &rd).unwrap();
         assert_eq!(rows.len(), 1, "LIMIT 1 must trim the over-returned scan");
         assert_eq!(ids(&rows), vec![1]);
@@ -241,7 +241,7 @@ mod read_path {
         // The trap: a None-pushdown source hands back all 4 rows; WHERE id > 1 |> LIMIT 2 must
         // re-filter to EXACTLY ids [2,3] — not the over-returned [1,2,3,4], not [3,4].
         let (eng, rd) = (engine(), reads());
-        let stmt = parse("FROM /mail/inbox |> WHERE id > 1 |> LIMIT 2").unwrap();
+        let stmt = parse("/mail/inbox |> WHERE id > 1 |> LIMIT 2").unwrap();
         let rows = block_on_read(&stmt, &eng.mounts, &rd).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(
@@ -260,8 +260,9 @@ mod read_path {
             engine: &eng,
             reads: &rd,
             world_apply: None,
+            safety_mode: qfs_core::SafetyMode::default(),
         };
-        let src = StmtSource::Expr("FROM /mail/inbox |> WHERE id > 2".to_string());
+        let src = StmtSource::Expr("/mail/inbox |> WHERE id > 2".to_string());
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = {
             let mut s = Streams {
@@ -298,8 +299,8 @@ fn parse_error_writes_kind_parse_to_stderr_exit_two() {
 
 #[test]
 fn unknown_source_is_capability_exit_three() {
-    // No read driver registered → an absolute FROM resolves to a structured capability error.
-    let o = qfs(&["run", "-e", "FROM /mail/inbox |> LIMIT 1", "--json"]);
+    // No read driver registered → an absolute source resolves to a structured capability error.
+    let o = qfs(&["run", "-e", "/mail/inbox |> LIMIT 1", "--json"]);
     assert_eq!(o.code, 3, "unsupported-op/capability is exit 3");
     let v = json(&o.stderr);
     assert_eq!(v["error"]["kind"], "capability");
@@ -308,7 +309,7 @@ fn unknown_source_is_capability_exit_three() {
 
 #[test]
 fn relative_path_is_usage_exit_two_with_offending_path() {
-    let o = qfs(&["run", "-e", "FROM mail/inbox |> LIMIT 1", "--json"]);
+    let o = qfs(&["run", "-e", "mail/inbox |> LIMIT 1", "--json"]);
     assert_eq!(o.code, 2, "relative path is a usage error, exit 2");
     let v = json(&o.stderr);
     assert_eq!(v["error"]["kind"], "usage");
@@ -323,7 +324,7 @@ fn relative_path_is_usage_exit_two_with_offending_path() {
 fn absolute_path_accepted_passes_addressing_gate() {
     // An absolute path passes the addressing gate (it fails LATER at capability, not at usage —
     // the proof addressing accepted it). Contrast with the relative-path usage error above.
-    let o = qfs(&["run", "-e", "FROM /mail/inbox |> LIMIT 1", "--json"]);
+    let o = qfs(&["run", "-e", "/mail/inbox |> LIMIT 1", "--json"]);
     let v = json(&o.stderr);
     assert_ne!(
         v["error"]["kind"], "usage",
@@ -336,7 +337,7 @@ fn absolute_path_accepted_passes_addressing_gate() {
 fn stdin_source_is_read_and_addressing_validated() {
     // `qfs run -` reads the statement from stdin (the agent-pipeline path). A relative path fed
     // on stdin still hits the addressing gate (usage, exit 2) — proof the stdin source resolves.
-    let o = qfs_stdin(&["run", "-", "--json"], b"FROM mail/inbox |> LIMIT 1");
+    let o = qfs_stdin(&["run", "-", "--json"], b"mail/inbox |> LIMIT 1");
     assert_eq!(o.code, 2);
     let v = json(&o.stderr);
     assert_eq!(v["error"]["kind"], "usage");
@@ -348,8 +349,8 @@ fn kind_to_exit_code_is_one_to_one() {
     // Pin the kind↔exit-code map an agent branches on: one kind ⇒ one exit code.
     let cases: &[(&str, &str, i32)] = &[
         ("this is not pipe sql", "parse", 2),
-        ("FROM mail/inbox |> LIMIT 1", "usage", 2),
-        ("FROM /mail/inbox |> LIMIT 1", "capability", 3),
+        ("mail/inbox |> LIMIT 1", "usage", 2),
+        ("/mail/inbox |> LIMIT 1", "capability", 3),
         ("REMOVE /mail/inbox", "commit_required", 4),
     ];
     for (stmt, kind, code) in cases {
@@ -365,8 +366,10 @@ fn kind_to_exit_code_is_one_to_one() {
 }
 
 // ===================================================================================
-// Scenario 3: PREVIEW / COMMIT gate — via the REAL binary (effect plans build with an
-// empty engine; commit applies against the in-memory engine).
+// Scenario 3: PREVIEW / COMMIT gate — via the REAL binary. Effect plans build against the
+// one-shot mounts (incl. the cred-free Google describe mounts, so `/mail/drafts` PLANS); the
+// commit then routes to the live apply registry, which has NO `mail` driver unless a Google
+// OAuth app + account are configured (fail closed), so a `--commit` here reaches `commit_failed`.
 // ===================================================================================
 
 #[test]
@@ -374,7 +377,7 @@ fn non_destructive_effect_previews_at_exit_zero_with_counts() {
     let o = qfs(&[
         "run",
         "-e",
-        "INSERT INTO /mail/inbox VALUES (9, 'x')",
+        "INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')",
         "--json",
     ]);
     assert_eq!(o.code, 0, "a non-destructive preview is exit 0");
@@ -465,7 +468,7 @@ fn irreversible_commit_with_ack_applies_to_the_local_filesystem() {
 
 #[test]
 fn from_local_reads_a_real_directory() {
-    // The binary wires the local-FS read facet into `qfs run`, so `FROM /local/<dir>` scans the
+    // The binary wires the local-FS read facet into `qfs run`, so `/local/<dir>` scans the
     // real host directory (rooted at `/`, so /local/<abs> -> /<abs>).
     let dir = std::env::temp_dir().join(format!("qfs-e2e-{}-read", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -475,10 +478,10 @@ fn from_local_reads_a_real_directory() {
     let o = qfs(&[
         "run",
         "-e",
-        &format!("FROM {vfs} |> SELECT name, size"),
+        &format!("{vfs} |> SELECT name, size"),
         "--json",
     ]);
-    assert_eq!(o.code, 0, "FROM /local read exits 0: {:?}", o.stderr);
+    assert_eq!(o.code, 0, "/local read exits 0: {:?}", o.stderr);
     let v = json(&o.stdout);
     let names: Vec<&str> = v["rows"]
         .as_array()
@@ -502,7 +505,7 @@ fn reversible_commit_passes_the_irreversible_gate() {
     let o = qfs(&[
         "run",
         "-e",
-        "INSERT INTO /mail/inbox VALUES (9, 'x')",
+        "INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')",
         "--json",
         "--commit",
     ]);
@@ -567,7 +570,11 @@ fn trailing_commit_keyword_irreversible_also_fails_closed() {
 #[test]
 fn piped_default_is_json_no_flag() {
     // stdout is a pipe (captured) → json by default, no plan prompt, just the document.
-    let o = qfs(&["run", "-e", "INSERT INTO /mail/inbox VALUES (9, 'x')"]);
+    let o = qfs(&[
+        "run",
+        "-e",
+        "INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')",
+    ]);
     assert_eq!(o.code, 0);
     let v = json(&o.stdout);
     assert!(
@@ -581,7 +588,7 @@ fn explicit_format_table_overrides_pipe_default() {
     let o = qfs(&[
         "run",
         "-e",
-        "INSERT INTO /mail/inbox VALUES (9, 'x')",
+        "INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')",
         "--format",
         "table",
     ]);
@@ -602,7 +609,7 @@ fn explicit_json_flag_is_machine_json() {
     let o = qfs(&[
         "run",
         "-e",
-        "INSERT INTO /mail/inbox VALUES (9, 'x')",
+        "INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')",
         "--json",
     ]);
     assert_eq!(o.code, 0);
@@ -635,7 +642,7 @@ fn tty_default_is_table_via_pty() {
     // `script -qec "<cmd>" /dev/null` runs <cmd> attached to a pty, capturing to /dev/null but
     // letting <cmd>'s own stdout flow to script's stdout (the pipe we capture).
     let cmd = format!(
-        "{} run -e \"INSERT INTO /mail/inbox VALUES (9, 'x')\"",
+        "{} run -e \"INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')\"",
         qfs_bin().display()
     );
     let out = Command::new(script)
@@ -676,12 +683,12 @@ fn data_on_stdout_errors_on_stderr() {
     let ok = qfs(&[
         "run",
         "-e",
-        "INSERT INTO /mail/inbox VALUES (1, 'x')",
+        "INSERT INTO /mail/drafts VALUES ('a@b.example', 'Hi', 'Body')",
         "--json",
     ]);
     assert!(!ok.stdout.is_empty() && ok.stderr.is_empty());
     // An error: nothing on stdout, the error body on stderr.
-    let bad = qfs(&["run", "-e", "FROM /mail/inbox |> LIMIT 1", "--json"]);
+    let bad = qfs(&["run", "-e", "/mail/inbox |> LIMIT 1", "--json"]);
     assert!(
         bad.stdout.is_empty(),
         "no data on stdout for a capability error"
@@ -692,13 +699,7 @@ fn data_on_stdout_errors_on_stderr() {
 #[test]
 fn quiet_suppresses_progress_but_not_the_error_body() {
     // --quiet must NOT swallow the structured error (RFD §10): the agent still gets a body.
-    let o = qfs(&[
-        "run",
-        "-e",
-        "FROM /mail/inbox |> LIMIT 1",
-        "--json",
-        "--quiet",
-    ]);
+    let o = qfs(&["run", "-e", "/mail/inbox |> LIMIT 1", "--json", "--quiet"]);
     assert_eq!(o.code, 3);
     let v = json(&o.stderr);
     assert_eq!(
@@ -715,7 +716,7 @@ fn quiet_suppresses_progress_but_not_the_error_body() {
 fn top_level_help_is_stable_and_exit_zero() {
     let o = qfs(&["--help"]);
     assert_eq!(o.code, 0, "--help exits 0");
-    for needle in ["Usage: qfs", "run", "serve", "account", "--json"] {
+    for needle in ["Usage: qfs", "run", "serve", "connection", "--json"] {
         assert!(
             o.stdout.contains(needle),
             "`qfs --help` lost `{needle}`:\n{}",
@@ -754,9 +755,9 @@ fn error_dto_is_whitelisted_fields_only_no_secret_leak() {
     // "unexpected token", which is grammar terminology, not a credential.)
     const CANARY: &str = "CANARY-SECRET-9f3a7c-do-not-leak";
     let cases = [
-        "this is not pipe sql",        // parse
-        "FROM mail/inbox |> LIMIT 1",  // usage (carries a path field)
-        "FROM /mail/inbox |> LIMIT 1", // capability
+        "this is not pipe sql",   // parse
+        "mail/inbox |> LIMIT 1",  // usage (carries a path field)
+        "/mail/inbox |> LIMIT 1", // capability
     ];
     for stmt in cases {
         // Plant the canary in the env the child inherits; it must never surface in the DTO.
@@ -792,13 +793,13 @@ fn error_dto_is_whitelisted_fields_only_no_secret_leak() {
 }
 
 #[test]
-fn account_stub_prints_no_credential_material() {
-    // `account list` is an E0 stub, but it must never echo a credential. Plant a canary in the
-    // env the child inherits and confirm neither stream reflects it (the account name is safe
+fn connection_stub_prints_no_credential_material() {
+    // `connection list` is an E0 stub, but it must never echo a credential. Plant a canary in the
+    // env the child inherits and confirm neither stream reflects it (the connection name is safe
     // metadata; the credential value is not).
     const CANARY: &str = "CANARY-SECRET-acct-do-not-leak";
     let child = Command::new(qfs_bin())
-        .args(["--json", "account", "list"])
+        .args(["--json", "connection", "list"])
         .env("RUST_LOG", "off")
         .env("QFS_FAKE_TOKEN", CANARY)
         .stdin(Stdio::null())
@@ -811,7 +812,7 @@ fn account_stub_prints_no_credential_material() {
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     assert!(
         !blob.contains(CANARY),
-        "account stub leaked the planted credential value: {blob}"
+        "connection stub leaked the planted credential value: {blob}"
     );
 }
 

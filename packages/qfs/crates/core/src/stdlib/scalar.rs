@@ -17,10 +17,28 @@ use qfs_types::ColumnType;
 pub(super) fn scalar_builtins() -> Vec<BuiltinFn> {
     vec![
         // --- string ---
-        BuiltinFn::scalar("UPPER", FnSig::fixed(1, ColumnType::Text), upper),
-        BuiltinFn::scalar("LOWER", FnSig::fixed(1, ColumnType::Text), lower),
-        BuiltinFn::scalar("TRIM", FnSig::fixed(1, ColumnType::Text), trim),
-        BuiltinFn::scalar("LENGTH", FnSig::fixed(1, ColumnType::Int), length),
+        // The single-`Text`-operand string built-ins carry a static arg-type contract (t75)
+        // so the plan-time checker rejects e.g. `UPPER(<i64 column>)` before any I/O.
+        BuiltinFn::scalar(
+            "UPPER",
+            FnSig::fixed(1, ColumnType::Text).with_arg_types(vec![Some(ColumnType::Text)]),
+            upper,
+        ),
+        BuiltinFn::scalar(
+            "LOWER",
+            FnSig::fixed(1, ColumnType::Text).with_arg_types(vec![Some(ColumnType::Text)]),
+            lower,
+        ),
+        BuiltinFn::scalar(
+            "TRIM",
+            FnSig::fixed(1, ColumnType::Text).with_arg_types(vec![Some(ColumnType::Text)]),
+            trim,
+        ),
+        BuiltinFn::scalar(
+            "LENGTH",
+            FnSig::fixed(1, ColumnType::Int).with_arg_types(vec![Some(ColumnType::Text)]),
+            length,
+        ),
         BuiltinFn::scalar("SUBSTR", FnSig::range(2, 3, ColumnType::Text), substr),
         BuiltinFn::scalar("REPLACE", FnSig::fixed(3, ColumnType::Text), replace),
         BuiltinFn::scalar(

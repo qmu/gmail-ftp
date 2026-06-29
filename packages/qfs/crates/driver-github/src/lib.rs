@@ -95,7 +95,7 @@ pub use dto::{
 pub use effect::GitHubEffect;
 pub use error::GitHubError;
 pub use path::{GitHubPath, Namespace, MOUNT};
-pub use read::ReadPlan;
+pub use read::{read_rows, ReadPlan};
 pub use schema::schema_for;
 
 /// The GitHub driver (RFD §5). Owns the synchronous [`GitHubApplier`] the contract returns from

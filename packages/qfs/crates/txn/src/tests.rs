@@ -722,3 +722,118 @@ fn indeterminate_outcome_code_is_stable() {
     assert_eq!(outcome.code(), "indeterminate");
     assert!(!outcome.is_success());
 }
+
+// ---- TRANSACTION block commit (M6, ticket t62): reversible-only, all-or-nothing -----------
+
+/// A `TRANSACTION { … }` block (t62) lowers to a plan of **reversible** writes against ONE
+/// transactional source: it selects the ACID strategy and commits all-or-nothing. An injected
+/// mid-commit failure rolls the whole transaction back — zero net effects (only the first leg
+/// reached the driver before the failure, and the driver-side rollback undoes it).
+#[test]
+fn reversible_transaction_single_source_commits_acid_and_rolls_back() {
+    let ledger = InMemoryLedger::new();
+    // Two reversible writes to `db` — the shape `eval_transaction` produces for a block of two
+    // UPSERT/INSERTs (commit-point order: leg 0 then leg 1).
+    let mut b = PlanBuilder::new();
+    let id0 = b.next_id();
+    b.push(write_node(
+        id0.index(),
+        "db",
+        "/db/orders",
+        EffectKind::Upsert,
+        1,
+    ));
+    let id1 = b.next_id();
+    b.push(write_node(
+        id1.index(),
+        "db",
+        "/db/audit",
+        EffectKind::Insert,
+        1,
+    ));
+    let plan = b.build();
+
+    // Single transactional source ⇒ ACID (the all-or-nothing path).
+    let txnal = TransactionalDrivers::none().with(DriverId::new("db"));
+    assert_eq!(select_strategy(&plan, &txnal).code(), "single_source_acid");
+
+    let legs: Vec<EffectLeg> = plan
+        .nodes()
+        .iter()
+        .map(|n| EffectLeg::from_node("txn", n, Precondition::None))
+        .collect();
+
+    // Inject a failure on the SECOND leg → the whole transaction rolls back.
+    let mut driver = FakeApplier::new().script(
+        1,
+        vec![LegOutcome::Failed(crate::EffectError::terminal(
+            "constraint",
+        ))],
+    );
+    let report = SagaExecutor::new(&ledger).run_acid(&mut driver, &legs);
+    assert!(
+        report.rolled_back,
+        "an ACID transaction fails closed: rollback"
+    );
+    assert_eq!(report.failure_at, Some(NodeId(1)));
+    // Only leg 0 hit the driver before the failure; the driver-side rollback undoes it.
+    assert_eq!(*driver.applied.borrow(), vec![NodeId(0)]);
+}
+
+/// A cross-source reversible transaction has no distributed 2PC (RFD §6): it is a best-effort
+/// saga with reverse-order compensation. Because the block is reversible-only, every applied leg
+/// HAS a compensation, so a mid-commit failure fully compensates — no orphaned effect.
+#[test]
+fn reversible_transaction_cross_source_compensates_in_reverse() {
+    let ledger = InMemoryLedger::new();
+    let legs = vec![
+        EffectLeg::from_node(
+            "txn",
+            &write_node(0, "db", "/db/orders", EffectKind::Upsert, 1),
+            Precondition::None,
+        )
+        .with_compensation(Compensation::DeleteCreated),
+        EffectLeg::from_node(
+            "txn",
+            &write_node(1, "s3", "/s3/receipt", EffectKind::Upsert, 1),
+            Precondition::None,
+        )
+        .with_compensation(Compensation::DeleteCreated),
+    ];
+    // Two sources ⇒ saga.
+    let mut b = PlanBuilder::new();
+    let a = b.next_id();
+    b.push(write_node(
+        a.index(),
+        "db",
+        "/db/orders",
+        EffectKind::Upsert,
+        1,
+    ));
+    let c = b.next_id();
+    b.push(write_node(
+        c.index(),
+        "s3",
+        "/s3/receipt",
+        EffectKind::Upsert,
+        1,
+    ));
+    let plan = b.build();
+    let both = TransactionalDrivers::none()
+        .with(DriverId::new("db"))
+        .with(DriverId::new("s3"));
+    assert_eq!(select_strategy(&plan, &both).code(), "cross_source_saga");
+
+    // Fail the second leg → the first (reversible) leg is compensated in reverse.
+    let mut driver = FakeApplier::new().script(
+        1,
+        vec![LegOutcome::Failed(crate::EffectError::terminal("network"))],
+    );
+    let report = SagaExecutor::new(&ledger).run_saga(&mut driver, &legs);
+    assert_eq!(report.failure_at, Some(NodeId(1)));
+    assert_eq!(
+        *driver.compensated.borrow(),
+        vec![NodeId(0)],
+        "the one applied leg is compensated (reverse-order, reversible-only block)"
+    );
+}

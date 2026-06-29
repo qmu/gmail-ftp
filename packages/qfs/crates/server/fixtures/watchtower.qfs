@@ -25,4 +25,4 @@ CREATE TRIGGER reconfigure ON ctl DO UPSERT INTO /server/jobs VALUES (name, ever
 CREATE TRIGGER guarded ON inbox DO INSERT INTO /log VALUES ('guarded') WHERE priority > 5 POLICY watch_insert;
 
 # A read-only ENDPOINT — a pure READ produces no commit plan, so it needs no POLICY.
-CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5;
+CREATE ENDPOINT recent ON 'GET /recent' AS /mail/inbox |> LIMIT 5;

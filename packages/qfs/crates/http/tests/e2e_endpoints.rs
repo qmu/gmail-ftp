@@ -309,7 +309,7 @@ async fn s1_live_route_returns_200_json_of_matching_row() {
             "items",
             "GET",
             "/items/:p_id",
-            "FROM /mock/items |> WHERE id = p_id",
+            "/mock/items |> WHERE id == p_id",
         )]))
         .unwrap();
     let server = LiveServer::start(binding).await;
@@ -351,7 +351,7 @@ async fn s2_write_endpoint_default_denied_serves_no_route() {
             "purge",
             "POST",
             "/purge/:p_id",
-            "REMOVE /mock/items WHERE id = p_id",
+            "REMOVE /mock/items WHERE id == p_id",
         )]))
         .unwrap();
     assert_eq!(
@@ -386,7 +386,7 @@ async fn s2_write_endpoint_opens_route_when_policy_grants() {
         "purge",
         "POST",
         "/purge/:p_id",
-        "REMOVE /mock/items WHERE id = p_id",
+        "REMOVE /mock/items WHERE id == p_id",
     );
     def.policy = Some("writer".to_string());
     let mut state = state_with(vec![def]);
@@ -437,7 +437,7 @@ async fn s3_param_shadowing_a_column_serves_no_route_never_widens() {
         reads_with_mock(Arc::clone(&scans)),
         10_000,
     );
-    // `:id` collides with the `id` COLUMN: `WHERE id = id` would, if the param `id` replaced the
+    // `:id` collides with the `id` COLUMN: `WHERE id == id` would, if the param `id` replaced the
     // column node, collapse into the tautology `WHERE 2 = 2` (returning ALL rows — access
     // widening). The gate must refuse registration → no route.
     binding
@@ -445,7 +445,7 @@ async fn s3_param_shadowing_a_column_serves_no_route_never_widens() {
             "shadow",
             "GET",
             "/items/:id",
-            "FROM /mock/items |> WHERE id = id",
+            "/mock/items |> WHERE id == id",
         )]))
         .unwrap();
     assert_eq!(
@@ -482,7 +482,7 @@ async fn s3_fail_closed_shadow_over_unresolvable_source_is_refused() {
     // FAIL-CLOSED: a param used as a column over a source whose schema cannot be resolved
     // (no such mount in this engine) must ALSO be refused — we cannot prove the param is not a
     // real column of the late-bound source. Here `/unknown/x` is not registered, so the source
-    // schema is unverifiable; `:thing` is referenced as a column (`WHERE thing = thing`).
+    // schema is unverifiable; `:thing` is referenced as a column (`WHERE thing == thing`).
     let engine = engine_with_mock(); // has /mock, NOT /unknown
     let scans = Arc::new(AtomicUsize::new(0));
     let mut binding = HttpBinding::new(engine, reads_with_mock(Arc::clone(&scans)), 10_000);
@@ -491,7 +491,7 @@ async fn s3_fail_closed_shadow_over_unresolvable_source_is_refused() {
             "late",
             "GET",
             "/late/:thing",
-            "FROM /unknown/x |> WHERE thing = thing",
+            "/unknown/x |> WHERE thing == thing",
         )]))
         .unwrap();
     assert_eq!(
@@ -524,7 +524,7 @@ async fn s3_non_colliding_param_is_not_false_refused() {
             "ok",
             "GET",
             "/items/:p_id",
-            "FROM /mock/items |> WHERE id = p_id",
+            "/mock/items |> WHERE id == p_id",
         )]))
         .unwrap();
     assert_eq!(
@@ -551,16 +551,16 @@ async fn s3_adversarial_attempts_to_defeat_the_shadow_guard_all_refused() {
     // rewrite touches, not just `WHERE col = col`.
     let cases: &[(&str, &str, &str)] = &[
         // (a) Brace param form `{id}` (same shadow, different route syntax).
-        ("brace", "/items/{id}", "FROM /mock/items |> WHERE id = id"),
+        ("brace", "/items/{id}", "/mock/items |> WHERE id == id"),
         // (b) Shadow a column referenced ONLY in a SELECT projection (not a WHERE) — the
         //     rewrite still substitutes `Expr::Col` in projections, so this would widen too.
-        ("proj", "/items/:name", "FROM /mock/items |> SELECT name"),
+        ("proj", "/items/:name", "/mock/items |> SELECT name"),
         // (c) Shadow a column reached through a subquery source — the collect walk recurses
         //     into subqueries, so a param matching its column is still a shadow.
         (
             "sub",
             "/items/:id",
-            "FROM (FROM /mock/items |> WHERE id = 1) |> WHERE id = id",
+            "(/mock/items |> WHERE id == 1) |> WHERE id == id",
         ),
     ];
     for (name, route, query) in cases {
@@ -614,7 +614,7 @@ async fn s4_injection_path_param_is_typed_data_not_query_structure() {
             "byname",
             "GET",
             "/byname/:q_name",
-            "FROM /mock/items |> WHERE name = q_name",
+            "/mock/items |> WHERE name == q_name",
         )]))
         .unwrap();
     let server = LiveServer::start(binding).await;
@@ -676,7 +676,7 @@ async fn s5_content_negotiation_json_default_csv_on_request() {
             "all",
             "GET",
             "/all",
-            "FROM /mock/items",
+            "/mock/items",
         )]))
         .unwrap();
     let server = LiveServer::start(binding).await;
@@ -725,7 +725,7 @@ async fn s6_extra_query_param_is_400_naming_the_param() {
             "all",
             "GET",
             "/all",
-            "FROM /mock/items",
+            "/mock/items",
         )]))
         .unwrap();
     let server = LiveServer::start(binding).await;
@@ -761,7 +761,7 @@ async fn s6_format_knob_is_not_an_extra_param() {
             "all",
             "GET",
             "/all",
-            "FROM /mock/items",
+            "/mock/items",
         )]))
         .unwrap();
     let server = LiveServer::start(binding).await;
@@ -783,12 +783,7 @@ async fn s7_unknown_route_is_404() {
         10_000,
     );
     binding
-        .reconcile(&state_with(vec![endpoint(
-            "a",
-            "GET",
-            "/a",
-            "FROM /mock/items",
-        )]))
+        .reconcile(&state_with(vec![endpoint("a", "GET", "/a", "/mock/items")]))
         .unwrap();
     let server = LiveServer::start(binding).await;
     let resp = server.request("GET", "/does-not-exist", &[]).await;
@@ -809,12 +804,7 @@ async fn s7_eval_error_is_422() {
     let reads = Arc::new(ReadRegistry::new()); // NO read driver
     let mut binding = HttpBinding::new(engine, reads, 10_000);
     binding
-        .reconcile(&state_with(vec![endpoint(
-            "a",
-            "GET",
-            "/a",
-            "FROM /mock/items",
-        )]))
+        .reconcile(&state_with(vec![endpoint("a", "GET", "/a", "/mock/items")]))
         .unwrap();
     let server = LiveServer::start(binding).await;
     let resp = server.request("GET", "/a", &[]).await;
@@ -837,7 +827,7 @@ async fn s7_oversize_result_is_413() {
             "all",
             "GET",
             "/all",
-            "FROM /mock/items",
+            "/mock/items",
         )]))
         .unwrap();
     let server = LiveServer::start(binding).await;
@@ -876,7 +866,7 @@ async fn s8_hot_reload_add_then_remove_without_restart() {
         "live",
         "GET",
         "/live",
-        "FROM /mock/items",
+        "/mock/items",
     )]));
     let added = server.request("GET", "/live", &[]).await;
     assert_eq!(
@@ -950,12 +940,7 @@ async fn s9_error_bodies_never_leak_a_held_credential() {
     ));
     let mut binding = HttpBinding::new(engine, reads, 10_000);
     binding
-        .reconcile(&state_with(vec![endpoint(
-            "a",
-            "GET",
-            "/a",
-            "FROM /mock/items",
-        )]))
+        .reconcile(&state_with(vec![endpoint("a", "GET", "/a", "/mock/items")]))
         .unwrap();
     let server = LiveServer::start(binding).await;
 

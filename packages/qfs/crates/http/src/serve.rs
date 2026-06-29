@@ -366,13 +366,21 @@ where
 /// request per connection — the t32 scope).
 fn serialize_response(resp: &HttpResponse) -> Vec<u8> {
     let reason = status_reason(resp.status);
-    let head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+    let mut head = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n",
         resp.status,
         reason,
         resp.content_type,
         resp.body.len(),
     );
+    // Extra headers (Location for a redirect, Set-Cookie for a session) emitted verbatim. Values are
+    // single-line (no CR/LF) by construction here; a stray newline would be a header-injection
+    // vector, so strip any CR/LF defensively before writing it onto the wire.
+    for (name, value) in &resp.headers {
+        let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+        head.push_str(&format!("{name}: {safe_value}\r\n"));
+    }
+    head.push_str("\r\n");
     let mut out = head.into_bytes();
     out.extend_from_slice(&resp.body);
     out
@@ -436,7 +444,10 @@ fn decode(s: &str) -> String {
 fn status_reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        201 => "Created",
+        302 => "Found",
         400 => "Bad Request",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         413 => "Payload Too Large",

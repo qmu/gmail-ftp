@@ -453,7 +453,7 @@ fn plan_shape_upsert_remove_and_read_nodes() {
         other => panic!("expected Delete, got {other:?}"),
     }
 
-    // FROM /s3/b/... → an effect-free READ node (List/Read), no irreversible flag.
+    // /s3/b/... → an effect-free READ node (List/Read), no irreversible flag.
     let read = EffectNode::new(
         NodeId(2),
         EffectKind::List,

@@ -1,0 +1,44 @@
+[package]
+name = "qfs-store"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs persistence leaf (roadmap M0 / t42): the embedded SQLite persistence substrate the dashboard, CLI, and MCP all agree on (roadmap decisions E + F). Owns a sync `rusqlite::Connection` behind a `Db` handle and two scope newtypes — `SystemDb` (per host: projects + cross-project config + the `/sys/*` surface) and `ProjectDb` (per project: that project's connections, config, state). A versioned, checksum-verified, forward-only embedded-migrations runner applies each scope's ordered migration set idempotently inside a transaction, safe to call on every start/relaunch (a crash mid-migration rolls back). The connection-opening seam (`DbSource`) yields a connection WITHOUT the caller naming a file — the binary supplies the path/route, so a future reverse-proxy tenant→DB injection (decision F) is a different `DbSource` impl, not a code change. SYNC by construction: rusqlite is sync, so tokio never enters here (the same confinement that keeps qfs-cron/qfs-server's policy core pure). A leaf: only the terminal `qfs` binary opens a real DB path. This ticket ships the runner + EMPTY schema skeletons; the tables are filled by later M0–M3 tickets (t43 secrets, t45 identity, t53 /sys/*)."
+
+[dependencies]
+# The blessed, dependency-free SHA-256 (FIPS 180-4) the workspace single-sources (t34). Migration
+# checksums are `sha256_hex(sql)` so a relaunch RE-VERIFIES an applied migration's body rather than
+# silently re-applying (or skipping a tampered) one. qfs-crypto-core is a TRUE pure leaf (zero deps),
+# so this edge adds no runtime/vendor coupling.
+qfs-crypto-core = { path = "../crypto-core" }
+# t45: the identity domain core. qfs-store provides the rusqlite `IdentityStore` impl
+# (`SqliteIdentityStore`) over the System DB — a `qfs-store -> qfs-identity` edge (acyclic: qfs-store
+# is consumed only by the terminal binary, qfs-identity is a pure leaf). qfs-identity carries no
+# rusqlite/tokio, so this adds no coupling beyond its argon2/secrets/crypto-core leaves.
+qfs-identity = { path = "../identity" }
+# t46: the session domain core. qfs-store provides the rusqlite `SessionStore` impl
+# (`SqliteSessionStore`) over the System DB — a `qfs-store -> qfs-session` edge (acyclic: qfs-store is
+# consumed only by the terminal binary, qfs-session is a pure-ish leaf carrying no rusqlite/tokio).
+qfs-session = { path = "../session" }
+# t48: the envelope-encryption primitive (t43) + the redacting `Secret`. qfs-store's `OauthKeyStore`
+# envelope-encrypts the AS PRIVATE signing key at rest under a System-DB data-key (the SAME mechanism
+# that protects connection secrets, decision E) and hands the decrypted scalar out only inside a
+# `Secret`. This `qfs-store -> qfs-secrets` edge is acyclic (qfs-secrets is a pure leaf confined to
+# qfs-types; the `secrets_is_confined_*` guard constrains qfs-secrets' OWN deps, not its dependents).
+qfs-secrets = { path = "../secrets" }
+# The in-process SQLite engine. `bundled` compiles libsqlite3 from source (no system-lib
+# dependency) — the SAME dep+feature qfs-driver-sql's test backend and the `qfs` binary already use,
+# so there is ONE libsqlite3 build in the artifact. SYNC: tokio must not enter this crate.
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Structured, secret-free error taxonomy (AI-consumable; never renders a DB path's secrets).
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Temp-dir fixtures for the FileSource persist-across-reopen test (never touches user files).
+tempfile = "3"
+
+[lints]
+workspace = true

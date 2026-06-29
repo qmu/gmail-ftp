@@ -17,8 +17,10 @@
 //! — exactly like the t28 shell launcher and the t32 serve launcher.
 //!
 //! ## Coverage (the LIGHT facet of the CO-t29-1 driver-registration carry-over)
-//! Registered cred-free (no backend registration needed for describe): **local, mail, drive,
-//! github, slack, ga, s3, r2**. **sql / git / cf** require a registered connection-catalog / repo
+//! Registered cred-free (no backend registration needed for describe): **local, fs, mail, drive,
+//! github, slack, ga, s3, r2**. The t68 `/fs` driver describes over an EMPTY (deny-all) root
+//! allowlist — its pure introspective half names no host path. **sql / git / cf** require a
+//! registered connection-catalog / repo
 //! / D1-catalog for describe to resolve a concrete node (a *registration* requirement, not a
 //! credential one), so their describe is covered by the `qfs-skill` golden corpus instead — where
 //! the harness builds the registry with a fixture catalog. This is the documented fallback.
@@ -41,6 +43,11 @@ pub fn describe_registry() -> MountRegistry {
     let drivers: Vec<Arc<dyn qfs_core::Driver>> = vec![
         // Blob: the reference local-FS driver (genuinely cred-free).
         Arc::new(qfs_driver_local::LocalFsDriver::new("/")),
+        // Blob: the t68 first-class `/fs` driver. DESCRIBE is PURE — it names no host path and does
+        // no I/O — so it describes cred-free over an EMPTY (deny-all) root allowlist; the live roots
+        // are injected only on the apply registry (`commit.rs`). This is what makes `/fs` appear in
+        // the generated `docs/drivers.md` without exposing any operator-configured directory.
+        Arc::new(qfs_driver_fs::FsDriver::new(qfs_driver_fs::FsRoots::new())),
         // Append: Gmail (fixed describe; the MockGmailClient is never called by describe).
         Arc::new(qfs_driver_gmail::GmailDriver::new(Arc::new(
             qfs_driver_gmail::MockGmailClient::new(),
@@ -84,6 +91,27 @@ pub fn describe_registry() -> MountRegistry {
                 )),
             ),
         )),
+        // t53 administration: the `/sys/*` admin surface. DESCRIBE is PURE — SysDriver owns NO
+        // backend and NO creds (its read source + applier are injected from the binary), so it
+        // describes `/sys/users`, `/sys/audit`, … cred-free, exactly like the other introspective
+        // facets. This is what makes `/sys/*` appear in the generated `docs/drivers.md`.
+        Arc::new(qfs_driver_sys::SysDriver::new()),
+        // t64 AI-sessions (roadmap M7): the `/claude/...` session surface. DESCRIBE is PURE —
+        // ClaudeDriver owns NO session source and NO creds (its read source + applier are injected
+        // from the binary), so it describes `/claude/sessions` + `.../instructions` cred-free,
+        // exactly like the other introspective facets. Decision K: this is a path façade over
+        // session metadata + an append-log, NOT qfs calling an LLM. This is what makes `/claude/*`
+        // appear in the generated `docs/drivers.md`.
+        Arc::new(qfs_driver_claude::ClaudeDriver::new()),
+        // NOTE (t58): the `/directories/...` identity-directory driver is deliberately NOT
+        // registered here. `/directories` is a RESERVED SCOPE REALM (decision P / §1.3 —
+        // `RESERVED_REALMS`), not a driver-backed mount like `/sys`, so `MountRegistry::register`
+        // governance rejects a `/directories` mount (proven by
+        // `register_rejects_a_driver_mount_that_shadows_a_realm`). The t58 driver's PURE,
+        // credential-free describe surface (`qfs_driver_directory::DirectoryDriver`) and its read
+        // seam are instead consumed directly by the live `member_of` resolver in `src/directory.rs`;
+        // routing a scope-realm `/directories/<provider>/groups` path THROUGH the driver for `qfs
+        // describe` is the documented seam this read-first slice leaves open.
     ];
 
     for driver in drivers {

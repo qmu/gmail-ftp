@@ -215,6 +215,12 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         "qfs-core",
         "qfs-exec",
         "qfs-driver-local",
+        // t68: the binary ALSO wires the first-class `/fs` driver (describe + the live read facet +
+        // the policy-gated apply over operator-configured named roots). qfs-driver-fs is a
+        // qfs-runtime consumer that must stay a LEAF — only the terminal binary may depend on it —
+        // so the operator config (QFS_FS_<NAME>) lives in src/fs.rs and std::fs writes dead-end
+        // here. Same composition-root rationale as the t28 shell's qfs-driver-local edge.
+        "qfs-driver-fs",
         "qfs-pushdown",
         // t32: the binary is ALSO the `qfs serve` composition root — it wires the HTTP serving
         // binding (qfs-http, a leaf consuming qfs-server + qfs-exec) and injects it into qfs-cmd
@@ -222,13 +228,14 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         // binary is the terminal sink (nothing depends on it), so reaching up into qfs-http is a
         // composition root consuming a leaf binding, not a layer inversion.
         "qfs-http",
-        // t33: the binary ALSO wires the JOB scheduler binding (qfs-cron, the cron sibling of
-        // qfs-http — a leaf consuming qfs-server + qfs-exec). It builds the CronBinding + the
-        // binary-local JobStore + the committer + the native daemon loop here, so qfs-cron's
-        // feature-gated tokio dead-ends in the terminal sink. Same composition-root rationale.
-        "qfs-cron",
+        // t65 (decision M revised): the internal JOB scheduler binding (qfs-cron) is RETIRED — qfs
+        // is not a scheduler, so the binary no longer wires a CronBinding/daemon and no longer
+        // depends on qfs-cron. A `/server/jobs` row is a SAVED named plan an EXTERNAL scheduler
+        // invokes via `qfs job run` (src/job.rs), which composes qfs-host (saved-plan extraction +
+        // the policy gate) + qfs-exec (build_plan) + qfs-runtime (the real apply) — all already
+        // allowlisted leaves. No new binary dep is introduced by externalizing scheduling.
         // t34: the binary ALSO wires the watchtower binding (qfs-watchtower, the watchtower sibling
-        // of qfs-http/qfs-cron — a leaf consuming qfs-server + qfs-exec). It builds the
+        // of qfs-http — a leaf consuming qfs-server + qfs-exec). It builds the
         // WatchtowerBinding + the shared LocalBus + the injected Committer + the dispatch loop here
         // and composes the webhook ingest into the qfs-http listener via a fallback closure, so
         // qfs-watchtower's feature-gated tokio dead-ends in the terminal sink. Same rationale.
@@ -272,6 +279,15 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         // qfs-cmd/qfs-exec stay off the wire client. qfs-driver-http is already in the
         // runtime-consumer allowlist; this is its only allowed dependent besides the driver layer.
         "qfs-driver-http",
+        // google-drivers live commit: the binary composes the OAuth-authenticated gmail/gdrive/ga
+        // commit stack (src/google.rs) over qfs-google-auth — bridging the ONE reqwest transport onto
+        // its runtime-free `HttpExchange` seam, building the per-account StoredTokenSource +
+        // GoogleApiClient, and registering the apply drivers in src/commit.rs (gated like
+        // github/slack). qfs-google-auth is a PURE off-runtime leaf (it shares only qfs-http-core +
+        // qfs-secrets, never reqwest/qfs-runtime/qfs-driver-http — pinned by
+        // `http_core_is_a_pure_leaf_single_sourcing_the_redaction_set`), so this edge adds NO runtime
+        // coupling to the terminal binary; the wire client + the live loopback consent dead-end here.
+        "qfs-google-auth",
         // t-exec sql live commit: the binary wires the real SQLite-backed sql driver. qfs-driver-sql
         // is the vendor-free driver (trait + compiler); the production SqliteBackend (rusqlite)
         // lives IN the binary (src/sql.rs) because qfs-driver-sql is a runtime consumer that must
@@ -282,12 +298,83 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         // on-disk repos; the engine's plan_write seam runs the driver's commit planner). Binary-only
         // edge; qfs-cmd/qfs-exec stay off it, and the `git` process dead-ends in the terminal binary.
         "qfs-driver-git",
+        // t53 administration: the binary wires the `/sys/*` admin driver (describe + the live read
+        // facet + the policy-grant apply). qfs-driver-sys is a qfs-runtime consumer that must stay a
+        // LEAF — only the terminal binary may depend on it — so the production rusqlite-backed
+        // SysBackend lives IN the binary (src/sys.rs) and dead-ends here like the SQL backend.
+        "qfs-driver-sys",
+        // t64 AI-sessions: the binary wires the `/claude/...` session driver (describe + the live
+        // read facet + the policy-gated instruction append). qfs-driver-claude is a qfs-runtime
+        // consumer that must stay a LEAF — only the terminal binary may depend on it — so the on-disk
+        // SessionSource (Claude Code's session state, opt-in via QFS_CLAUDE_SESSIONS) lives IN the
+        // binary (src/claude.rs) and its std::fs reads/append dead-end here. Decision K: a path façade
+        // over session metadata + an append-log, never an LLM/inference dependency.
+        "qfs-driver-claude",
+        // t58 identity directory: the binary wraps qfs-driver-directory's in-memory
+        // `DirectorySource` into a t57 `MembershipResolver` so `member_of('/directories/...')`
+        // resolves against the directory (src/directory.rs). `/directories` is a RESERVED SCOPE
+        // REALM (decision P), not a driver-backed mount, so this driver is NOT registered in the
+        // MountRegistry — the binary consumes its pure describe surface + read seam directly.
+        // qfs-driver-directory is READ-FIRST: it carries a NoopApplier and NO qfs-runtime dep, so it
+        // is NOT a runtime consumer (it never appears in `runtime_consumers_allowed`) — the lightest
+        // driver shape, like the pure introspective half of qfs-driver-sys minus the apply bridge.
+        // The binary is the allowlisted leaf that may carry the `qfs-driver-*` edge; qfs-cmd stays off it.
+        "qfs-driver-directory",
         // t39 CO-t39-1: the binary links the embedded agent skill so `qfs skill` ships SKILL.md in
         // the artifact (the NORMAL dep edge that keeps the `include_str!` consts from being
         // dead-stripped). qfs-skill's own `[dependencies]` is EMPTY — it carries no runtime/driver
         // code (its driver edges are dev-deps for the golden corpus only) — so this edge adds zero
         // transitive weight and no runtime/driver coupling to the terminal binary.
         "qfs-skill",
+        // t42 persistence foundation: the binary is the ONE place that opens a real DB path
+        // (decision F). qfs-store is a SYNC leaf (rusqlite, no tokio) consumed only by the terminal
+        // binary, which resolves the System DB path and runs the embedded migrations on start. The
+        // edge keeps the persistence substrate off the spine (nothing below the binary names a DB
+        // file); rusqlite's libsqlite3 build dead-ends in the terminal binary like the existing
+        // qfs-driver-sql backend.
+        "qfs-store",
+        // t45 identity composition root: the binary wires the System-DB-backed identity store
+        // (`SqliteIdentityStore` in qfs-store) + the identity DOMAIN core (qfs-identity) for `qfs
+        // identity signup/whoami`, injecting the launcher into qfs-cmd (which stays off both
+        // backends). qfs-identity is a pure-ish leaf (no rusqlite/tokio/lang/plan/driver/codec/
+        // parser — asserted by `identity_is_a_pure_domain_leaf` below), so the edge adds no
+        // runtime/driver coupling to the terminal binary.
+        "qfs-identity",
+        // t46 session composition root: the binary wires the System-DB-backed session store
+        // (`SqliteSessionStore` in qfs-store) + the session DOMAIN core (qfs-session), generating the
+        // opaque token from the OS-entropy CSPRNG it owns and persisting only its hash. qfs-session is
+        // a pure-ish leaf (no rusqlite/tokio/rand/lang/plan/driver/codec/parser — asserted by
+        // `session_is_a_pure_domain_leaf` below), so the edge adds no runtime/driver coupling to the
+        // terminal binary (it pulls only qfs-identity/qfs-secrets/qfs-crypto-core leaves).
+        "qfs-session",
+        // t47 serve composition root: the binary ALSO wires the MCP serving binding (qfs-mcp, a leaf
+        // consuming qfs-server + qfs-exec, the MCP sibling of qfs-http/qfs-cron/qfs-watchtower). The
+        // binary implements + injects the McpEngine (describe registry / build_plan / the
+        // policy-gated + IrreversibleGuard-checked, runtime-backed commit / the redacted connection
+        // list) and composes the pure `POST /mcp` handler into the qfs-http listener via a fallback
+        // closure. qfs-mcp serves no HTTP itself and carries no tokio — the apply is the injected
+        // closure that dead-ends the COMMIT interpreter in this terminal binary — so it does NOT
+        // depend on qfs-runtime (asserted by `mcp_binding_is_a_leaf_serve_consumer` below). qfs-mcp
+        // also re-exports the qfs-http-core / qfs-server types the binary adapts onto, so the binary
+        // needs NO direct edge to either lower-spine crate (its thin-entrypoint pin stays intact).
+        "qfs-mcp",
+        // t48 serve composition root: the binary ALSO wires the OAuth authorization-server discovery
+        // routes (qfs-oauth, a pure-ish leaf — RFC 8414/9728/JWKS builders + ES256 JWS sign/verify
+        // over p256, NO tokio/rusqlite). The binary loads/generates the active signing key over the
+        // System-DB-backed `OauthKeyStore` (qfs-store), mints the key entropy from the OS CSPRNG it
+        // owns, envelope-decrypts the private key into a `Secret`, and composes the three GET routes
+        // into the qfs-http listener via the SAME Fallback seam t47 uses for `POST /mcp`. qfs-oauth
+        // carries no tokio and is a leaf (asserted by `oauth_is_a_pure_domain_leaf` below), so the
+        // edge adds no runtime/driver coupling to the terminal binary.
+        "qfs-oauth",
+        // t63 agent-fabric transport (roadmap M7, decisions L/N): the binary is the composition root
+        // for the qfs-native outbound tunnel + relay. qfs-tunnel is the PURE protocol core (frame
+        // codec + relay handshake + in-memory mux) with NO tokio/runtime — the binary (src/tunnel.rs)
+        // adapts the t50 bearer validation into the handshake's injected TokenValidator (decision N)
+        // and is where the LIVE outbound TCP/TLS dial to qfs Cloud would dead-end (a DOCUMENTED SEAM,
+        // not yet socket-wired). It is a pure leaf consumed only by this terminal binary (asserted by
+        // `tunnel_is_a_pure_protocol_leaf` below), so the edge adds no runtime/driver coupling.
+        "qfs-tunnel",
     ];
     let workspace_prefixed: Vec<&String> =
         bin_deps.iter().filter(|d| d.starts_with("qfs")).collect();
@@ -503,6 +590,10 @@ fn runtime_is_confined_to_plan_and_types() {
     // its name here (a one-line, reviewable signal), and (b) guarantees the append was safe.
     let runtime_consumers_allowed = [
         "qfs-driver-local",
+        // t68: the first-class `/fs` driver bridges its FsApplier into the runtime via
+        // qfs-runtime's PlanApplierBridge (like every other driver leaf). It is a leaf — only the
+        // terminal binary depends on it — so tokio still dead-ends in the binary.
+        "qfs-driver-fs",
         "qfs-driver-http",
         "qfs-driver-gmail",
         "qfs-driver-gdrive",
@@ -513,6 +604,14 @@ fn runtime_is_confined_to_plan_and_types() {
         "qfs-driver-github",
         "qfs-driver-slack",
         "qfs-driver-git",
+        // t53: the `/sys/*` administration driver bridges its SysApplier into the runtime via
+        // qfs-runtime's PlanApplierBridge (like every other driver leaf). It is a leaf — only the
+        // terminal binary depends on it — so tokio still dead-ends in the binary.
+        "qfs-driver-sys",
+        // t64: the `/claude/...` AI-sessions driver bridges its ClaudeApplier into the runtime via
+        // qfs-runtime's PlanApplierBridge (like every other driver leaf). It is a leaf — only the
+        // terminal binary depends on it — so tokio still dead-ends in the binary.
+        "qfs-driver-claude",
         "qfs",
     ];
     for consumer in &runtime_consumers {
@@ -528,7 +627,7 @@ fn runtime_is_confined_to_plan_and_types() {
 
 #[test]
 fn secrets_is_confined_to_types_and_core_consumes_it() {
-    // t27: qfs-secrets is the credential / secret store + multi-account resolution
+    // t27: qfs-secrets is the credential / secret store + multi-connection resolution
     // (RFD §10). It is consumer-side, owned-DTO only, and reuses the canonical
     // `qfs_types::DriverId` — so among workspace crates it depends ONLY on qfs-types
     // (a leaf), keeping the spine acyclic (qfs-secrets → qfs-types). qfs-core consumes
@@ -672,92 +771,33 @@ fn exec_is_confined_above_the_spine_and_off_the_runtime() {
     // `qfs` binary (asserted by `http_binding_is_a_leaf_serve_consumer` below), so tokio still
     // dead-ends in the binary. Admitting it does not invert the layering; a spine/lower crate
     // reaching UP into qfs-exec still fails here.
-    // t33: `qfs-cron` (the JOB scheduler binding) is a FOURTH admitted consumer. Like qfs-http it
-    // is a LEAF integration consumer of the executor — its `RecordingCommitter`/real committer
-    // builds a JOB's DO plan via `build_plan` — that sits ABOVE the spine alongside qfs-cmd, and
-    // nothing depends on it except the terminal `qfs` binary (asserted by
-    // `cron_binding_is_a_leaf_serve_consumer` below). Admitting it does not invert the layering; a
-    // spine/lower crate reaching UP into qfs-exec still fails here.
+    // t65 (decision M revised): `qfs-cron` (the old JOB scheduler binding) is RETIRED — qfs is not
+    // a scheduler, the crate is deleted, and `qfs job run` builds a saved plan from the terminal
+    // binary (src/job.rs) over qfs-exec directly. So there is no separate cron exec-consumer leaf;
+    // the externalized JOB path uses the binary's own already-admitted qfs-exec edge.
     // t34: `qfs-watchtower` (the event bus / webhook / watcher / trigger-dispatch binding) is a
-    // FIFTH admitted consumer. Like qfs-http/qfs-cron it is a LEAF integration consumer of the
+    // FOURTH admitted consumer. Like qfs-http it is a LEAF integration consumer of the
     // executor — its injected Committer builds a fired trigger's plan via `build_plan` and its
     // watchers poll a source via `execute_read` — sitting ABOVE the spine alongside qfs-cmd, and
     // nothing depends on it except the terminal `qfs` binary (asserted by
     // `watchtower_binding_is_a_leaf_serve_consumer` below). Admitting it does not invert the
     // layering; a spine/lower crate reaching UP into qfs-exec still fails here.
-    let allowed_exec_consumers = ["qfs-cmd", "qfs", "qfs-http", "qfs-cron", "qfs-watchtower"];
+    // t47: `qfs-mcp` (the MCP serving binding) is a FIFTH admitted consumer. Like
+    // qfs-http/qfs-watchtower it is a LEAF integration consumer of the executor — its
+    // `preview`/`commit` tools build a plan via `build_plan` + `plan_preview` — sitting ABOVE the
+    // spine alongside qfs-cmd, and nothing depends on it except the terminal `qfs` binary (asserted
+    // by `mcp_binding_is_a_leaf_serve_consumer` below). Admitting it does not invert the layering.
+    let allowed_exec_consumers = ["qfs-cmd", "qfs", "qfs-http", "qfs-watchtower", "qfs-mcp"];
     for consumer in &exec_consumers {
         assert!(
             allowed_exec_consumers.contains(&consumer.as_str()),
             "topology violation: {consumer} depends on qfs-exec, but only qfs-cmd, the terminal \
-             `qfs` binary (the t28 shell composition root), qfs-http (the t32 leaf HTTP serving \
-             binding), qfs-cron (the t33 leaf JOB scheduler binding), and qfs-watchtower (the t34 \
-             leaf watchtower binding) may consume the integration layer. A spine/lower crate \
-             reaching UP into qfs-exec is a layer inversion (t29)."
+             `qfs` binary (the t28 shell composition root + the t65 `qfs job run` path), qfs-http \
+             (the t32 leaf HTTP serving binding), qfs-watchtower (the t34 leaf watchtower binding), \
+             and qfs-mcp (the t47 leaf MCP serving binding) may consume the integration layer. A \
+             spine/lower crate reaching UP into qfs-exec is a layer inversion (t29)."
         );
     }
-}
-
-#[test]
-fn cron_binding_is_a_leaf_serve_consumer() {
-    // t33 (the JOB scheduler binding topology): `qfs-cron` is the leaf binding crate that makes
-    // `/server/jobs` rows fire on cadence. The placement decision (the cron sibling of the t32
-    // qfs-http binding) rests on four structural facts this guard pins so they cannot invert:
-    //
-    //   (a) qfs-cron consumes qfs-server (the Binding/ServerState/JobDef registry) AND qfs-exec
-    //       (the build_plan evaluator) — the one crate that legitimately binds both for the JOB
-    //       cause, the reason it is a NEW leaf rather than living in qfs-server (which must stay
-    //       off qfs-exec and runtime-free, CO-t30-1) or qfs-cmd (off qfs-exec/the binding crates).
-    //       NOTE: qfs-server + qfs-exec are OPTIONAL deps gated behind qfs-cron's default-on
-    //       `native` feature so the PURE scheduler core builds for wasm32; with the default
-    //       features active (as the workspace builds), both edges are present.
-    //   (b) qfs-cron is a LEAF: nothing depends on it except the terminal `qfs` binary (the serve
-    //       composition root). That keeps its feature-gated tokio daemon dead-ended in the binary
-    //       — the precondition the t28 runtime-leaf exemption relies on.
-    //   (c) qfs-cron does NOT depend on qfs-runtime. It threads the REAL commit through an INJECTED
-    //       Committer the binary builds; the scheduler never drives the COMMIT interpreter, so the
-    //       runtime-leaf-confinement guard is untouched (qfs-cron never appears in its allowlist).
-    let graph = load_graph();
-
-    // (a) qfs-cron depends on both qfs-server and qfs-exec (with default `native` features on).
-    let cron_deps = graph
-        .direct_deps
-        .get("qfs-cron")
-        .expect("qfs-cron is a workspace package");
-    for required in ["qfs-server", "qfs-exec"] {
-        assert!(
-            cron_deps.iter().any(|d| d == required),
-            "t33: qfs-cron must depend on {required} (it binds the server registry to the build_plan \
-             evaluator for the JOB cause). Deps were: {cron_deps:?}"
-        );
-    }
-
-    // (b) qfs-cron is a leaf: only the terminal `qfs` binary may depend on it.
-    let cron_consumers: Vec<&String> = graph
-        .direct_deps
-        .iter()
-        .filter(|(pkg, deps)| pkg.as_str() != "qfs-cron" && deps.iter().any(|d| d == "qfs-cron"))
-        .map(|(pkg, _)| pkg)
-        .collect();
-    for consumer in &cron_consumers {
-        assert_eq!(
-            consumer.as_str(),
-            "qfs",
-            "t33 leaf violation: {consumer} depends on qfs-cron, but only the terminal `qfs` \
-             binary (the serve composition root) may consume the JOB scheduler binding. If \
-             something else depends on it, qfs-cron's tokio daemon no longer dead-ends in the \
-             binary and the runtime-leaf exemption is unsound."
-        );
-    }
-
-    // (c) qfs-cron must NOT depend on qfs-runtime (the real applier is the injected Committer the
-    // binary builds; the scheduler never drives the COMMIT interpreter — the two impure stages
-    // stay separate, as for qfs-exec / qfs-http).
-    assert!(
-        !cron_deps.iter().any(|d| d == "qfs-runtime"),
-        "t33: qfs-cron must NOT depend on qfs-runtime — the real commit path is the INJECTED \
-         Committer the composition root builds, not the COMMIT interpreter. Deps were: {cron_deps:?}"
-    );
 }
 
 #[test]
@@ -896,6 +936,73 @@ fn http_binding_is_a_leaf_serve_consumer() {
 }
 
 #[test]
+fn mcp_binding_is_a_leaf_serve_consumer() {
+    // t47 (the MCP serving binding topology): `qfs-mcp` is the leaf binding crate that exposes
+    // qfs's four operating-loop tools (describe / preview / commit / connections) as a JSON-RPC /
+    // MCP surface. The placement decision (the MCP sibling of the t32 qfs-http / t33 qfs-cron / t34
+    // qfs-watchtower bindings) rests on three structural facts this guard pins so they cannot
+    // silently invert:
+    //
+    //   (a) qfs-mcp consumes qfs-server (the policy gate — `gate_plan` / `resolve_policy` / `Policy`
+    //       the `commit` tool routes through) AND qfs-exec (the `build_plan` / `plan_preview`
+    //       evaluator the `preview`/`commit` tools shape results from) — the one crate that
+    //       legitimately binds both for the MCP cause, the reason it is a NEW leaf rather than
+    //       living in qfs-server (which must stay off qfs-exec and runtime-free, CO-t30-1) or
+    //       qfs-cmd (off qfs-exec / the binding crates).
+    //   (b) qfs-mcp is a LEAF: nothing depends on it except the terminal `qfs` binary (the serve
+    //       composition root, which injects the live `McpEngine` and composes the pure `POST /mcp`
+    //       handler into the qfs-http listener via a fallback closure). That keeps any I/O coupling
+    //       dead-ended in the binary — the t28 runtime-leaf exemption precondition.
+    //   (c) qfs-mcp does NOT depend on qfs-runtime. The real commit is the INJECTED
+    //       `McpEngine::apply` closure the binary builds (the same runtime-backed `apply_plan` the
+    //       CLI uses); the protocol core never drives the COMMIT interpreter, so the
+    //       runtime-leaf-confinement guard is untouched (qfs-mcp never appears in its allowlist).
+    //       Corollary: qfs-mcp carries no tokio of its own — the binding is a PURE synchronous
+    //       handler composed into the listener (the watchtower-ingest pattern), so the async HTTP
+    //       I/O still lives only in qfs-http + the binary.
+    let graph = load_graph();
+
+    // (a) qfs-mcp depends on both qfs-server and qfs-exec.
+    let mcp_deps = graph
+        .direct_deps
+        .get("qfs-mcp")
+        .expect("qfs-mcp is a workspace package");
+    for required in ["qfs-server", "qfs-exec"] {
+        assert!(
+            mcp_deps.iter().any(|d| d == required),
+            "t47: qfs-mcp must depend on {required} (it binds the policy gate to the build_plan/\
+             preview evaluator for the MCP cause). Deps were: {mcp_deps:?}"
+        );
+    }
+
+    // (b) qfs-mcp is a leaf: only the terminal `qfs` binary may depend on it.
+    let mcp_consumers: Vec<&String> = graph
+        .direct_deps
+        .iter()
+        .filter(|(pkg, deps)| pkg.as_str() != "qfs-mcp" && deps.iter().any(|d| d == "qfs-mcp"))
+        .map(|(pkg, _)| pkg)
+        .collect();
+    for consumer in &mcp_consumers {
+        assert_eq!(
+            consumer.as_str(),
+            "qfs",
+            "t47 leaf violation: {consumer} depends on qfs-mcp, but only the terminal `qfs` \
+             binary (the serve composition root) may consume the MCP serving binding. If something \
+             else depends on it, the injected-apply / runtime-leaf exemption is no longer sound."
+        );
+    }
+
+    // (c) qfs-mcp must NOT depend on qfs-runtime (the real applier is the injected `McpEngine::apply`
+    // closure the composition root builds, not the COMMIT interpreter).
+    assert!(
+        !mcp_deps.iter().any(|d| d == "qfs-runtime"),
+        "t47: qfs-mcp must NOT depend on qfs-runtime — the real commit path is the INJECTED \
+         `McpEngine::apply` closure the composition root builds, not the COMMIT interpreter. Deps \
+         were: {mcp_deps:?}"
+    );
+}
+
+#[test]
 fn core_depends_on_parser_one_directionally() {
     // C5 / E1 (ticket t06): the qfs-core -> qfs-parser edge is now WIRED — name
     // resolution (`qfs_core::resolve`) consumes the parsed `qfs_parser::Statement`. The
@@ -1018,12 +1125,12 @@ fn crypto_core_is_a_pure_leaf_single_sourcing_the_three_vendored_copies() {
     // t34: qfs-crypto-core is the SINGLE SOURCE OF TRUTH for the dependency-free, wasm-clean
     // crypto primitives — SHA-256 (FIPS 180-4), HMAC-SHA256 (RFC 4231), lowercase-hex, and a
     // constant-time byte compare. Before it, an identical SHA-256 (and in two cases HMAC /
-    // constant_time_eq) was independently vendored THREE times: qfs-driver-objstore::sha256
-    // (SigV4), qfs-driver-slack::hmac (signature verification), and qfs-cron::hash (run-id). No
-    // shared crypto leaf existed, and depending on any of those crates would have pulled a
-    // runtime/binding coupling into the consumer, so each re-vendored the routine. t34's webhook
-    // HMAC verification would have been a FOURTH copy; instead this crate single-sources all of
-    // them. This test mirrors `http_core_is_a_pure_leaf_...` but enforces a STRICTER property:
+    // constant_time_eq) was independently vendored: qfs-driver-objstore::sha256 (SigV4) and
+    // qfs-driver-slack::hmac (signature verification) — plus the retired qfs-cron::hash (run-id),
+    // gone since t65 with the scheduler. No shared crypto leaf existed, and depending on any of
+    // those crates would have pulled a runtime/binding coupling into the consumer, so each
+    // re-vendored the routine. t34's webhook HMAC verification would have been another copy; instead
+    // this crate single-sources all of them. It mirrors `http_core_is_a_pure_leaf_...` but stricter:
     //
     //   (a) qfs-crypto-core is a TRUE pure leaf — it depends on NOTHING (no workspace crate AND no
     //       vendor crate; std-only by construction). That maximal purity is what makes it safe for
@@ -1031,8 +1138,9 @@ fn crypto_core_is_a_pure_leaf_single_sourcing_the_three_vendored_copies() {
     //       Workers WEBHOOK ingress, to depend on it without inheriting any coupling. (Unlike
     //       qfs-http-core, which legitimately depends on qfs-secrets for the REDACTED marker, the
     //       crypto leaf needs no such marker — so its allowed dep set is EMPTY.)
-    //   (b) the three former copy-holders all depend on the shared leaf now — so none keeps a
-    //       second SHA-256/HMAC copy; the leaf is the only place they are defined.
+    //   (b) the surviving former copy-holders all depend on the shared leaf now — so none keeps a
+    //       second SHA-256/HMAC copy; the leaf is the only place they are defined. (The third
+    //       former copy, qfs-cron's run-id hash, was deleted with the scheduler in t65.)
     let graph = load_graph();
 
     // (a) TRUE pure leaf: qfs-crypto-core has ZERO dependencies of any kind.
@@ -1048,8 +1156,8 @@ fn crypto_core_is_a_pure_leaf_single_sourcing_the_three_vendored_copies() {
          ingress. Deps were: {crypto_core_deps:?}"
     );
 
-    // (b) the three former vendorings all depend on the shared leaf — single source, no copy left.
-    for crate_name in ["qfs-driver-objstore", "qfs-driver-slack", "qfs-cron"] {
+    // (b) the surviving former vendorings all depend on the shared leaf — single source, no copy.
+    for crate_name in ["qfs-driver-objstore", "qfs-driver-slack"] {
         let deps = graph
             .direct_deps
             .get(crate_name)
@@ -1059,6 +1167,389 @@ fn crypto_core_is_a_pure_leaf_single_sourcing_the_three_vendored_copies() {
             "single-source violation: {crate_name} must depend on qfs-crypto-core for the shared \
              SHA-256/HMAC-SHA256/constant_time_eq (t34) rather than vendoring a private copy. \
              Deps were: {deps:?}"
+        );
+    }
+}
+
+#[test]
+fn identity_is_a_pure_domain_leaf() {
+    // t45: qfs-identity is the identity DOMAIN core (the `users`/`accounts` model, the consumer-side
+    // IdentityStore trait, pure sign-up validation, argon2id hashing). It is a pure-ish leaf — its
+    // SQLite I/O is INJECTED (the rusqlite `SqliteIdentityStore` lives in qfs-store), so the domain
+    // stays off rusqlite/tokio and the lower spine. This guard pins three facts:
+    //
+    //   (a) qfs-identity's ONLY workspace deps are {qfs-secrets, qfs-crypto-core} — the redacting
+    //       Secret wrapper + the constant-time compare. It does NOT depend on lang/plan/driver/codec/
+    //       parser (it carries no query/engine logic) nor on qfs-store/rusqlite (I/O is injected).
+    //   (b) it carries no tokio/async runtime (it is sync, pure domain logic).
+    //   (c) qfs-store consumes it (the injected rusqlite store impl) — the acyclic edge that keeps
+    //       the I/O out of the domain leaf.
+    let graph = load_graph();
+
+    let workspace_crates = [
+        "qfs-cmd",
+        "qfs-core",
+        "qfs-server",
+        "qfs-lang",
+        "qfs-plan",
+        "qfs-driver",
+        "qfs-codec",
+        "qfs-parser",
+        "qfs-types",
+        "qfs-runtime",
+        "qfs-txn",
+        "qfs-pushdown",
+        "qfs-secrets",
+        "qfs-crypto-core",
+        "qfs-store",
+        "qfs-identity",
+    ];
+
+    // (a) qfs-identity's workspace deps are exactly {qfs-secrets, qfs-crypto-core}.
+    let identity_deps = graph
+        .direct_deps
+        .get("qfs-identity")
+        .expect("qfs-identity is a workspace package");
+    let allowed = ["qfs-secrets", "qfs-crypto-core"];
+    for d in identity_deps
+        .iter()
+        .filter(|d| workspace_crates.contains(&d.as_str()))
+    {
+        assert!(
+            allowed.contains(&d.as_str()),
+            "confinement violation: qfs-identity must depend only on {allowed:?} among workspace \
+             crates (it is a pure-ish domain leaf; SQLite I/O is injected via qfs-store), but \
+             depends on {d}. Deps were: {identity_deps:?}"
+        );
+    }
+    // The defining absences: no tokio/async runtime, no lower-spine / driver / query crates.
+    for forbidden in [
+        "tokio",
+        "futures",
+        "async-trait",
+        "rusqlite",
+        "qfs-lang",
+        "qfs-plan",
+        "qfs-driver",
+        "qfs-codec",
+        "qfs-parser",
+        "qfs-runtime",
+        "qfs-store",
+    ] {
+        assert!(
+            !identity_deps.iter().any(|d| d == forbidden),
+            "confinement violation: qfs-identity must NOT depend on {forbidden} (it is a pure-ish \
+             leaf; tokio/rusqlite/query logic stay out). Deps were: {identity_deps:?}"
+        );
+    }
+
+    // (c) qfs-store consumes qfs-identity (the injected rusqlite IdentityStore impl).
+    let store_deps = graph
+        .direct_deps
+        .get("qfs-store")
+        .expect("qfs-store is a workspace package");
+    assert!(
+        store_deps.iter().any(|d| d == "qfs-identity"),
+        "qfs-store must depend on qfs-identity (it provides the injected rusqlite IdentityStore \
+         impl over the System DB, t45). Deps were: {store_deps:?}"
+    );
+}
+
+#[test]
+fn session_is_a_pure_domain_leaf() {
+    // t46: qfs-session is the session DOMAIN core (the `Session`/`SessionId` model + expiry, the
+    // opaque `SessionToken` hashed at rest, the consumer-side `SessionStore` trait, pure cookie
+    // format/parse). It is a pure-ish leaf — its SQLite I/O is INJECTED (the rusqlite
+    // `SqliteSessionStore` lives in qfs-store) and its token entropy is injected from the binary — so
+    // the domain stays off rusqlite/tokio/rand and the lower spine. This guard pins three facts:
+    //
+    //   (a) qfs-session's ONLY workspace deps are {qfs-identity, qfs-secrets, qfs-crypto-core} — the
+    //       `UserId` a session belongs to + the redacting Secret + the at-rest hash / constant-time
+    //       compare. It does NOT depend on lang/plan/driver/codec/parser nor on qfs-store/rusqlite.
+    //   (b) it carries no tokio/async runtime AND no rand/getrandom (OS entropy is injected from the
+    //       binary leaf, so the core stays deterministic/testable).
+    //   (c) qfs-store consumes it (the injected rusqlite store impl) — the acyclic edge that keeps
+    //       the I/O out of the domain leaf, mirroring the qfs-store -> qfs-identity edge.
+    let graph = load_graph();
+
+    let workspace_crates = [
+        "qfs-cmd",
+        "qfs-core",
+        "qfs-server",
+        "qfs-lang",
+        "qfs-plan",
+        "qfs-driver",
+        "qfs-codec",
+        "qfs-parser",
+        "qfs-types",
+        "qfs-runtime",
+        "qfs-txn",
+        "qfs-pushdown",
+        "qfs-secrets",
+        "qfs-crypto-core",
+        "qfs-identity",
+        "qfs-store",
+        "qfs-session",
+    ];
+
+    // (a) qfs-session's workspace deps are exactly {qfs-identity, qfs-secrets, qfs-crypto-core}.
+    let session_deps = graph
+        .direct_deps
+        .get("qfs-session")
+        .expect("qfs-session is a workspace package");
+    let allowed = ["qfs-identity", "qfs-secrets", "qfs-crypto-core"];
+    for d in session_deps
+        .iter()
+        .filter(|d| workspace_crates.contains(&d.as_str()))
+    {
+        assert!(
+            allowed.contains(&d.as_str()),
+            "confinement violation: qfs-session must depend only on {allowed:?} among workspace \
+             crates (it is a pure-ish domain leaf; SQLite I/O is injected via qfs-store, entropy via \
+             the binary), but depends on {d}. Deps were: {session_deps:?}"
+        );
+    }
+    // The defining absences: no tokio/async runtime, no CSPRNG, no rusqlite, no lower-spine crates.
+    for forbidden in [
+        "tokio",
+        "futures",
+        "async-trait",
+        "rand",
+        "getrandom",
+        "rusqlite",
+        "qfs-lang",
+        "qfs-plan",
+        "qfs-driver",
+        "qfs-codec",
+        "qfs-parser",
+        "qfs-runtime",
+        "qfs-store",
+    ] {
+        assert!(
+            !session_deps.iter().any(|d| d == forbidden),
+            "confinement violation: qfs-session must NOT depend on {forbidden} (it is a pure-ish \
+             leaf; tokio/rand/rusqlite/query logic stay out — entropy is injected from the binary). \
+             Deps were: {session_deps:?}"
+        );
+    }
+
+    // (c) qfs-store consumes qfs-session (the injected rusqlite SessionStore impl).
+    let store_deps = graph
+        .direct_deps
+        .get("qfs-store")
+        .expect("qfs-store is a workspace package");
+    assert!(
+        store_deps.iter().any(|d| d == "qfs-session"),
+        "qfs-store must depend on qfs-session (it provides the injected rusqlite SessionStore impl \
+         over the System DB, t46). Deps were: {store_deps:?}"
+    );
+}
+
+#[test]
+fn oauth_is_a_pure_domain_leaf() {
+    // t48: qfs-oauth is the OAuth authorization-server DOMAIN core (RFC 8414 AS-metadata + RFC 9728
+    // PRM + JWKS document builders, and the ES256 JWS sign/verify primitives over the vetted
+    // pure-Rust `p256` ECDSA). It is a pure-ish leaf — its key PERSISTENCE is INJECTED (the rusqlite
+    // `OauthKeyStore` lives in qfs-store) and its key ENTROPY is injected from the binary — so the
+    // domain stays off rusqlite/tokio/rand and the lower spine, mirroring qfs-identity (t45) /
+    // qfs-session (t46). This guard pins two facts:
+    //
+    //   (a) qfs-oauth's ONLY workspace deps are {qfs-secrets, qfs-crypto-core} — the redacting
+    //       `Secret` wrapper for the private key + the SHA-256 backing the RFC 7638 `kid` thumbprint.
+    //       It does NOT depend on lang/plan/driver/codec/parser (no query/engine logic), on
+    //       qfs-store/rusqlite (key I/O is injected), or on qfs-http/tokio (the async route serving is
+    //       the binary's qfs-http listener via the Fallback seam).
+    //   (b) it carries no tokio/async runtime and no rusqlite (it is sync, pure domain logic). NOTE:
+    //       unlike t45/t46, qfs-store does NOT depend on qfs-oauth — the binary bridges qfs-oauth ↔
+    //       the qfs-store `OauthKeyStore` (which trades only opaque bytes + the public JWK string), so
+    //       no `qfs-store -> qfs-oauth` edge exists and none is asserted.
+    let graph = load_graph();
+
+    let workspace_crates = [
+        "qfs-cmd",
+        "qfs-core",
+        "qfs-server",
+        "qfs-lang",
+        "qfs-plan",
+        "qfs-driver",
+        "qfs-codec",
+        "qfs-parser",
+        "qfs-types",
+        "qfs-runtime",
+        "qfs-txn",
+        "qfs-pushdown",
+        "qfs-secrets",
+        "qfs-crypto-core",
+        "qfs-store",
+        "qfs-http",
+        "qfs-oauth",
+    ];
+
+    // (a) qfs-oauth's workspace deps are exactly {qfs-secrets, qfs-crypto-core}.
+    let oauth_deps = graph
+        .direct_deps
+        .get("qfs-oauth")
+        .expect("qfs-oauth is a workspace package");
+    let allowed = ["qfs-secrets", "qfs-crypto-core"];
+    for d in oauth_deps
+        .iter()
+        .filter(|d| workspace_crates.contains(&d.as_str()))
+    {
+        assert!(
+            allowed.contains(&d.as_str()),
+            "confinement violation: qfs-oauth must depend only on {allowed:?} among workspace crates \
+             (it is a pure-ish domain leaf; key I/O is injected via qfs-store, entropy + route serving \
+             via the binary), but depends on {d}. Deps were: {oauth_deps:?}"
+        );
+    }
+    // The defining absences: no tokio/async runtime, no rusqlite, no http listener, no lower-spine /
+    // driver / query crates (per the ticket: oauth must NOT depend on tokio/lang/plan/driver/codec/
+    // parser/runtime).
+    for forbidden in [
+        "tokio",
+        "futures",
+        "async-trait",
+        "rusqlite",
+        "qfs-store",
+        "qfs-http",
+        "qfs-lang",
+        "qfs-plan",
+        "qfs-driver",
+        "qfs-codec",
+        "qfs-parser",
+        "qfs-runtime",
+    ] {
+        assert!(
+            !oauth_deps.iter().any(|d| d == forbidden),
+            "confinement violation: qfs-oauth must NOT depend on {forbidden} (it is a pure-ish leaf; \
+             tokio/rusqlite/http/query logic stay out — key I/O is injected via qfs-store, route \
+             serving via the binary's qfs-http listener). Deps were: {oauth_deps:?}"
+        );
+    }
+
+    // (b) qfs-oauth is a leaf consumed only by the terminal `qfs` binary (the serve composition
+    // root); no spine/lower crate may reach up into it.
+    let oauth_consumers: Vec<&String> = graph
+        .direct_deps
+        .iter()
+        .filter(|(pkg, deps)| pkg.as_str() != "qfs-oauth" && deps.iter().any(|d| d == "qfs-oauth"))
+        .map(|(pkg, _)| pkg)
+        .collect();
+    for consumer in &oauth_consumers {
+        assert_eq!(
+            consumer.as_str(),
+            "qfs",
+            "t48 leaf violation: {consumer} depends on qfs-oauth, but only the terminal `qfs` binary \
+             (the serve composition root) may consume the OAuth-AS domain leaf."
+        );
+    }
+}
+
+#[test]
+fn tunnel_is_a_pure_protocol_leaf() {
+    // t63 (the agent-fabric transport topology, roadmap M7 — decisions L + N): `qfs-tunnel` is the
+    // PURE protocol core for the qfs-native outbound tunnel + relay (the frame codec, the relay
+    // registration handshake, the in-memory request/response mux). The placement decision rests on
+    // structural facts this guard pins so they cannot silently invert:
+    //
+    //   (a) qfs-tunnel's ONLY workspace deps are {qfs-http-core, qfs-secrets} — the shared HTTP DTOs
+    //       a frame carries (so the SINGLE redaction authority is inherited, never re-implemented) +
+    //       the REDACTED marker the handshake's `cloud_token` Debug emits. It does NOT depend on
+    //       lang/plan/driver/codec/parser (no query/engine logic), on qfs-server/qfs-exec (it is NOT
+    //       a serve binding — it provides transport, the binary dispatches inbound frames to the
+    //       existing crates/http handler), or on qfs-runtime.
+    //   (b) it carries NO tokio/futures/async-trait/reqwest — the protocol core is synchronous and
+    //       runtime-free (mirroring qfs-google-auth's HttpExchange seam), so the LIVE outbound
+    //       TCP/TLS dial half stays a DOCUMENTED SEAM in the terminal `qfs` binary where tokio
+    //       dead-ends. This absence is WHY qfs-tunnel is NOT in the runtime-consumer allowlist.
+    //   (c) qfs-tunnel is a LEAF: only the terminal `qfs` binary (the serve composition root) may
+    //       consume it — the same role qfs-oauth / the binding leaves play.
+    let graph = load_graph();
+
+    let workspace_crates = [
+        "qfs-cmd",
+        "qfs-core",
+        "qfs-server",
+        "qfs-lang",
+        "qfs-plan",
+        "qfs-driver",
+        "qfs-codec",
+        "qfs-parser",
+        "qfs-types",
+        "qfs-runtime",
+        "qfs-txn",
+        "qfs-pushdown",
+        "qfs-secrets",
+        "qfs-http-core",
+        "qfs-exec",
+        "qfs-tunnel",
+    ];
+
+    // (a) qfs-tunnel's workspace deps are exactly {qfs-http-core, qfs-secrets}.
+    let tunnel_deps = graph
+        .direct_deps
+        .get("qfs-tunnel")
+        .expect("qfs-tunnel is a workspace package");
+    let allowed = ["qfs-http-core", "qfs-secrets"];
+    for d in tunnel_deps
+        .iter()
+        .filter(|d| workspace_crates.contains(&d.as_str()))
+    {
+        assert!(
+            allowed.contains(&d.as_str()),
+            "confinement violation: qfs-tunnel must depend only on {allowed:?} among workspace crates \
+             (it is a pure protocol leaf; the live dial is the binary's documented seam), but depends \
+             on {d}. Deps were: {tunnel_deps:?}"
+        );
+    }
+    // The defining absences: no tokio/async runtime, no serve-binding deps, no lower-spine / driver /
+    // query crates (the live TCP/TLS dial is a DOCUMENTED SEAM in the binary, not in the core).
+    for forbidden in [
+        "tokio",
+        "futures",
+        "async-trait",
+        "reqwest",
+        "qfs-runtime",
+        "qfs-server",
+        "qfs-exec",
+        "qfs-lang",
+        "qfs-plan",
+        "qfs-driver",
+        "qfs-codec",
+        "qfs-parser",
+    ] {
+        assert!(
+            !tunnel_deps.iter().any(|d| d == forbidden),
+            "confinement violation: qfs-tunnel must NOT depend on {forbidden} (it is a pure, \
+             runtime-free protocol leaf; the live outbound dial is the binary's documented seam where \
+             tokio dead-ends). Deps were: {tunnel_deps:?}"
+        );
+    }
+
+    // (b) it carries the shared redaction-inheriting DTOs (so a frame's Debug never leaks a token).
+    assert!(
+        tunnel_deps.iter().any(|d| d == "qfs-http-core"),
+        "t63: qfs-tunnel must depend on qfs-http-core — a tunnel frame carries the shared \
+         HttpRequest/HttpResponse so the single redaction authority is inherited. Deps were: \
+         {tunnel_deps:?}"
+    );
+
+    // (c) qfs-tunnel is a leaf consumed only by the terminal `qfs` binary.
+    let tunnel_consumers: Vec<&String> = graph
+        .direct_deps
+        .iter()
+        .filter(|(pkg, deps)| {
+            pkg.as_str() != "qfs-tunnel" && deps.iter().any(|d| d == "qfs-tunnel")
+        })
+        .map(|(pkg, _)| pkg)
+        .collect();
+    for consumer in &tunnel_consumers {
+        assert_eq!(
+            consumer.as_str(),
+            "qfs",
+            "t63 leaf violation: {consumer} depends on qfs-tunnel, but only the terminal `qfs` binary \
+             (the serve composition root) may consume the tunnel protocol core. The live dial half is \
+             the binary's documented seam where tokio dead-ends."
         );
     }
 }
@@ -1105,7 +1596,6 @@ fn host_is_the_only_deployment_seam_and_a_leaf() {
         "qfs-exec",
         "qfs-engine",
         "qfs-http",
-        "qfs-cron",
         "qfs-watchtower",
         "qfs-host",
     ];

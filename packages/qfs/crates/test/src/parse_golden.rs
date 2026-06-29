@@ -112,14 +112,16 @@ mod tests {
 
     #[test]
     fn golden_parse_returns_the_owned_ast() {
-        let snap = golden_parse("FROM /mail/inbox |> LIMIT 5");
+        let snap = golden_parse("/mail/inbox |> LIMIT 5");
         assert!(matches!(snap.ast, Statement::Query(_)));
     }
 
     #[test]
     fn error_snapshot_captures_a_stable_structured_message() {
-        // A lowercase keyword is not in the frozen closed-core set — a stable recovery message.
-        let snap = error_snapshot("from /mail/inbox");
+        // Keywords are lowercase, recognized case-insensitively (t74, decision S). An incomplete
+        // multi-word keyword (`group` with no `by`) is still outside the closed core — a stable
+        // recovery message.
+        let snap = error_snapshot("/mail/inbox |> group id");
         assert!(
             !snap.expected.is_empty(),
             "expected-set is non-empty (RFD §5)"

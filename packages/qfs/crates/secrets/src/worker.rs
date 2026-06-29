@@ -12,7 +12,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use crate::key::{AccountRecord, CredentialKey, DriverId};
+use crate::key::{ConnectionRecord, CredentialKey, DriverId};
 use crate::secret::Secret;
 use crate::store::{SecretError, Secrets};
 
@@ -21,7 +21,7 @@ use crate::store::{SecretError, Secrets};
 pub type BindingResolver = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// A [`Secrets`] backend over a Worker binding resolver. The closure maps a binding name
-/// (`QFS_SECRET_<DRIVER>_<ACCOUNT>`) to its value, exactly as the host's Secret Store /
+/// (`QFS_SECRET_<DRIVER>_<CONNECTION>`) to its value, exactly as the host's Secret Store /
 /// `env` exposes it. No filesystem, no `0600` — confidentiality is the platform's.
 pub struct WorkerStore {
     prefix: String,
@@ -30,7 +30,7 @@ pub struct WorkerStore {
 
 impl WorkerStore {
     /// Build a store over a binding resolver. `prefix` is prepended to the
-    /// `<DRIVER>_<ACCOUNT>` binding name (default callers pass `"QFS_SECRET_"`).
+    /// `<DRIVER>_<CONNECTION>` binding name (default callers pass `"QFS_SECRET_"`).
     #[must_use]
     pub fn new(prefix: impl Into<String>, resolver: BindingResolver) -> Self {
         Self {
@@ -39,14 +39,14 @@ impl WorkerStore {
         }
     }
 
-    /// The binding name a `(driver, account)` credential is read from.
+    /// The binding name a `(driver, connection)` credential is read from.
     #[must_use]
     pub fn binding_name(&self, key: &CredentialKey) -> String {
         format!(
             "{}{}_{}",
             self.prefix,
             key.driver.as_str().to_uppercase(),
-            key.account.as_str().to_uppercase()
+            key.connection.as_str().to_uppercase()
         )
     }
 }
@@ -71,10 +71,10 @@ impl Secrets for WorkerStore {
         ))
     }
 
-    fn list(&self, _driver: Option<&DriverId>) -> Result<Vec<AccountRecord>, SecretError> {
+    fn list(&self, _driver: Option<&DriverId>) -> Result<Vec<ConnectionRecord>, SecretError> {
         // Worker bindings are not enumerable from inside the guest; listing is an
         // out-of-band (dashboard / API) concern. Return empty rather than error so a
-        // generic `qfs account list` does not break on Workers.
+        // generic `qfs connection list` does not break on Workers.
         Ok(Vec::new())
     }
 }

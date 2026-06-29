@@ -1,0 +1,29 @@
+[package]
+name = "qfs-identity"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs identity domain leaf (roadmap M1 / t45): the first real notion of WHO a human is — the `users` + `accounts` model, the consumer-side `IdentityStore` trait (SQLite I/O is injected by the binary), pure sign-up validation (email shape + password policy), and argon2id password hashing/verification. AUTHENTICATION ONLY (decision §4.1: identity is not authorization). Pure-ish: no tokio, no rusqlite, no lang/plan/driver/codec/parser deps — a leaf. The identity `AccountId` is a NEW, distinct type for a linked sign-in identity, NOT the t44 credential `ConnectionId`."
+
+[dependencies]
+# The redacting, zeroized-on-drop secret wrapper: a plaintext password submitted at sign-up is
+# carried as `Secret`, never `String`, and zeroized after hashing. Re-exported so consumers (and the
+# rusqlite store impl) name ONE `Secret` type. qfs-secrets depends only on qfs-types among workspace
+# crates, so this edge keeps qfs-identity a leaf with no driver/plan/runtime coupling.
+qfs-secrets = { path = "../secrets" }
+# The dependency-free, constant-time byte compare (the workspace's single crypto source, t34).
+# Password verification's FINAL equality check routes through `constant_time_eq` (RFD §10), never a
+# short-circuiting `==`. qfs-crypto-core is a TRUE pure leaf (zero deps), so the edge adds no coupling.
+qfs-crypto-core = { path = "../crypto-core" }
+# argon2id password hashing. qfs-identity vendors its OWN argon2 (it does NOT depend on qfs-secrets
+# for it) — pinned params are recorded in the PHC hash string so a future cost bump can re-hash on
+# next login. Default features bring the `password-hash` PHC encoding + `SaltString::generate`.
+argon2 = "0.5"
+# Structured, secret-free error taxonomy (AI-consumable; never carries a password or a hash).
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

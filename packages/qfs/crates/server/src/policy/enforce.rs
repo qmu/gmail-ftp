@@ -25,7 +25,8 @@
 
 use qfs_core::{EffectKind, Plan};
 
-use super::model::{Effectivity, Policy, Verb};
+use super::context::DecisionContext;
+use super::model::{Effectivity, Policy, Rule, Verb};
 
 /// The result of evaluating a [`Policy`] against a [`Plan`] (RFD §10). `Allow` permits the
 /// whole plan; `Deny` carries the FIRST offending effect node + the matching rule index (or
@@ -50,6 +51,12 @@ pub enum PolicyDecision {
         /// reason reads as "a broad ALL does not grant irreversible verbs" rather than a generic
         /// default-deny. `None` for an ordinary default-deny (no near-match). Secret-free.
         held_by_broad_all: Option<usize>,
+        /// t57: when the default-deny fired because a rule matched the verb/driver but failed one
+        /// of the richer axes (subject / realm-scope / `member_of` condition), this names the
+        /// *failing axis* (secret-free — `"actor"`, `"scope /members/alice/**"`,
+        /// `"member_of('/directories/...')"`) so a narrowed denial stays legible rather than
+        /// reading as an unscoped default-deny. `None` when no near-match was found.
+        detail: Option<String>,
     },
 }
 
@@ -72,11 +79,12 @@ impl PolicyDecision {
                 driver,
                 rule,
                 held_by_broad_all,
-            } => Some(match (rule, held_by_broad_all) {
+                detail,
+            } => Some(match (rule, held_by_broad_all, detail) {
                 // t37 OBS-2: a broad `ALLOW ALL` matched the driver/verb but is held back because
                 // the verb is irreversible — say so explicitly, so the operator does not read it
                 // as an ordinary default-deny and reach for an unrelated fix.
-                (None, Some(all_idx)) => format!(
+                (None, Some(all_idx), _) => format!(
                     "policy denies {} on driver `{}` (node #{node}): a broad `ALLOW ALL` \
                      (rule {all_idx}) does not grant the irreversible verb — add an explicit \
                      `ALLOW {}` to permit it",
@@ -84,12 +92,20 @@ impl PolicyDecision {
                     driver,
                     verb.label()
                 ),
-                (Some(idx), _) => format!(
+                (Some(idx), _, _) => format!(
                     "policy denies {} on driver `{}` (node #{node}, rule {idx})",
                     verb.label(),
                     driver
                 ),
-                (None, None) => format!(
+                // t57: a rule matched the verb/driver but the actor/scope/condition axis failed —
+                // name the failing axis so the narrowed denial is legible.
+                (None, None, Some(axis)) => format!(
+                    "policy denies {} on driver `{}` (node #{node}, default-deny: a rule matched \
+                     the verb/driver but the {axis} did not apply to the actor)",
+                    verb.label(),
+                    driver
+                ),
+                (None, None, None) => format!(
                     "policy denies {} on driver `{}` (node #{node}, default-deny: no rule \
                      matched)",
                     verb.label(),
@@ -151,15 +167,52 @@ pub fn verb_for_effect(kind: &EffectKind) -> Option<Verb> {
     }
 }
 
-/// Evaluate `policy` against `plan` (RFD §10). Pure: no I/O, no mutation. Walks the effect
-/// nodes in plan order, classifies each into a `(verb, driver, path)`, evaluates the rules
-/// top-down, and returns the FIRST denial or [`PolicyDecision::Allow`] if every write effect
-/// is permitted.
-///
-/// Default-deny: a write effect that no rule matches falls to `policy.default` — which is
-/// `Deny` for the default/empty policy, so a no-rule policy denies every write.
+/// Evaluate `policy` against `plan` under the **anonymous** decision context (RFD §10). Pure:
+/// no I/O, no mutation. This is the back-compat entry point — equivalent to
+/// [`evaluate_with_context`] with [`DecisionContext::anonymous`]. Under the anonymous context
+/// only unscoped (`FOR anyone`, no condition) rules can match, so a pre-t57 policy behaves
+/// exactly as before, and a t57-narrowed rule contributes nothing until a real actor is
+/// resolved (fail closed).
 #[must_use]
 pub fn evaluate(policy: &Policy, plan: &Plan) -> PolicyDecision {
+    evaluate_with_context(policy, plan, &DecisionContext::anonymous())
+}
+
+/// Whether `rule` matches the effect `(verb, driver, path)` **for the resolved actor `ctx`**
+/// (t57). All five axes must hold: the verb+driver glob (with the irreversible-strictness rule),
+/// the [`Subject`](super::model::Subject), the realm-scoped path, and the
+/// [`Condition`](super::model::Condition). Pure — `ctx` is already resolved, so this performs no
+/// I/O.
+fn rule_matches_in_context(
+    rule: &Rule,
+    verb: Verb,
+    driver: &str,
+    path: &str,
+    ctx: &DecisionContext,
+) -> bool {
+    rule.matches(verb, driver, path)
+        && ctx.satisfies_subject(&rule.subject)
+        && rule.scope.as_ref().is_none_or(|s| s.matches_path(path))
+        && ctx.satisfies_condition(&rule.condition)
+}
+
+/// Evaluate `policy` against `plan` for a **resolved** [`DecisionContext`] (t57). Pure: no I/O,
+/// no mutation — the actor's identity/roles/memberships were resolved up front (see
+/// [`super::context::resolve_memberships`]) and frozen into `ctx`, so this is a total function
+/// over `(policy, plan, ctx)`.
+///
+/// Walks the effect nodes in plan order, classifies each into a `(verb, driver, path)`,
+/// evaluates the rules top-down (the FIRST matching rule decides — so an earlier `DENY` overrides
+/// a later `ALLOW`; deny-by-precedence), and returns the FIRST denial or [`PolicyDecision::Allow`]
+/// if every write effect is permitted. Default-deny: a write effect that no rule matches (or whose
+/// matching rules all failed the actor/scope/condition axes) falls to `policy.default` — `Deny`
+/// for the default/empty policy.
+#[must_use]
+pub fn evaluate_with_context(
+    policy: &Policy,
+    plan: &Plan,
+    ctx: &DecisionContext,
+) -> PolicyDecision {
     for node in plan.nodes() {
         let driver = node.target.driver.as_str().to_string();
         let path = node.target.path.as_str();
@@ -177,14 +230,16 @@ pub fn evaluate(policy: &Policy, plan: &Plan) -> PolicyDecision {
                     driver,
                     rule: None,
                     held_by_broad_all: None,
+                    detail: None,
                 };
             }
         };
 
-        // Walk rules top-down; the first rule that matches decides this effect.
+        // Walk rules top-down; the first rule that matches (in this actor's context) decides
+        // this effect. First-match means an earlier DENY wins over a later ALLOW.
         let mut decided: Option<(Effectivity, Option<usize>)> = None;
         for (idx, rule) in policy.rules.iter().enumerate() {
-            if rule.matches(verb, &driver, path) {
+            if rule_matches_in_context(rule, verb, &driver, path, ctx) {
                 decided = Some((rule.effect, Some(idx)));
                 break;
             }
@@ -207,22 +262,65 @@ pub fn evaluate(policy: &Policy, plan: &Plan) -> PolicyDecision {
             } else {
                 None
             };
+            // t57: when the default-deny fired but a rule DID match the verb/driver and only the
+            // actor/scope/condition axis held it back, name that failing axis (secret-free) so the
+            // denial is legible as a narrowed grant that did not apply, not a missing rule.
+            let detail = if rule.is_none() && held_by_broad_all.is_none() {
+                near_miss_axis(policy, verb, &driver, path, ctx)
+            } else {
+                None
+            };
             return PolicyDecision::Deny {
                 node: node.id.index(),
                 verb,
                 driver,
                 rule,
                 held_by_broad_all,
+                detail,
             };
         }
     }
     PolicyDecision::Allow
 }
 
+/// Find the first rule that matched the verb+driver but failed one of the t57 axes, and name the
+/// failing axis (secret-free). Pure: scans the rules already in hand. `None` if no near-match.
+fn near_miss_axis(
+    policy: &Policy,
+    verb: Verb,
+    driver: &str,
+    path: &str,
+    ctx: &DecisionContext,
+) -> Option<String> {
+    for rule in &policy.rules {
+        if !rule.matches(verb, driver, path) {
+            continue;
+        }
+        if !ctx.satisfies_subject(&rule.subject) {
+            return Some("actor".to_string());
+        }
+        if let Some(scope) = &rule.scope {
+            if !scope.matches_path(path) {
+                return Some(format!("scope {}", scope.render()));
+            }
+        }
+        if !ctx.satisfies_condition(&rule.condition) {
+            // The condition label is secret-free (a directory ref, never a credential).
+            if let Some(label) = rule.condition.label() {
+                return Some(label);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::model::{DriverGlob, Rule, VerbSet};
+    use crate::policy::context::DecisionContext;
+    use crate::policy::model::{
+        Condition, DriverGlob, RoleGraph, Rule, ScopeGlob, Subject, VerbSet,
+    };
     use qfs_core::{DriverId, EffectNode, NodeId, ProcId, Target, VfsPath};
 
     fn write_node(id: u32, kind: EffectKind, driver: &str, path: &str) -> EffectNode {
@@ -365,6 +463,34 @@ mod tests {
     }
 
     #[test]
+    fn sys_policies_write_is_default_denied_then_granted() {
+        // t53: a `/sys/*` write is high-privilege and routes through the SAME default-deny policy
+        // engine as any other driver (the path is the authorization subject). An empty/default
+        // policy denies `INSERT INTO /sys/policies`; an explicit `ALLOW INSERT on driver sys`
+        // grants it. This is what "policy-gated" means for the admin surface — no special case.
+        let plan = plan_of(vec![write_node(
+            0,
+            EffectKind::Insert,
+            "sys",
+            "/sys/policies",
+        )]);
+        // Default-deny: a super-admin grant is NOT implicit.
+        match evaluate(&Policy::default(), &plan) {
+            PolicyDecision::Deny { verb, driver, .. } => {
+                assert_eq!(verb, Verb::Insert);
+                assert_eq!(driver, "sys");
+            }
+            PolicyDecision::Allow => panic!("/sys writes must be default-denied"),
+        }
+        // An explicit grant scoped to the `sys` driver permits the policy-grant insert.
+        let granted = Policy::new("admin").with_rule(Rule::allow(
+            VerbSet::one(Verb::Insert),
+            DriverGlob::new("sys"),
+        ));
+        assert!(evaluate(&granted, &plan).is_allow());
+    }
+
+    #[test]
     fn first_denial_is_returned() {
         let policy = Policy::new("api")
             .with_rule(Rule::allow(VerbSet::one(Verb::Insert), DriverGlob::any()));
@@ -377,5 +503,169 @@ mod tests {
             PolicyDecision::Deny { node, .. } => assert_eq!(node, 1, "first denial wins"),
             PolicyDecision::Allow => panic!(),
         }
+    }
+
+    // ---- t57: actor / role-scoped rules, scoped-path conditions, member_of ----------------
+
+    /// An `admin`-role rule grants the verb only to an actor whose resolved (inheritance-expanded)
+    /// role set includes `admin`; everyone else falls to the fail-closed default-deny.
+    #[test]
+    fn role_scoped_rule_grants_only_the_matching_actor() {
+        let policy = Policy::new("ops").with_rule(
+            Rule::allow(VerbSet::one(Verb::Insert), DriverGlob::new("mail"))
+                .for_subject(Subject::Role("admin".into())),
+        );
+        let plan = plan_of(vec![write_node(
+            0,
+            EffectKind::Insert,
+            "mail",
+            "/mail/outbox",
+        )]);
+
+        // An admin (directly, or via inheritance owner⊃admin) ⇒ allow.
+        let graph = RoleGraph::new().inherits("owner", "admin");
+        let admin = DecisionContext::for_user("a").with_roles(["admin".to_string()], &graph);
+        assert!(evaluate_with_context(&policy, &plan, &admin).is_allow());
+        let owner = DecisionContext::for_user("o").with_roles(["owner".to_string()], &graph);
+        assert!(
+            evaluate_with_context(&policy, &plan, &owner).is_allow(),
+            "owner inherits admin (additive inheritance)"
+        );
+
+        // A plain member ⇒ default-deny, and the deny names the failing *actor* axis (legible).
+        let member = DecisionContext::for_user("m").with_roles(["member".to_string()], &graph);
+        let decision = evaluate_with_context(&policy, &plan, &member);
+        match &decision {
+            PolicyDecision::Deny { rule, detail, .. } => {
+                assert_eq!(*rule, None, "narrowed rule did not match ⇒ default-deny");
+                assert_eq!(detail.as_deref(), Some("actor"), "names the failing axis");
+            }
+            PolicyDecision::Allow => panic!("a non-admin must be denied"),
+        }
+        // The anonymous default path also denies (default-deny still holds for an unmatched actor).
+        assert!(!evaluate(&policy, &plan).is_allow());
+    }
+
+    /// A realm-scoped rule grants only within its realm sub-tree; a node in another realm (or a
+    /// different principal) falls to default-deny.
+    #[test]
+    fn scoped_path_rule_matches_within_its_realm_only() {
+        let policy = Policy::new("alice-mail").with_rule(
+            Rule::allow(VerbSet::one(Verb::Insert), DriverGlob::any())
+                .scoped(ScopeGlob::parse("/members/alice/**").unwrap()),
+        );
+        let ctx = DecisionContext::anonymous(); // scope is actor-independent here
+
+        let in_scope = plan_of(vec![write_node(
+            0,
+            EffectKind::Insert,
+            "mail",
+            "/members/alice/mail/outbox",
+        )]);
+        assert!(evaluate_with_context(&policy, &in_scope, &ctx).is_allow());
+
+        // Same realm, different principal ⇒ deny (the scope names the failing axis).
+        let other_principal = plan_of(vec![write_node(
+            0,
+            EffectKind::Insert,
+            "mail",
+            "/members/bob/mail/outbox",
+        )]);
+        match evaluate_with_context(&policy, &other_principal, &ctx) {
+            PolicyDecision::Deny { detail, .. } => {
+                assert_eq!(detail.as_deref(), Some("scope /members/alice/**"));
+            }
+            PolicyDecision::Allow => panic!("another principal must be denied"),
+        }
+
+        // Different realm ⇒ deny (the realm gate, decision P).
+        let other_realm = plan_of(vec![write_node(
+            0,
+            EffectKind::Insert,
+            "mail",
+            "/projects/alice/mail/outbox",
+        )]);
+        assert!(!evaluate_with_context(&policy, &other_realm, &ctx).is_allow());
+    }
+
+    /// A `member_of(...)` conditional grant applies only when the directory membership was
+    /// pre-resolved into the context; otherwise default-deny — and the deny reason is secret-free
+    /// (it names the directory ref + verb + driver, never a credential).
+    #[test]
+    fn member_of_condition_gates_the_grant_and_decision_is_secret_free() {
+        let dir = "/directories/google/groups/eng";
+        let policy = Policy::new("eng-only").with_rule(
+            Rule::allow(VerbSet::one(Verb::Insert), DriverGlob::new("mail"))
+                .when(Condition::MemberOf(dir.into())),
+        );
+        let plan = plan_of(vec![write_node(
+            0,
+            EffectKind::Insert,
+            "mail",
+            "/mail/outbox",
+        )]);
+
+        // Member ⇒ allow (membership pre-resolved into the context).
+        let member = DecisionContext::for_user("u").with_membership(dir);
+        assert!(evaluate_with_context(&policy, &plan, &member).is_allow());
+
+        // Non-member ⇒ default-deny; the reason names the directory ref but no secret/payload.
+        let outsider = DecisionContext::for_user("u");
+        let decision = evaluate_with_context(&policy, &plan, &outsider);
+        assert!(!decision.is_allow());
+        let reason = decision.deny_reason().unwrap();
+        assert!(
+            reason.contains("member_of"),
+            "names the failing condition: {reason}"
+        );
+        assert!(reason.contains("mail") && reason.contains("INSERT"));
+        // Secret-free: only driver/verb/condition-ref appear — assert no obvious secret markers.
+        assert!(!reason.to_lowercase().contains("token"));
+        assert!(!reason.to_lowercase().contains("secret"));
+        assert!(!reason.to_lowercase().contains("password"));
+    }
+
+    /// Deny-precedence / first-match: an earlier `DENY` overrides a later `ALLOW` for the same
+    /// actor/effect (the enforcer takes the FIRST matching rule top-down).
+    #[test]
+    fn earlier_deny_overrides_later_allow_first_match() {
+        let policy = Policy::new("precedence")
+            .with_rule(
+                Rule::deny(VerbSet::one(Verb::Insert), DriverGlob::new("mail"))
+                    .for_subject(Subject::Role("intern".into())),
+            )
+            .with_rule(Rule::allow(
+                VerbSet::one(Verb::Insert),
+                DriverGlob::new("mail"),
+            ));
+        let plan = plan_of(vec![write_node(
+            0,
+            EffectKind::Insert,
+            "mail",
+            "/mail/outbox",
+        )]);
+
+        // An intern hits the earlier DENY first ⇒ deny (rule index 0).
+        let graph = RoleGraph::new();
+        let intern = DecisionContext::for_user("i").with_roles(["intern".to_string()], &graph);
+        match evaluate_with_context(&policy, &plan, &intern) {
+            PolicyDecision::Deny { rule, .. } => assert_eq!(rule, Some(0), "earlier DENY wins"),
+            PolicyDecision::Allow => panic!("intern must be denied by the earlier rule"),
+        }
+        // A non-intern skips the DENY (subject mismatch) and hits the later ALLOW ⇒ allow.
+        let other = DecisionContext::for_user("o").with_roles(["staff".to_string()], &graph);
+        assert!(evaluate_with_context(&policy, &plan, &other).is_allow());
+    }
+
+    /// A pre-t57 (unscoped) policy behaves identically under the anonymous context — the back-compat
+    /// guarantee that keeps the existing 1605 tests green.
+    #[test]
+    fn unscoped_policy_is_unchanged_under_anonymous_context() {
+        let policy = Policy::new("api")
+            .with_rule(Rule::allow(VerbSet::one(Verb::Insert), DriverGlob::any()));
+        let plan = plan_of(vec![write_node(0, EffectKind::Insert, "log", "/log")]);
+        // Both the back-compat `evaluate` and the explicit anonymous context agree.
+        assert!(evaluate(&policy, &plan).is_allow());
+        assert!(evaluate_with_context(&policy, &plan, &DecisionContext::anonymous()).is_allow());
     }
 }

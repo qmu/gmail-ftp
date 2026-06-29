@@ -161,19 +161,34 @@ pub struct HttpResponse {
     pub status: u16,
     /// The `Content-Type` header value (e.g. `application/json`).
     pub content_type: String,
+    /// Extra response headers `(name, value)` beyond `Content-Type` (e.g. `Location` for a 3xx
+    /// redirect, `Set-Cookie` for a session). Empty for the common JSON/CSV response. The native
+    /// serializer ([`serve`]) emits each verbatim after `Content-Type`. A CF Worker maps them onto
+    /// the `Response` headers (E7/t35). NOTE: a `Set-Cookie` value here is sensitive — do not log a
+    /// response carrying one (`Set-Cookie` is in `qfs_http_core::SENSITIVE_HEADERS`).
+    pub headers: Vec<(String, String)>,
     /// The response body bytes.
     pub body: Vec<u8>,
 }
 
 impl HttpResponse {
-    /// Construct a response.
+    /// Construct a response with no extra headers (the common JSON/CSV case).
     #[must_use]
     pub fn new(status: u16, content_type: impl Into<String>, body: Vec<u8>) -> Self {
         Self {
             status,
             content_type: content_type.into(),
+            headers: Vec::new(),
             body,
         }
+    }
+
+    /// Builder: append an extra response header (e.g. `Location`, `Set-Cookie`). The OAuth flow uses
+    /// this for the authorize redirect (`Location`) and the session cookie (`Set-Cookie`).
+    #[must_use]
+    pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push((name.into(), value.into()));
+        self
     }
 
     /// The body as UTF-8 text (lossy) — a test/debug convenience.

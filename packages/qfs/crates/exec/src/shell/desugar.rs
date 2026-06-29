@@ -152,7 +152,7 @@ pub fn desugar(verb: Builtin, args: &[String], cwd: &VfsPath) -> Result<Desugare
             };
             Ok(Desugared {
                 statements: vec![format!(
-                    "FROM {} |> SELECT name, size, is_dir, modified",
+                    "{} |> SELECT name, size, is_dir, modified",
                     target.render()
                 )],
                 is_effect: false,
@@ -162,7 +162,7 @@ pub fn desugar(verb: Builtin, args: &[String], cwd: &VfsPath) -> Result<Desugare
             let p = arg(args, 0, "cat <path>")?;
             let target = resolve(p, cwd)?;
             Ok(Desugared {
-                statements: vec![format!("FROM {}", target.render())],
+                statements: vec![target.render()],
                 is_effect: false,
             })
         }
@@ -206,13 +206,14 @@ pub fn desugar(verb: Builtin, args: &[String], cwd: &VfsPath) -> Result<Desugare
     }
 }
 
-/// `UPSERT INTO <dst> FROM <src>` — the copy desugar shared by `cp` and `mv`'s first leg.
+/// `UPSERT INTO <dst> <src>` — the copy desugar shared by `cp` and `mv`'s first leg (decision R,
+/// t73: the source operand leads, no `FROM`).
 /// UPSERT (not INSERT) is the **retry-safe, idempotent** universal write the blob/namespace
 /// archetype declares (RFD §6): re-running a copy after a partial failure converges rather than
 /// erroring on an existing destination, which is exactly the recovery shape `mv`'s
 /// copy→verify→delete depends on. (INSERT is reserved for append-only/relational targets.)
 fn copy_stmt(src: &VfsPath, dst: &VfsPath) -> String {
-    format!("UPSERT INTO {} FROM {}", dst.render(), src.render())
+    format!("UPSERT INTO {} {}", dst.render(), src.render())
 }
 
 /// `REMOVE <target>` — the delete desugar shared by `rm` and `mv`'s second leg.
@@ -253,8 +254,8 @@ mod tests {
         );
         // A qfs keyword at the head is NOT a builtin — it parses as a raw statement.
         assert_eq!(
-            classify("FROM /local |> LIMIT 1"),
-            Line::Raw("FROM /local |> LIMIT 1".into())
+            classify("/local |> LIMIT 1"),
+            Line::Raw("/local |> LIMIT 1".into())
         );
         // Uppercase `LS` is not the lowercase sugar.
         assert!(matches!(classify("LS x"), Line::Raw(_)));
@@ -266,7 +267,7 @@ mod tests {
         let d = desugar(Builtin::Ls, &[], &cwd()).unwrap();
         assert_eq!(
             d.statements,
-            vec!["FROM /local/docs |> SELECT name, size, is_dir, modified"]
+            vec!["/local/docs |> SELECT name, size, is_dir, modified"]
         );
         assert!(!d.is_effect);
     }
@@ -276,14 +277,14 @@ mod tests {
         let d = desugar(Builtin::Ls, &["sub".into()], &cwd()).unwrap();
         assert_eq!(
             d.statements[0],
-            "FROM /local/docs/sub |> SELECT name, size, is_dir, modified"
+            "/local/docs/sub |> SELECT name, size, is_dir, modified"
         );
     }
 
     #[test]
     fn cat_desugars_to_bare_from() {
         let d = desugar(Builtin::Cat, &["a.md".into()], &cwd()).unwrap();
-        assert_eq!(d.statements, vec!["FROM /local/docs/a.md"]);
+        assert_eq!(d.statements, vec!["/local/docs/a.md"]);
         assert!(!d.is_effect);
     }
 
@@ -292,7 +293,7 @@ mod tests {
         let d = desugar(Builtin::Cp, &["a.md".into(), "b.md".into()], &cwd()).unwrap();
         assert_eq!(
             d.statements,
-            vec!["UPSERT INTO /local/docs/b.md FROM /local/docs/a.md"]
+            vec!["UPSERT INTO /local/docs/b.md /local/docs/a.md"]
         );
         assert!(d.is_effect);
     }
@@ -308,7 +309,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             d.statements,
-            vec!["UPSERT INTO /mail/drafts/report FROM /local/docs/report.md"]
+            vec!["UPSERT INTO /mail/drafts/report /local/docs/report.md"]
         );
     }
 
@@ -318,7 +319,7 @@ mod tests {
         assert_eq!(
             d.statements,
             vec![
-                "UPSERT INTO /mail/x FROM /local/docs/a.md",
+                "UPSERT INTO /mail/x /local/docs/a.md",
                 "REMOVE /local/docs/a.md",
             ]
         );

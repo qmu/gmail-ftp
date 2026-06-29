@@ -189,7 +189,7 @@ fn endpoint_registers_and_get_returns_200_json_of_matching_rows() {
         "items",
         "GET",
         "/items/:p_id",
-        "FROM /mock/items |> WHERE id = p_id",
+        "/mock/items |> WHERE id == p_id",
     )]);
     binding.reconcile(&state).unwrap();
 
@@ -217,7 +217,7 @@ fn write_endpoint_is_refused_at_registration_plan_assertion() {
         "purge",
         "POST",
         "/purge/:p_id",
-        "REMOVE /mock/items WHERE id = p_id",
+        "REMOVE /mock/items WHERE id == p_id",
     );
     let result = compile_endpoint(&def, &engine, None);
     assert!(
@@ -233,7 +233,7 @@ fn write_endpoint_is_allowed_when_a_policy_grants_it() {
         "purge",
         "POST",
         "/purge/:p_id",
-        "REMOVE /mock/items WHERE id = p_id",
+        "REMOVE /mock/items WHERE id == p_id",
     );
     // t35: an explicit `ALLOW REMOVE` grants the irreversible REMOVE the endpoint lowers to
     // (a broad `ALLOW ALL` would NOT — irreversible strictness). The canonical rule string is
@@ -265,7 +265,7 @@ fn write_endpoint_is_allowed_when_a_policy_grants_it() {
 #[test]
 fn content_negotiation_json_default_and_csv_on_request() {
     let mut binding = HttpBinding::new(engine_with_mock(), reads_with_mock(), 10_000);
-    let state = state_with(vec![endpoint("all", "GET", "/all", "FROM /mock/items")]);
+    let state = state_with(vec![endpoint("all", "GET", "/all", "/mock/items")]);
     binding.reconcile(&state).unwrap();
 
     // Default → JSON.
@@ -334,12 +334,7 @@ fn extra_query_param_is_400_naming_the_param() {
 fn unknown_route_is_404() {
     let mut binding = HttpBinding::new(engine_with_mock(), reads_with_mock(), 10_000);
     binding
-        .reconcile(&state_with(vec![endpoint(
-            "a",
-            "GET",
-            "/a",
-            "FROM /mock/items",
-        )]))
+        .reconcile(&state_with(vec![endpoint("a", "GET", "/a", "/mock/items")]))
         .unwrap();
     let resp = serve_once(&binding, &HttpRequest::new(Method::Get, "/does-not-exist"));
     assert_eq!(resp.status, 404);
@@ -358,12 +353,7 @@ fn eval_error_is_422() {
     let reads = Arc::new(ReadRegistry::new()); // no `mock` read driver registered
     let mut binding = HttpBinding::new(engine, reads, 10_000);
     binding
-        .reconcile(&state_with(vec![endpoint(
-            "a",
-            "GET",
-            "/a",
-            "FROM /mock/items",
-        )]))
+        .reconcile(&state_with(vec![endpoint("a", "GET", "/a", "/mock/items")]))
         .unwrap();
     let resp = serve_once(&binding, &HttpRequest::new(Method::Get, "/a"));
     assert_eq!(resp.status, 422, "body: {}", resp.body_text());
@@ -383,7 +373,7 @@ fn oversize_result_is_413() {
             "all",
             "GET",
             "/all",
-            "FROM /mock/items",
+            "/mock/items",
         )]))
         .unwrap();
     let resp = serve_once(&binding, &HttpRequest::new(Method::Get, "/all"));
@@ -399,7 +389,7 @@ fn oversize_result_is_413() {
 fn injection_path_param_binds_as_typed_value_with_identical_plan() {
     // A path param containing DSL-like text binds as a typed string literal; the bound query
     // AST is structurally IDENTICAL to a benign string bind (only the literal CONTENT differs).
-    let route_query = "FROM /mock/items |> WHERE name = q_name";
+    let route_query = "/mock/items |> WHERE name == q_name";
     let stmt = parse(route_query).unwrap();
 
     let benign = crate::QueryArgs::new().with("q_name", Value::Text("alpha".to_string()));
@@ -468,7 +458,7 @@ fn hot_reload_adds_then_removes_a_route_via_reconcile_swap() {
             "live",
             "GET",
             "/live",
-            "FROM /mock/items",
+            "/mock/items",
         )]))
         .unwrap();
     assert_eq!(
@@ -509,14 +499,14 @@ fn route_pattern_extracts_named_params_and_rejects_mismatches() {
 fn param_shadowing_a_referenced_column_is_refused_at_registration() {
     // The t32 security fix: a route param `:id` whose name collides with the `id` COLUMN the
     // query reads would make the typed-AST rewrite replace the wrong `Expr::Col` node and
-    // collapse `WHERE id = id` into the tautology `WHERE 2 = 2` (access widening). This is
+    // collapse `WHERE id == id` into the tautology `WHERE 2 = 2` (access widening). This is
     // refused at registration with a structured error naming the param — no route is created.
     let engine = engine_with_mock();
     let def = endpoint(
         "shadow",
         "GET",
         "/items/:id",
-        "FROM /mock/items |> WHERE id = id",
+        "/mock/items |> WHERE id == id",
     );
     let result = compile_endpoint(&def, &engine, None);
     match result {
@@ -534,7 +524,7 @@ fn param_shadowing_a_referenced_column_is_refused_at_registration() {
             "shadow",
             "GET",
             "/items/:id",
-            "FROM /mock/items |> WHERE id = id",
+            "/mock/items |> WHERE id == id",
         )]))
         .unwrap();
     assert_eq!(
@@ -557,7 +547,7 @@ fn non_colliding_param_registers_and_serves() {
         "ok",
         "GET",
         "/items/:p_id",
-        "FROM /mock/items |> WHERE id = p_id",
+        "/mock/items |> WHERE id == p_id",
     );
     assert!(
         compile_endpoint(&def, &engine, None).is_ok(),
@@ -570,7 +560,7 @@ fn non_colliding_param_registers_and_serves() {
             "ok",
             "GET",
             "/items/:p_id",
-            "FROM /mock/items |> WHERE id = p_id",
+            "/mock/items |> WHERE id == p_id",
         )]))
         .unwrap();
     assert_eq!(binding.current_router().len(), 1, "the route must register");

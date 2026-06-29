@@ -6,7 +6,7 @@
 //! a liveness ENDPOINT serves a real well-formed body over loopback (the t36 acceptance: `qfs
 //! serve` serves one ENDPOINT returning the expected JSON body). [`StatusDriver`] is that source: a
 //! one-row `/status` relational table (a daemon health row) backed entirely in-process — no
-//! network, no creds, no external dependency. An endpoint declared `AS FROM /status` resolves,
+//! network, no creds, no external dependency. An endpoint declared `AS /status` resolves,
 //! plans, scans, and encodes to a real `{"ok":...}` JSON body.
 
 use std::sync::Arc;
@@ -99,7 +99,7 @@ impl ReadDriver for StatusDriver {
 }
 
 /// Register the built-in `/status` source into the serve engine + read registry (so a liveness
-/// ENDPOINT `AS FROM /status` resolves, plans, scans, and encodes a real JSON body). Returns the
+/// ENDPOINT `AS /status` resolves, plans, scans, and encodes a real JSON body). Returns the
 /// mounted engine + reads. The deployment registers its real E4 drivers ON TOP of these built-ins.
 pub fn register_builtins(engine: &mut Engine, reads: &mut ReadRegistry) {
     // The describe/plan facet (the engine resolves the source's schema + pushdown from here).

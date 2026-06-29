@@ -13,21 +13,28 @@ use crate::keywords::Keyword;
 
 /// A single classified lexical token.
 ///
-/// One variant per lexical category. Reserved UPPERCASE keywords collapse to
-/// [`Token::Keyword`] (the closed-core chokepoint, RFD §3); everything else is an
-/// identifier, path, literal, operator, or structural punctuation.
+/// One variant per lexical category. Reserved (case-insensitively recognized,
+/// lowercase-canonical) keywords collapse to [`Token::Keyword`] (the closed-core
+/// chokepoint, RFD §3); everything else is an identifier, path, literal, operator, or
+/// structural punctuation.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Token {
     // -- closed-core keywords (frozen; RFD §3) --
-    /// A reserved UPPERCASE keyword from the frozen [`Keyword`] set.
+    /// A reserved keyword from the frozen [`Keyword`] set. Recognized case-insensitively
+    /// and rendered in its canonical lowercase form (t74, decision S).
     Keyword(Keyword),
 
     // -- operators --
     /// `|>` — the pipe operator.
     Pipe,
-    /// `=` — equality.
+    /// `=` — assignment / binding only (RFD decision O, ticket t70). Binds names
+    /// in `LET x = …`, `EXTEND col = …`, `SET col = …`, `UPDATE … SET …`. It is
+    /// **never** equivalence; comparison is the explicit [`Token::EqEq`] (`==`).
     Eq,
+    /// `==` — equality comparison (RFD decision O, ticket t70). Distinct from the
+    /// binding [`Token::Eq`] (`=`): in qfs, unlike SQL, a single `=` never compares.
+    EqEq,
     /// `<>` — inequality.
     Ne,
     /// `<` — less-than.
@@ -46,8 +53,21 @@ pub enum Token {
     LParen,
     /// `)`
     RParen,
+    /// `{` — opens a `TRANSACTION { … }` block (M6, ticket t62).
+    LBrace,
+    /// `}` — closes a `TRANSACTION { … }` block (M6, ticket t62).
+    RBrace,
+    /// `;` — separates effect statements inside a `TRANSACTION` block (M6, ticket t62). It is
+    /// **not** a general statement terminator (the program model is `;`-free, RFD §1.2); it is
+    /// structural punctuation that only the transaction grammar consumes.
+    Semicolon,
     /// `,`
     Comma,
+    /// `:` — the type-annotation separator in a lambda parameter list
+    /// (`(addr: string) => …`, M6 ticket t61). Structural punctuation only — NOT a
+    /// frozen operator/keyword (the closed-core freeze is untouched), so it adds zero
+    /// vocabulary; the parser consumes it solely inside a lambda's parameter list.
+    Colon,
     /// `.`
     Dot,
     /// `*` — star (projection / glob in expression position).

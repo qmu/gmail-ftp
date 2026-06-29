@@ -42,72 +42,115 @@ pub const RESERVED_KEYWORDS: &[&str] = KEYWORDS;
 /// lexer cannot disagree about the vocabulary.
 #[must_use]
 pub const fn grammar_ebnf() -> &'static str {
-    // Kept as one frozen literal. Terminals in UPPERCASE are reserved keywords (see
-    // RESERVED_KEYWORDS); operators are the OPERATORS set. Lowercase names are nonterminals.
+    // Kept as one frozen literal. Quoted lowercase terminals are reserved keywords (see
+    // RESERVED_KEYWORDS, t74 decision S); quoted UPPERCASE terminals are word operators
+    // (the OPERATORS set: AND/OR/NOT/LIKE/IN/ANY/BETWEEN). Unquoted lowercase names are
+    // nonterminals. A new backend adds ZERO terminals here.
     "\
 (* qfs pipe-SQL grammar (EBNF) — RFD-0001 §2/§3.                                  *)
-(* The closed core: every UPPERCASE terminal is a frozen reserved keyword         *)
-(* (see RESERVED_KEYWORDS); a new backend adds ZERO terminals here.               *)
+(* The closed core: every quoted lowercase terminal is a frozen reserved keyword   *)
+(* (see RESERVED_KEYWORDS, t74 decision S); a new backend adds ZERO terminals here. *)
 
-statement     = pipeline , [ plan_op ] ;
+(* A program is zero or more let bindings (M6 functional core, ticket t60) in       *)
+(* scope for the statements that follow them — one statement per line, no `;`.       *)
+program       = { binding } , statement ;
+(* A let binds a relation (a pipeline) OR a first-class VALUE — a lambda or a scalar     *)
+(* (M6, ticket t61, decision H \"functions are values\"). A named function is just a        *)
+(* let-bound lambda — there is NO `def` keyword.                                          *)
+binding       = \"let\" , name , \"=\" , ( pipeline | lambda | literal ) ;
 
-(* A pipeline is a source threaded through |> stages. *)
-pipeline      = [ \"FROM\" ] , source , { \"|>\" , stage } ;
+(* A statement is a pipeline (which may terminate in a write stage, decision Q), the      *)
+(* source-less verb-leading literal write, or a transaction block (M6, ticket t62); an     *)
+(* optional plan_op wraps any of them.                                                    *)
+statement     = ( pipeline | effect_literal | transaction ) , [ plan_op ] ;
 
-source        = path | id_ref ;
+(* ---- transactions (M6, ticket t62, decision G) ---- *)
+(* A reversible-only, all-or-nothing block: a `;`-separated sequence of effect            *)
+(* statements committed in source order. Every effect inside MUST be reversible —          *)
+(* an irreversible effect (remove, an irreversible call) is a hard eval-time error, never  *)
+(* a needs-an-ack prompt — so the block can always roll back. No nesting, no let inside.    *)
+transaction   = \"transaction\" , \"{\" , [ effect_stmt , { \";\" , effect_stmt } , [ \";\" ] ] , \"}\" ;
+effect_stmt   = effect_literal | ( pipeline , effect_stage ) ;
+
+(* A pipeline is a source threaded through |> stages. Decision R (t73): the source     *)
+(* position needs no `from` — a leading `/path` (or a let-bound name) IS the source.   *)
+pipeline      = source , { \"|>\" , stage } ;
+
+source        = path | id_ref | name ;   (* name = a let-bound relation *)
 path          = \"/\" , segment , { \"/\" , segment } ;   (* absolute only, no cwd *)
 id_ref        = \"id:\" , token ;
 
 stage         = query_stage | effect_stage | codec_stage | call_stage ;
 
 (* ---- query / transform (read) ---- *)
-query_stage   = \"WHERE\" , predicate
-              | \"SELECT\" , projection
-              | \"EXTEND\" , assignment
-              | \"SET\" , assignment
-              | \"AGGREGATE\" , agg_list
-              | \"GROUP BY\" , column_list
-              | \"ORDER BY\" , sort_list
-              | \"LIMIT\" , integer
-              | \"DISTINCT\"
-              | \"JOIN\" , source , \"ON\" , predicate
-              | \"UNION\" , source
-              | \"EXCEPT\" , source
-              | \"INTERSECT\" , source
-              | \"EXPAND\" , column ;
+query_stage   = \"where\" , predicate
+              | \"select\" , projection
+              | \"extend\" , assignment
+              | \"set\" , assignment
+              | \"aggregate\" , agg_list
+              | \"group by\" , column_list
+              | \"order by\" , sort_list
+              | \"limit\" , integer
+              | \"distinct\"
+              | \"join\" , source , \"on\" , predicate
+              | \"union\" , source
+              | \"except\" , source
+              | \"intersect\" , source
+              | \"expand\" , column ;
 
-(* ---- effects (write) ---- *)
-effect_stage  = \"INSERT INTO\" , target , [ \"VALUES\" , row_list ] [ \"RETURNING\" , projection ]
-              | \"UPSERT INTO\" , target , [ \"VALUES\" , row_list ] [ \"RETURNING\" , projection ]
-              | \"UPDATE\" , assignment
-              | \"REMOVE\" ;
+(* ---- effects (write) — decision Q (t72): a write reads as dataflow. With inflowing  *)
+(* rows it is a TERMINAL pipeline stage; the upstream relation is what it writes        *)
+(* (insert/upsert) or the rows it rewrites/removes in place (update/remove, whose target *)
+(* and where are the upstream `/path |> where …`). returning rides as a trailing stage.  *)
+effect_stage  = \"insert into\" , target
+              | \"upsert into\" , target
+              | \"update\" , \"set\" , assignment
+              | \"remove\"
+              | \"returning\" , projection ;
+
+(* The source-less LITERAL write leads with the verb (no inflowing rows to consume);     *)
+(* `values` supplies the rows inline. This is the only write form that is not a stage.    *)
+effect_literal= \"insert into\" , target , \"values\" , row_list , [ \"returning\" , projection ]
+              | \"upsert into\" , target , \"values\" , row_list , [ \"returning\" , projection ] ;
 
 (* ---- procedures (the irreducible state transitions) ---- *)
-call_stage    = \"CALL\" , qualified_proc , \"(\" , [ arg_list ] , \")\" ;
+call_stage    = \"call\" , qualified_proc , \"(\" , [ arg_list ] , \")\" ;
 qualified_proc= driver_id , \".\" , action ;          (* e.g. mail.send, git.merge *)
 
 (* ---- codecs (blob <-> relational) ---- *)
-codec_stage   = \"DECODE\" , format | \"ENCODE\" , format ;
+codec_stage   = \"decode\" , format | \"encode\" , format ;
 format        = \"json\" | \"jsonl\" | \"yaml\" | \"toml\" | \"csv\" | \"md\" ;
 
-(* ---- plan operator (PREVIEW is default; COMMIT applies) ---- *)
-plan_op       = \"PREVIEW\" | \"COMMIT\" ;
+(* ---- plan operator (preview is default; commit applies) ---- *)
+plan_op       = \"preview\" | \"commit\" ;
 
 (* ---- predicate / expression core ---- *)
+(* Decision O (t70): `=` ALWAYS binds (let / extend / set / named arg);             *)
+(* equivalence is the explicit `==`. Unlike SQL, a lone `=` never compares.         *)
 predicate     = expr , { ( \"AND\" | \"OR\" ) , expr } | \"NOT\" , predicate ;
 expr          = operand , [ comparison , operand ] ;
-comparison    = \"=\" | \"<>\" | \"<\" | \">\" | \"<=\" | \">=\"
+comparison    = \"==\" | \"<>\" | \"<\" | \">\" | \"<=\" | \">=\"
               | \"LIKE\" | \"~\" | \"IN\" | \"ANY\" | \"BETWEEN\" ;
-operand       = column | literal ;
+operand       = column | literal | call | lambda ;
+
+(* ---- lambdas as values + higher-order fns (M6, ticket t61, decision H) ---- *)
+(* Functions are values: a lambda rides the EXPRESSION grammar and reuses the `=>`   *)
+(* token — it adds ZERO keywords and ZERO operators (the closed core is untouched).   *)
+(* The parenthesised parameter list distinguishes it from a named arg / sub-expr.     *)
+lambda        = \"(\" , [ param , { \",\" , param } ] , \")\" , \"=>\" , expr ;
+param         = name , [ \":\" , type ] ;   (* `: type` is parsed-and-retained *)
+(* `map` / `filter` / `reduce` are ordinary stdlib functions (a `call`), NOT keywords: *)
+(*   map(collection, lambda) | filter(collection, lambda) | reduce(collection, lambda, init) *)
+call          = name , \"(\" , [ expr , { \",\" , expr } ] , \")\" ;
 
 (* ---- server DDL (sugar over the write surface, RFD §8) ---- *)
-ddl           = \"CREATE\" , ( endpoint | trigger | job | view | webhook | policy ) ;
-endpoint      = \"ENDPOINT\" , name , \"DO\" , statement ;
-trigger       = \"TRIGGER\" , name , \"ON\" , event , \"DO\" , statement ;
-job           = \"JOB\" , name , \"EVERY\" , interval , \"DO\" , statement ;
-view          = ( \"VIEW\" | \"MATERIALIZED VIEW\" ) , name , \"AS\" , pipeline ;
-webhook       = \"WEBHOOK\" , name , \"DO\" , statement ;
-policy        = \"POLICY\" , name , predicate ;
+ddl           = \"create\" , ( endpoint | trigger | job | view | webhook | policy ) ;
+endpoint      = \"endpoint\" , name , \"do\" , statement ;
+trigger       = \"trigger\" , name , \"on\" , event , \"do\" , statement ;
+job           = \"job\" , name , \"every\" , interval , \"do\" , statement ;
+view          = ( \"view\" | \"materialized view\" ) , name , \"as\" , pipeline ;
+webhook       = \"webhook\" , name , \"do\" , statement ;
+policy        = \"policy\" , name , predicate ;
 
 (* Lowercase nonterminals (segment, token, projection, assignment, agg_list,       *)
 (* column_list, sort_list, integer, target, row_list, column, arg_list, action,    *)
@@ -137,8 +180,9 @@ mod tests {
         // keyword smuggled in anywhere fails here too).
         assert_eq!(
             RESERVED_KEYWORDS.len(),
-            38,
-            "the closed-core reserved-word set is frozen at 38 entries (RFD §3)"
+            39,
+            "the closed-core reserved-word set is frozen at 39 entries \
+             (RFD §3 + t60 `LET` − t73 `FROM` + t62 `TRANSACTION`)"
         );
     }
 

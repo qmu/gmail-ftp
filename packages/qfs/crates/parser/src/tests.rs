@@ -16,7 +16,7 @@ fn parse_err(src: &str) -> ParseError {
 
 #[test]
 fn from_only_query() {
-    let stmt = parse_ok("FROM /mail/inbox");
+    let stmt = parse_ok("/mail/inbox");
     let Statement::Query(p) = stmt else {
         panic!("expected Query")
     };
@@ -32,10 +32,10 @@ fn from_only_query() {
 #[test]
 fn multi_op_pipeline_covers_where_select_join_aggregate_order_limit() {
     let stmt = parse_ok(
-        "FROM /mail/inbox \
+        "/mail/inbox \
          |> WHERE subject LIKE 'invoice' AND size > 1000 \
          |> SELECT id, subject AS title \
-         |> JOIN /contacts ON id = contact_id \
+         |> JOIN /contacts ON id == contact_id \
          |> AGGREGATE count(id) AS n \
          |> GROUP BY contact_id \
          |> ORDER BY n DESC \
@@ -59,7 +59,7 @@ fn multi_op_pipeline_covers_where_select_join_aggregate_order_limit() {
 
 #[test]
 fn extend_and_set_ops() {
-    let stmt = parse_ok("FROM /t |> EXTEND total = price |> SET flag = TRUE");
+    let stmt = parse_ok("/t |> EXTEND total = price |> SET flag = TRUE");
     let Statement::Query(p) = stmt else { panic!() };
     assert!(matches!(p.ops[0], PipeOp::Extend(_)));
     assert!(matches!(p.ops[1], PipeOp::Set(_)));
@@ -67,14 +67,14 @@ fn extend_and_set_ops() {
 
 #[test]
 fn distinct_op() {
-    let stmt = parse_ok("FROM /t |> DISTINCT");
+    let stmt = parse_ok("/t |> DISTINCT");
     let Statement::Query(p) = stmt else { panic!() };
     assert_eq!(p.ops, vec![PipeOp::Distinct]);
 }
 
 #[test]
 fn expand_op_struct_path() {
-    let stmt = parse_ok("FROM /mail/inbox |> EXPAND attachments");
+    let stmt = parse_ok("/mail/inbox |> EXPAND attachments");
     let Statement::Query(p) = stmt else { panic!() };
     assert_eq!(p.ops, vec![PipeOp::Expand(vec!["attachments".to_string()])]);
 }
@@ -82,9 +82,9 @@ fn expand_op_struct_path() {
 #[test]
 fn union_except_intersect_ops() {
     for (src, want) in [
-        ("FROM /a |> UNION FROM /b", "union"),
-        ("FROM /a |> EXCEPT FROM /b", "except"),
-        ("FROM /a |> INTERSECT FROM /b", "intersect"),
+        ("/a |> UNION /b", "union"),
+        ("/a |> EXCEPT /b", "except"),
+        ("/a |> INTERSECT /b", "intersect"),
     ] {
         let stmt = parse_ok(src);
         let Statement::Query(p) = stmt else { panic!() };
@@ -100,7 +100,7 @@ fn union_except_intersect_ops() {
 
 #[test]
 fn as_op_names_relation() {
-    let stmt = parse_ok("FROM /t |> AS recent");
+    let stmt = parse_ok("/t |> AS recent");
     let Statement::Query(p) = stmt else { panic!() };
     assert_eq!(p.ops, vec![PipeOp::As("recent".to_string())]);
 }
@@ -109,7 +109,7 @@ fn as_op_names_relation() {
 
 #[test]
 fn decode_and_encode_codecs() {
-    let stmt = parse_ok("FROM /fs/data.json |> DECODE json |> ENCODE yaml");
+    let stmt = parse_ok("/fs/data.json |> DECODE json |> ENCODE yaml");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Decode(ref d) = p.ops[0] else {
         panic!("expected Decode")
@@ -125,9 +125,8 @@ fn decode_and_encode_codecs() {
 
 #[test]
 fn call_proc_with_named_and_positional_args() {
-    let stmt = parse_ok(
-        "FROM /mail/drafts |> CALL mail.send |> CALL github.merge(method => 'squash', 42)",
-    );
+    let stmt =
+        parse_ok("/mail/drafts |> CALL mail.send |> CALL github.merge(method => 'squash', 42)");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Call(ref c0) = p.ops[0] else {
         panic!("expected Call")
@@ -149,7 +148,7 @@ fn call_proc_with_named_and_positional_args() {
 
 #[test]
 fn registry_fn_in_expression() {
-    let stmt = parse_ok("FROM /t |> SELECT upper(name)");
+    let stmt = parse_ok("/t |> SELECT upper(name)");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Select(ref projs) = p.ops[0] else {
         panic!()
@@ -168,7 +167,7 @@ fn registry_fn_in_expression() {
 
 #[test]
 fn path_at_version_is_preserved() {
-    let stmt = parse_ok("FROM /git/repo@main/src");
+    let stmt = parse_ok("/git/repo@main/src");
     let Statement::Query(p) = stmt else { panic!() };
     let Source::Path(path) = p.source else {
         panic!()
@@ -179,7 +178,7 @@ fn path_at_version_is_preserved() {
 
 #[test]
 fn path_as_of_temporal() {
-    let stmt = parse_ok("FROM /sql/pg/orders AS OF '2026-01-01'");
+    let stmt = parse_ok("/sql/pg/orders AS OF '2026-01-01'");
     let Statement::Query(p) = stmt else { panic!() };
     let Source::Path(path) = p.source else {
         panic!()
@@ -189,7 +188,7 @@ fn path_as_of_temporal() {
 
 #[test]
 fn struct_path_access_a_b_c() {
-    let stmt = parse_ok("FROM /t |> WHERE a.b.c = 1");
+    let stmt = parse_ok("/t |> WHERE a.b.c == 1");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Where(Expr::Binary { lhs, .. }) = &p.ops[0] else {
         panic!()
@@ -205,7 +204,7 @@ fn struct_path_access_a_b_c() {
 #[test]
 fn in_between_anyop_predicates() {
     let stmt =
-        parse_ok("FROM /t |> WHERE id IN (1, 2, 3) AND price BETWEEN 10 AND 20 AND x = ANY (4, 5)");
+        parse_ok("/t |> WHERE id IN (1, 2, 3) AND price BETWEEN 10 AND 20 AND x == ANY (4, 5)");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Where(e) = &p.ops[0] else {
         panic!()
@@ -222,7 +221,7 @@ fn in_between_anyop_predicates() {
 
 #[test]
 fn not_and_or_precedence() {
-    let stmt = parse_ok("FROM /t |> WHERE NOT a = 1 OR b = 2");
+    let stmt = parse_ok("/t |> WHERE NOT a == 1 OR b == 2");
     let Statement::Query(p) = stmt else { panic!() };
     let PipeOp::Where(e) = &p.ops[0] else {
         panic!()
@@ -261,14 +260,14 @@ fn upsert_distinct_from_insert() {
 
 #[test]
 fn insert_from_subpipeline() {
-    let stmt = parse_ok("INSERT INTO /archive FROM /mail/inbox |> WHERE flag = TRUE");
+    let stmt = parse_ok("INSERT INTO /archive /mail/inbox |> WHERE flag == TRUE");
     let Statement::Effect(e) = stmt else { panic!() };
     assert!(matches!(e.body, EffectBody::Pipeline(_)));
 }
 
 #[test]
 fn update_set_where() {
-    let stmt = parse_ok("UPDATE /sql/pg/orders SET status = 'done' WHERE id = 7");
+    let stmt = parse_ok("UPDATE /sql/pg/orders SET status = 'done' WHERE id == 7");
     let Statement::Effect(e) = stmt else { panic!() };
     assert_eq!(e.verb, EffectVerb::Update);
     let EffectBody::SetWhere { set, filter } = &e.body else {
@@ -285,11 +284,137 @@ fn remove_where() {
     assert_eq!(e.verb, EffectVerb::Remove);
 }
 
+// ---- writes as pipeline stages (decision Q, t72) --------------------------
+
+/// Render an AST to canonical JSON with every byte-`span` field stripped, so two spellings of
+/// the SAME write — which sit at different byte offsets — compare on *structure* alone. The
+/// whole point of t72 is that the pipe-stage and verb-leading forms lower to one `EffectStmt`;
+/// spans are the only thing that legitimately differs between two source strings.
+fn ast_without_spans(stmt: &Statement) -> serde_json::Value {
+    let mut v = serde_json::to_value(stmt).expect("AST serializes");
+    strip_spans(&mut v);
+    v
+}
+
+fn strip_spans(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(map) => {
+            map.remove("span");
+            for child in map.values_mut() {
+                strip_spans(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                strip_spans(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Decision Q, the load-bearing invariant: a pipe-stage write parses to the SAME effect AST the
+/// verb-leading spelling produces — one plan, two renderings — for every write verb.
+#[test]
+fn pipe_stage_writes_match_their_verb_leading_form() {
+    // INSERT/UPSERT: the upstream pipeline IS the inserted relation (the verb-leading form's
+    // sub-pipeline body); target stays explicit in the stage.
+    let pairs = [
+        (
+            "/mail/inbox |> WHERE flag == TRUE |> INSERT INTO /archive",
+            "INSERT INTO /archive /mail/inbox |> WHERE flag == TRUE",
+        ),
+        (
+            "/sql/pg/src |> SELECT id, body |> UPSERT INTO /drive/out.csv",
+            "UPSERT INTO /drive/out.csv /sql/pg/src |> SELECT id, body",
+        ),
+        // UPDATE/REMOVE: target + filter are lifted from the upstream `path |> WHERE …` so the
+        // pipe-stage form reproduces the verb-leading `UPDATE <path> SET … WHERE …` exactly.
+        (
+            "/sql/pg/orders |> WHERE id == 7 |> UPDATE SET status = 'done'",
+            "UPDATE /sql/pg/orders SET status = 'done' WHERE id == 7",
+        ),
+        (
+            "/mail/spam |> WHERE age > 30 |> REMOVE",
+            "REMOVE /mail/spam WHERE age > 30",
+        ),
+        // RETURNING rides as a trailing `|>` stage in the pipe-stage form, inline in the other.
+        (
+            "/sql/pg/orders |> WHERE id == 7 |> UPDATE SET status = 'done' |> RETURNING id",
+            "UPDATE /sql/pg/orders SET status = 'done' WHERE id == 7 RETURNING id",
+        ),
+    ];
+    for (pipe_form, verb_form) in pairs {
+        let lhs = ast_without_spans(&parse_ok(pipe_form));
+        let rhs = ast_without_spans(&parse_ok(verb_form));
+        assert_eq!(
+            lhs, rhs,
+            "pipe-stage `{pipe_form}` must lower to the same effect AST as `{verb_form}`"
+        );
+    }
+}
+
+/// Both forms are legal and produce an `Effect`; the source-less `VALUES` literal is unchanged.
+#[test]
+fn both_write_forms_are_legal() {
+    // Pipe-stage write.
+    let Statement::Effect(e) = parse_ok("/mail/inbox |> WHERE flag == TRUE |> REMOVE") else {
+        panic!("pipe-stage REMOVE must be an Effect")
+    };
+    assert_eq!(e.verb, EffectVerb::Remove);
+    // Source-less verb-leading literal still parses (the only INSERT form with no inflow).
+    let Statement::Effect(lit) = parse_ok("INSERT INTO /mail/drafts VALUES ('hi')") else {
+        panic!("source-less INSERT … VALUES must stay legal")
+    };
+    assert!(matches!(lit.body, EffectBody::Values(_)));
+}
+
+/// A pipe-stage INSERT/UPSERT keeps the upstream as the relational body (not a `SET`/`VALUES`).
+#[test]
+fn pipe_stage_insert_body_is_the_upstream_pipeline() {
+    let Statement::Effect(e) = parse_ok("/sql/pg/src |> ENCODE csv |> UPSERT INTO /drive/o.csv")
+    else {
+        panic!()
+    };
+    assert_eq!(e.verb, EffectVerb::Upsert);
+    let EffectBody::Pipeline(p) = &e.body else {
+        panic!("expected the upstream pipeline as the body")
+    };
+    assert!(matches!(p.source, Source::Path(_)));
+    assert_eq!(p.ops.len(), 1, "the ENCODE stage is part of the body");
+}
+
+/// A write stage with NO upstream source (a bare `|> INSERT INTO …`) is a clear error, not a
+/// silent acceptance — decision Q's "anything that is neither legal form is an error".
+#[test]
+fn bare_pipe_write_with_no_source_is_an_error() {
+    let _ = parse_err("|> INSERT INTO /mail/drafts");
+    let _ = parse_err("|> REMOVE");
+}
+
+/// A pipe-stage UPDATE/REMOVE whose upstream is not a plain `path |> WHERE …` (here a `SELECT`
+/// transform precedes it) cannot lower to the verb-leading in-place form, so it is rejected.
+#[test]
+fn pipe_stage_update_rejects_non_liftable_upstream() {
+    let _ = parse_err("/sql/pg/orders |> SELECT id |> UPDATE SET status = 'done'");
+}
+
+/// A pipe-stage write is still an explicit effect under `PREVIEW`/`COMMIT` (the safety floor is
+/// unchanged — only the surface syntax moved).
+#[test]
+fn pipe_stage_write_wraps_in_a_plan() {
+    let Statement::Plan(p) = parse_ok("COMMIT /mail/spam |> WHERE age > 30 |> REMOVE") else {
+        panic!("expected a plan wrapper")
+    };
+    assert!(p.commit);
+    assert!(matches!(p.inner.as_ref(), Statement::Effect(_)));
+}
+
 // ---- server DDL -----------------------------------------------------------
 
 #[test]
 fn ddl_endpoint_as_query() {
-    let stmt = parse_ok("CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5");
+    let stmt = parse_ok("CREATE ENDPOINT recent ON 'GET /recent' AS /mail/inbox |> LIMIT 5");
     let Statement::Ddl(d) = stmt else {
         panic!("expected Ddl")
     };
@@ -345,11 +470,11 @@ fn ddl_job_every() {
 
 #[test]
 fn ddl_view_and_materialized_view() {
-    let v = parse_ok("CREATE VIEW recent AS FROM /mail/inbox");
+    let v = parse_ok("CREATE VIEW recent AS /mail/inbox");
     let Statement::Ddl(d) = v else { panic!() };
     assert_eq!(d.kind, DdlKind::View);
 
-    let mv = parse_ok("CREATE MATERIALIZED VIEW cached AS FROM /mail/inbox");
+    let mv = parse_ok("CREATE MATERIALIZED VIEW cached AS /mail/inbox");
     let Statement::Ddl(d) = mv else { panic!() };
     assert_eq!(d.kind, DdlKind::MaterializedView);
     assert_eq!(d.target, vec!["server", "materialized_views", "cached"]);
@@ -401,6 +526,43 @@ fn ddl_policy_allow_deny_rules() {
     assert_eq!(d.policy_rules[0].driver.as_deref(), Some("s3/*"));
 }
 
+#[test]
+fn ddl_policy_t57_actor_scope_and_condition_clauses() {
+    // t57: `FOR <kind> <name>` (actor), `AT <path>` (realm-scoped path), and `WHERE <expr>`
+    // (conditional grant via the ORDINARY `member_of(...)` call) all parse onto a policy rule
+    // WITHOUT adding a keyword — `FOR`/`AT`/`user`/`role`/`group` are contextual idents and
+    // `WHERE` is already frozen; `member_of(...)` is an `Expr::Fn`.
+    let p = parse_ok(
+        "CREATE POLICY eng ALLOW INSERT ON mail FOR role admin AT /members/alice/** \
+         WHERE member_of('/directories/google/groups/eng')",
+    );
+    let Statement::Ddl(d) = p else { panic!() };
+    assert_eq!(d.policy_rules.len(), 1);
+    let r = &d.policy_rules[0];
+    assert!(r.allow);
+    assert_eq!(r.verbs, vec!["INSERT"]);
+    assert_eq!(r.driver.as_deref(), Some("mail"));
+    let subject = r.subject.as_ref().expect("a FOR clause");
+    assert_eq!(subject.kind, "role");
+    assert_eq!(subject.name, "admin");
+    assert_eq!(r.scope.as_deref(), Some("/members/alice/**"));
+    // The WHERE body is an ordinary function call (the "functions are values" seam).
+    match r.condition.as_ref().expect("a WHERE clause") {
+        Expr::Fn(call) => {
+            assert_eq!(call.name, "member_of");
+            assert_eq!(call.args.len(), 1);
+        }
+        other => panic!("expected a member_of(...) call, got {other:?}"),
+    }
+
+    // The clauses are optional: a bare ALLOW rule has none of them.
+    let p = parse_ok("CREATE POLICY plain ALLOW SELECT");
+    let Statement::Ddl(d) = p else { panic!() };
+    assert!(d.policy_rules[0].subject.is_none());
+    assert!(d.policy_rules[0].scope.is_none());
+    assert!(d.policy_rules[0].condition.is_none());
+}
+
 // ---- plan wrappers --------------------------------------------------------
 
 #[test]
@@ -425,7 +587,9 @@ fn preview_and_commit_wrappers() {
 /// deliberate, reviewed change-control event.
 #[test]
 fn closed_core_variant_counts_are_locked() {
-    // 4 statement forms (Query, Effect, Ddl, Plan).
+    // 6 statement forms (Query, Effect, Ddl, Plan, Let, Transaction). `Let` (t60) and
+    // `Transaction` (t62) are the deliberate M6 functional-core additions, each gated by exactly
+    // this lock + the keyword freeze so the addition is reviewed, not smuggled in.
     let statement_variants = [
         Statement::Query(Pipeline {
             source: Source::Values(Values {
@@ -434,6 +598,23 @@ fn closed_core_variant_counts_are_locked() {
             }),
             ops: vec![],
         }),
+        Statement::Let {
+            name: String::new(),
+            value: Box::new(Statement::Query(Pipeline {
+                source: Source::Values(Values {
+                    columns: None,
+                    rows: vec![],
+                }),
+                ops: vec![],
+            })),
+            body: Box::new(Statement::Query(Pipeline {
+                source: Source::Values(Values {
+                    columns: None,
+                    rows: vec![],
+                }),
+                ops: vec![],
+            })),
+        },
         Statement::Effect(EffectStmt {
             verb: EffectVerb::Insert,
             target: PathExpr {
@@ -470,11 +651,16 @@ fn closed_core_variant_counts_are_locked() {
             })),
             span: Span::new(0, 0),
         }),
+        Statement::Transaction {
+            body: vec![],
+            span: Span::new(0, 0),
+        },
     ];
     assert_eq!(
         statement_variants.len(),
-        4,
-        "Statement is closed at 4 forms (RFD §3)"
+        6,
+        "Statement is closed at 6 forms (RFD §3 + the t60 `LET` and t62 `TRANSACTION` \
+         functional-core additions)"
     );
 
     // 18 closed-core pipe ops — each maps to a frozen query/transform keyword or a
@@ -541,13 +727,323 @@ fn closed_core_variant_counts_are_locked() {
     );
 }
 
+// ---- LET binding + multi-statement program (M6, ticket t60) ---------------
+
+#[test]
+fn let_binding_binds_a_relation_and_threads_body() {
+    // A single LET binding followed by the statement that uses it (one per line, `;`-free).
+    let stmt = parse_ok(
+        "LET active = /sql/pg/customers |> WHERE status == 'active'\n\
+         active |> SELECT id",
+    );
+    let Statement::Let { name, value, body } = stmt else {
+        panic!("expected a LET binding, got {stmt:?}")
+    };
+    assert_eq!(name, "active");
+    // The bound value is always a relation (a Query pipeline), never an effect.
+    let Statement::Query(v) = *value else {
+        panic!("LET value must be a Query")
+    };
+    let Source::Path(p) = v.source else {
+        panic!("expected a path source")
+    };
+    assert_eq!(p.segments[0].name, "sql");
+    // The body references the bound name as a bare-identifier source.
+    let Statement::Query(b) = *body else {
+        panic!("LET body must be the using statement")
+    };
+    assert_eq!(b.source, Source::Name("active".to_string()));
+}
+
+#[test]
+fn multiple_let_bindings_nest_left_to_right() {
+    // Two `;`-free LET lines stay in scope for the final statement (lexical, nested).
+    let stmt = parse_ok(
+        "LET a = /sql/pg/x\n\
+         LET b = /sql/pg/y\n\
+         a |> UNION b",
+    );
+    let Statement::Let { name, body, .. } = stmt else {
+        panic!("expected outer LET a")
+    };
+    assert_eq!(name, "a");
+    let Statement::Let {
+        name: inner,
+        body: inner_body,
+        ..
+    } = *body
+    else {
+        panic!("expected nested LET b")
+    };
+    assert_eq!(inner, "b");
+    let Statement::Query(q) = *inner_body else {
+        panic!("expected the final query")
+    };
+    assert_eq!(q.source, Source::Name("a".to_string()));
+}
+
+#[test]
+fn bare_identifier_is_a_valid_source() {
+    // `products` (a bare name, no leading slash, no `FROM`) is a bound-name source — shape-only
+    // at parse time (decision R, t73: the source leads).
+    let stmt = parse_ok("products |> LIMIT 5");
+    let Statement::Query(p) = stmt else {
+        panic!("expected Query")
+    };
+    assert_eq!(p.source, Source::Name("products".to_string()));
+}
+
+#[test]
+fn let_value_may_not_be_an_effect() {
+    // A LET binds a relation only; an effect value is a crisp parse error (`cut_err` after
+    // the `=`), never a smuggled write into a pure context.
+    let err = parse_err("LET x = INSERT INTO /sql/pg/t VALUES (1)\nx");
+    assert!(!err.expected.is_empty());
+}
+
+#[test]
+fn lowercase_let_parses_as_a_binding() {
+    // Case policy (t74, decision S): keywords are lowercase canonical and recognized
+    // case-insensitively. The lowercase `let` IS the binding keyword now — it parses, and
+    // so does the historical uppercase `LET` (both fold to the same keyword).
+    assert!(matches!(parse_ok("let x = /a\nx"), Statement::Let { .. }));
+    assert!(matches!(parse_ok("LET x = /a\nx"), Statement::Let { .. }));
+    assert!(matches!(parse_ok("Let x = /a\nx"), Statement::Let { .. }));
+}
+
+#[test]
+fn two_bare_statements_without_a_binding_are_rejected() {
+    // The program model is `LET* <final-statement>`; two non-binding statements in a row is
+    // trailing input, not a silent split.
+    let err = parse_err("/sql/pg/a\n/sql/pg/b");
+    assert!(!err.expected.is_empty());
+}
+
+// ---- lambdas as values + higher-order fns (M6, ticket t61) ----------------
+
+/// Pull the single `WHERE` predicate expression out of a one-stage query (the full
+/// expression grammar — including lambdas — is reachable there).
+fn where_expr(src: &str) -> Expr {
+    let Statement::Query(p) = parse_ok(src) else {
+        panic!("expected a query")
+    };
+    let PipeOp::Where(e) = p.ops.into_iter().next().expect("a WHERE op") else {
+        panic!("expected a WHERE op")
+    };
+    e
+}
+
+#[test]
+fn lambda_literal_with_type_annotation_parses() {
+    // The roadmap §1.2 canonical lambda: `(addr: string) => lower(trim(addr))`. NO keyword is
+    // added — the form rides the expression grammar and reuses the `=>` token.
+    let Expr::Lambda { params, body } =
+        where_expr("/t |> WHERE (addr: string) => lower(trim(addr))")
+    else {
+        panic!("expected a lambda literal")
+    };
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].name, "addr");
+    // The annotation is parsed-and-retained (lowercase primitive per decision S/T).
+    assert_eq!(
+        params[0].ty.as_ref().map(|t| t.name.as_str()),
+        Some("string")
+    );
+    // The body is the nested function call `lower(trim(addr))`.
+    assert!(matches!(*body, Expr::Fn(_)));
+}
+
+#[test]
+fn bare_and_multi_parameter_lambdas_parse() {
+    // A bare parameter (no annotation) retains `ty: None`.
+    let Expr::Lambda { params, .. } = where_expr("/t |> WHERE (x) => x") else {
+        panic!("expected a lambda")
+    };
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].ty, None);
+
+    // Multiple parameters, mixed annotated / bare.
+    let Expr::Lambda { params, .. } = where_expr("/t |> WHERE (acc: i64, item) => acc == item")
+    else {
+        panic!("expected a 2-param lambda")
+    };
+    assert_eq!(params.len(), 2);
+    assert_eq!(params[0].name, "acc");
+    assert_eq!(params[0].ty.as_ref().map(|t| t.name.as_str()), Some("i64"));
+    assert_eq!(params[1].name, "item");
+    assert_eq!(params[1].ty, None);
+}
+
+#[test]
+fn lambda_as_a_function_argument_parses() {
+    // A lambda flows into `map(col, fn)` as just another argument expression — no new call
+    // machinery (the `FnRef` already carries `args: Vec<Expr>`).
+    let Expr::Fn(f) = where_expr("/t |> WHERE map(tags, (t: string) => upper(t))") else {
+        panic!("expected a fn call")
+    };
+    assert_eq!(f.name, "map");
+    assert_eq!(f.args.len(), 2);
+    assert!(matches!(f.args[0], Expr::Col(_)));
+    assert!(matches!(f.args[1], Expr::Lambda { .. }));
+}
+
+#[test]
+fn parenthesised_expression_is_not_a_lambda() {
+    // The lambda parser backtracks cleanly when a `( … )` group is not followed by `=>`, so a
+    // plain parenthesised sub-expression still parses as itself.
+    let e = where_expr("/t |> WHERE (a == b)");
+    assert!(matches!(e, Expr::Binary { op: Op::Eq, .. }));
+}
+
+#[test]
+fn let_binds_a_lambda_value_no_def_keyword() {
+    // A named function is just a `LET`-bound lambda (no `DEF`): `LET normalize = (addr) => …`.
+    // The value binding is retained as a single-cell `VALUES` relation, so `Statement::Let`'s
+    // shape (and its governance variant lock) is untouched — no new `Statement` variant.
+    let Statement::Let { name, value, .. } = parse_ok(
+        "LET normalize = (addr: string) => lower(trim(addr))\n\
+         /t |> EXTEND k = normalize(email)",
+    ) else {
+        panic!("expected a LET binding")
+    };
+    assert_eq!(name, "normalize");
+    let Statement::Query(Pipeline {
+        source: Source::Values(v),
+        ..
+    }) = *value
+    else {
+        panic!("expected the lambda retained in a VALUES cell")
+    };
+    assert!(matches!(v.rows[0][0], Expr::Lambda { .. }));
+}
+
+#[test]
+fn let_binds_a_scalar_value() {
+    // A scalar value binding (`LET cutoff = '2026-03-27'`) — also retained as a one-cell VALUES.
+    let Statement::Let { name, value, .. } =
+        parse_ok("LET cutoff = '2026-03-27'\n/t |> WHERE created_at >= cutoff")
+    else {
+        panic!("expected a LET binding")
+    };
+    assert_eq!(name, "cutoff");
+    let Statement::Query(Pipeline {
+        source: Source::Values(v),
+        ..
+    }) = *value
+    else {
+        panic!("expected a one-cell VALUES value binding")
+    };
+    assert!(matches!(v.rows[0][0], Expr::Lit(Literal::Str(_))));
+}
+
+// ---- TRANSACTION block (M6, ticket t62) -----------------------------------
+
+#[test]
+fn transaction_block_of_two_upserts_parses() {
+    // The roadmap §1.2 canonical shape: two reversible UPSERTs grouped into one block.
+    let stmt = parse_ok(
+        "TRANSACTION { \
+           UPSERT INTO /sql/pg/orders VALUES (1); \
+           UPSERT INTO /sql/pg/audit VALUES (1) \
+         }",
+    );
+    let Statement::Transaction { body, .. } = stmt else {
+        panic!("expected a TRANSACTION block, got {stmt:?}")
+    };
+    assert_eq!(body.len(), 2, "two effect members, in source order");
+    for member in &body {
+        let Statement::Effect(e) = member else {
+            panic!("a transaction member must be an Effect, got {member:?}")
+        };
+        assert_eq!(e.verb, EffectVerb::Upsert);
+    }
+}
+
+#[test]
+fn transaction_block_accepts_trailing_semicolon_and_pipe_stage_writes() {
+    // A trailing `;` is allowed; a pipe-stage write (decision Q) is a legal effect member.
+    let stmt = parse_ok(
+        "TRANSACTION { \
+           /sql/pg/src |> WHERE flag == TRUE |> UPDATE SET status = 'done'; \
+           INSERT INTO /sql/pg/audit VALUES (1); \
+         }",
+    );
+    let Statement::Transaction { body, .. } = stmt else {
+        panic!("expected a TRANSACTION block")
+    };
+    assert_eq!(body.len(), 2);
+    assert!(matches!(body[0], Statement::Effect(_)));
+    assert!(matches!(body[1], Statement::Effect(_)));
+}
+
+#[test]
+fn transaction_block_parses_irreversible_member_shape() {
+    // Reversibility is an EVAL-time concern, not a parse-time one: a `REMOVE` inside parses
+    // fine here and is rejected later by the evaluator's reversible-only guard.
+    let stmt = parse_ok("TRANSACTION { REMOVE /sql/pg/t WHERE id == 1 }");
+    let Statement::Transaction { body, .. } = stmt else {
+        panic!("expected a TRANSACTION block")
+    };
+    assert_eq!(body.len(), 1);
+    let Statement::Effect(e) = &body[0] else {
+        panic!()
+    };
+    assert_eq!(e.verb, EffectVerb::Remove);
+}
+
+#[test]
+fn empty_transaction_block_parses() {
+    let stmt = parse_ok("TRANSACTION { }");
+    let Statement::Transaction { body, .. } = stmt else {
+        panic!("expected a TRANSACTION block")
+    };
+    assert!(body.is_empty());
+}
+
+#[test]
+fn transaction_block_can_be_wrapped_in_commit() {
+    let stmt = parse_ok("COMMIT TRANSACTION { UPSERT INTO /sql/pg/t VALUES (1) }");
+    let Statement::Plan(p) = stmt else {
+        panic!("expected a plan wrapper")
+    };
+    assert!(p.commit);
+    assert!(matches!(p.inner.as_ref(), Statement::Transaction { .. }));
+}
+
+#[test]
+fn transaction_body_rejects_a_pure_read() {
+    // A read pipeline is not a legal transaction member (reversible-only block holds only
+    // effects) — a clear error, never a silent accept.
+    let _ = parse_err("TRANSACTION { /sql/pg/t |> LIMIT 5 }");
+}
+
+#[test]
+fn transaction_does_not_nest() {
+    // Conservative this slice (decision G): no nested `TRANSACTION` inside a transaction body.
+    let _ = parse_err("TRANSACTION { TRANSACTION { UPSERT INTO /t VALUES (1) } }");
+}
+
 // ---- governance: rejection cases ------------------------------------------
 
 #[test]
-fn lowercase_keyword_rejected_as_unknown_keyword() {
-    let err = parse_err("FROM /mail |> where id = 1");
+fn lowercase_keyword_parses_case_insensitively() {
+    // Post-t74 (decision S) lowercase keywords ARE the canonical form: `where` parses, and so
+    // does `WHERE` / `Where` — all fold to the same stage. (The lone `=` is still the binding
+    // token; equivalence is `==`, RFD decision O / t70 — unrelated to case.)
+    for spelling in ["where", "WHERE", "Where"] {
+        let Statement::Query(p) = parse_ok(&format!("/mail |> {spelling} id == 1")) else {
+            panic!("expected a query for `{spelling}`");
+        };
+        assert!(matches!(p.ops.first(), Some(PipeOp::Where(_))));
+    }
+}
+
+#[test]
+fn incomplete_multiword_keyword_is_unknown_keyword() {
+    // A multi-word keyword fragment standing alone (a `group` with no `by`) is still a crisp
+    // `UnknownKeyword` — case-insensitive recognition does not make a fragment valid (t74).
+    let err = parse_err("/mail |> group id");
     assert_eq!(err.code, ParseErrorCode::UnknownKeyword);
-    // The error points at the offending lowercase `where`.
     assert!(err.span.start > 0);
     assert!(!err.expected.is_empty());
 }
@@ -556,7 +1052,7 @@ fn lowercase_keyword_rejected_as_unknown_keyword() {
 fn reserved_word_as_identifier_is_rejected() {
     // `SELECT` (a reserved keyword) cannot stand where an identifier (a column) is
     // required.
-    let err = parse_err("FROM /t |> SELECT SELECT");
+    let err = parse_err("/t |> SELECT SELECT");
     assert!(
         matches!(
             err.code,
@@ -569,15 +1065,52 @@ fn reserved_word_as_identifier_is_rejected() {
 
 #[test]
 fn missing_pipe_is_rejected() {
-    let err = parse_err("FROM /mail WHERE id = 1");
+    let err = parse_err("/mail WHERE id = 1");
     // No `|>` before WHERE: trailing input is unexpected.
     assert!(!err.expected.is_empty());
 }
 
 #[test]
 fn dangling_where_is_eof() {
-    let err = parse_err("FROM /mail |> WHERE");
+    let err = parse_err("/mail |> WHERE");
     assert_eq!(err.code, ParseErrorCode::UnexpectedEof);
+}
+
+/// RFD decision O (ticket t70): a lone `=` always binds; it is never equality. A
+/// stale SQL-style `WHERE a = 1` must therefore fail, with a message that steers the
+/// author (human or AI) to `==` for equivalence (RFD §5 actionable-error contract).
+#[test]
+fn equals_as_comparison_is_rejected_steering_to_eqeq() {
+    let err = parse_err("/t |> WHERE a = 1");
+    assert_eq!(err.code, ParseErrorCode::UnexpectedToken);
+    assert!(
+        err.message.contains("=="),
+        "message should steer to `==` for equivalence, got: {}",
+        err.message
+    );
+    // The diagnostic points at the offending `=` (and never echoes any literal).
+    let src = "/t |> WHERE a = 1";
+    assert_eq!(&src[err.span.range()], "=");
+}
+
+/// The migrated comparison form `WHERE x == 5` parses as an equality predicate, while
+/// the binding `=` keeps working in `EXTEND`/`SET` — the two roles never collide
+/// (decision O, t70).
+#[test]
+fn eqeq_compares_while_eq_still_binds() {
+    let stmt = parse_ok("/t |> WHERE x == 5");
+    let Statement::Query(p) = stmt else { panic!() };
+    let PipeOp::Where(Expr::Binary { op: Op::Eq, .. }) = &p.ops[0] else {
+        panic!(
+            "`WHERE x == 5` should parse as an Eq comparison, got {:?}",
+            p.ops[0]
+        )
+    };
+    // `=` is still the assignment/binding token in EXTEND and SET.
+    let stmt = parse_ok("/t |> EXTEND y = x |> SET z = 1");
+    let Statement::Query(p) = stmt else { panic!() };
+    assert!(matches!(p.ops[0], PipeOp::Extend(_)));
+    assert!(matches!(p.ops[1], PipeOp::Set(_)));
 }
 
 #[test]
@@ -591,13 +1124,13 @@ fn empty_input_is_eof() {
 
 #[test]
 fn error_carries_span_and_nonempty_expected() {
-    let err = parse_err("FROM /mail |> BANANA");
+    let err = parse_err("/mail |> BANANA");
     assert!(
         !err.expected.is_empty(),
         "expected-set must be non-empty (RFD §5)"
     );
     // The span round-trips into the source region of the offending token.
-    let src = "FROM /mail |> BANANA";
+    let src = "/mail |> BANANA";
     let slice = &src[err.span.range()];
     assert!(!slice.is_empty());
 }
@@ -605,7 +1138,7 @@ fn error_carries_span_and_nonempty_expected() {
 #[test]
 fn error_display_does_not_echo_string_literal_value() {
     // RFD §10: a diagnostic must not echo a literal's contents (secret hygiene).
-    let err = parse_err("FROM /mail |> WHERE secret = 'p@ssw0rd' BANANA");
+    let err = parse_err("/mail |> WHERE secret = 'p@ssw0rd' BANANA");
     let shown = format!("{err}");
     assert!(
         !shown.contains("p@ssw0rd"),
@@ -628,6 +1161,11 @@ fn no_vendor_type_in_public_api() {
 
 #[test]
 fn sees_frozen_keyword_set() {
-    assert!(KEYWORDS.contains(&"FROM"));
-    assert_eq!(Keyword::Where.text(), "WHERE");
+    // `FROM` was removed from the closed core in t73 (decision R): the source position needs no
+    // keyword. `WHERE` (and the rest of the frozen set) is unaffected.
+    // Keywords are canonically lowercase (t74, decision S); `from` is gone in any case.
+    assert!(!KEYWORDS.contains(&"from"));
+    assert!(!KEYWORDS.contains(&"FROM"));
+    assert!(KEYWORDS.contains(&"where"));
+    assert_eq!(Keyword::Where.text(), "where");
 }

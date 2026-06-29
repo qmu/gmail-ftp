@@ -23,8 +23,8 @@ in. You address a single item the same way you'd point at a file.
 Some paths take a **coordinate**. Git, for example, lets you read a file as of a tag or commit:
 
 ```qfs
-FROM /git/myrepo@v1.2/src/main.rs
-|> SELECT path
+/git/myrepo@v1.2/src/main.rs
+|> select path
 ```
 
 ## 2. Four archetypes
@@ -54,8 +54,8 @@ folder of files:
 | Shell shorthand | is just | the real verb |
 | --- | --- | --- |
 | `ls <dir>` | listing a folder | `SELECT` over the directory |
-| `cat <file>` | reading a file | `FROM <file>` |
-| `cp <a> <b>` | copying | `UPSERT INTO <b> FROM <a>` |
+| `cat <file>` | reading a file | `<file>` |
+| `cp <a> <b>` | copying | `UPSERT INTO <b> <a>` |
 | `mv <a> <b>` | moving | copy, then `REMOVE <a>` |
 | `rm <file>` | deleting | `REMOVE <file>` |
 
@@ -69,11 +69,11 @@ You query and change paths with one small SQL-like language. A query is a **sour
 **stages** joined by `|>` (a pipe):
 
 ```qfs
-FROM /sql/pg/orders
-|> WHERE total > 100
-|> SELECT id, total
-|> ORDER BY total DESC
-|> LIMIT 5
+/sql/pg/orders
+|> where total > 100
+|> select id, total
+|> order by total DESC
+|> limit 5
 ```
 
 Read it top to bottom: start from a table, keep the big orders, pick two columns, sort, take five.
@@ -89,7 +89,7 @@ The read/transform stages you'll use most:
 | `AGGREGATE <fn> AS <name>` | Summarize (`AGGREGATE count(id) AS n`) |
 | `GROUP BY <cols>` | Group for aggregation |
 | `ORDER BY <col> [DESC]`, `LIMIT <n>`, `DISTINCT` | Sort, cap, dedupe |
-| `UNION` / `EXCEPT` / `INTERSECT` `FROM <path>` | Set operations across sources |
+| `UNION` / `EXCEPT` / `INTERSECT` `<path>` | Set operations across sources |
 
 The write stages (effects):
 
@@ -123,9 +123,9 @@ pushes the parts a service can do natively (a `WHERE`, a `LIMIT`) *down* to that
 the rest — joins, extra filtering, sorting — locally:
 
 ```qfs
-FROM /sql/pg/orders
-|> JOIN /github/acme/web/issues ON id = issue_id
-|> SELECT id, title
+/sql/pg/orders
+|> join /github/acme/web/issues on id == issue_id
+|> select id, title
 ```
 
 That's a Postgres table joined to GitHub issues in one query. `describe` shows each path's
@@ -137,15 +137,17 @@ A blob of bytes becomes rows with `DECODE`, and rows become bytes with `ENCODE`.
 `json`, `jsonl`, `yaml`, `toml`, `csv`, `md`. So converting a file's format is one line:
 
 ```qfs
-FROM /local/config.json
-|> DECODE json
-|> ENCODE yaml
+/local/config.json
+|> decode json
+|> encode yaml
 ```
 
 ## Credentials, briefly
 
 `describe` and `preview` never need a credential. To **commit** against a live service you store one
-once with `qfs account add <service> <name>` — and qfs never prints it back. See
-[Accounts & credentials](/guide/accounts).
+once with `qfs connection add <service> <name>` — and qfs never prints it back. That command first
+needs `QFS_PASSPHRASE` exported (the master passphrase that unlocks the local encrypted store) and
+reads the credential value from stdin. See [Connections & credentials](/guide/connections) for the
+full flow.
 
 **Next:** put it all together in [the Cookbook →](/cookbook/)

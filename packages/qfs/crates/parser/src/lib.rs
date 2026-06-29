@@ -16,7 +16,7 @@
 //! ([`ast::PathExpr`]), functions & procedures ([`ast::FnRef`]/[`ast::CallRef`]), and
 //! codecs ([`ast::Codec`]). Names inside those seams are parsed but **not resolved**
 //! — resolution / capability gating is the semantic phase (E2). Unknown core
-//! constructs (lowercase keywords, reserved words as identifiers) are rejected at
+//! constructs (incomplete multi-word keywords, reserved words as identifiers) are rejected at
 //! parse time with a structured [`ParseError`].
 //!
 //! ## Reversibility (fidelity guard G6, boundary B6)
@@ -42,8 +42,9 @@ mod grammar;
 
 pub use ast::{
     Assignment, CallRef, Codec, DdlKind, EffectBody, EffectStmt, EffectVerb, Expr, FnRef, Ident,
-    JoinOp, Literal, NamedArg, Op, OrderKey, PathExpr, PathRef, PathSegment, PipeOp, Pipeline,
-    PlanWrap, PolicyRuleAst, Projection, ServerDdl, Source, Statement, Values,
+    JoinOp, Literal, NamedArg, Op, OrderKey, Param, PathExpr, PathRef, PathSegment, PipeOp,
+    Pipeline, PlanWrap, PolicyRuleAst, PolicySubjectAst, Projection, ServerDdl, Source, Statement,
+    TypeAnn, Values,
 };
 pub use error::{ParseError, ParseErrorCode};
 

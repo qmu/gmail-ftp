@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<!--
+  qfs dashboard — the embedded SPA SHELL (ticket t51).
+
+  This page is one of the "three faces" of the one qfs engine: it composes a qfs statement in
+  the browser and drives it through the SAME describe -> preview -> commit engine path the CLI and
+  the MCP face already use (POST /api/describe, POST /api/run, POST /api/commit). t52 adds the
+  preview->commit approval cards: a preview renders the plan's effects as a card; Approve commits
+  through the SAME default-deny policy gate + irreversible-effect guard the CLI/MCP use. A reversible
+  in-policy plan applies; an out-of-policy plan is refused with the decision; an IRREVERSIBLE plan
+  is never auto-applied — it raises a distinct one-time confirmation (the explicit ack the CLI's
+  --commit-irreversible drives). The dashboard exposes NO capability the CLI/MCP lack.
+
+  t53 adds the FIRST thin admin views: the admin panel below is just describe/preview quick-links
+  over the deployment's own /sys/* paths (/sys/users, /sys/projects, /sys/audit, /sys/connections,
+  /sys/policies) through the SAME bridge — administration is also "everything is a path." It adds
+  NO admin capability the CLI lacks; a view that needs more must extend the /sys schema, not add a
+  side-channel API. /sys/connections shows names + metadata only (never secret material).
+
+  Self-contained: NO external CDN, font, or script (the published binary is the deliverable, and
+  `qfs serve` must stay offline-clean). Every asset is embedded in the binary via include_str!.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>qfs dashboard</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>qfs <span class="muted">dashboard</span></h1>
+      <p class="muted">
+        the second face of one engine — describe, preview, and commit run through the same
+        <code>qfs_exec</code> path (and the same policy gate + irreversible guard) the CLI and MCP
+        use. preview raises an approval card; irreversible effects need an explicit confirm.
+      </p>
+    </header>
+
+    <main class="grid">
+      <section class="panel">
+        <h2>describe</h2>
+        <p class="muted">inspect a path's shape before writing to it (pure: no creds, no I/O).</p>
+        <form id="describe-form">
+          <label for="describe-path">path</label>
+          <input
+            id="describe-path"
+            name="path"
+            type="text"
+            value="/status"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <button type="submit">describe</button>
+        </form>
+        <pre id="describe-out" class="output" aria-live="polite"></pre>
+      </section>
+
+      <section class="panel">
+        <h2>preview &rarr; commit</h2>
+        <p class="muted">
+          dry-run a statement (builds the plan, applies ZERO effects), then approve the card to
+          commit it through the policy gate + irreversible guard. nothing applies without Approve.
+        </p>
+        <form id="run-form">
+          <label for="run-statement">statement</label>
+          <textarea
+            id="run-statement"
+            name="statement"
+            rows="4"
+            spellcheck="false"
+            autocomplete="off"
+          >SELECT ok, service FROM /status</textarea>
+          <button type="submit">preview</button>
+        </form>
+        <pre id="run-out" class="output" aria-live="polite"></pre>
+        <!-- t52: the approval card (effects + Approve/Cancel; irreversible gets a second confirm). -->
+        <div id="approval-card" class="approval-card" aria-live="polite"></div>
+        <pre id="commit-out" class="output" aria-live="polite"></pre>
+      </section>
+
+      <section class="panel" id="admin-panel">
+        <h2>admin <span class="muted">/sys</span></h2>
+        <p class="muted">
+          the deployment's own state, as paths (t53). pick one to describe its shape and preview a
+          read — the same engine, no extra capability. connections show names + metadata only.
+        </p>
+        <div class="admin-paths">
+          <button type="button" class="sys-link" data-path="/sys/users">/sys/users</button>
+          <button type="button" class="sys-link" data-path="/sys/projects">/sys/projects</button>
+          <button type="button" class="sys-link" data-path="/sys/audit">/sys/audit</button>
+          <button type="button" class="sys-link" data-path="/sys/connections">/sys/connections</button>
+          <button type="button" class="sys-link" data-path="/sys/policies">/sys/policies</button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="muted">
+      qfs serve · loopback-only shell · no secret material is served to the browser
+    </footer>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

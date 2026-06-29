@@ -1,0 +1,37 @@
+[package]
+name = "qfs-mcp"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs MCP serving binding (t47, roadmap M2 — decision C/K): the leaf binding crate that exposes qfs's four operating-loop tools (describe / preview / commit / connections) as a JSON-RPC 2.0 / Model Context Protocol surface mounted at POST /mcp on the existing in-house HTTP listener. The protocol core (initialize / tools/list / tools/call + the four handlers) is PURE and unit-testable over an injected `McpEngine` trait; the live engine closures (describe registry, build_plan, the policy-gated + IrreversibleGuard-checked commit, the redacted connection list) are injected from the `qfs` binary's serve composition root. `commit` routes through the SAME default-deny policy gate (qfs-server `gate_plan`) and the SAME `IrreversibleGuard` the CLI uses — an MCP tool call gets no privileged shortcut. A LEAF: only the `qfs` binary consumes it (the serve composition root, the MCP sibling of the t32 qfs-http / t33 qfs-cron / t34 qfs-watchtower bindings), so it must NOT depend on qfs-runtime. The endpoint is UNAUTHENTICATED this milestone (bearer/OAuth is t50) and defaults to a localhost-only bind; an explicit middleware seam (`McpAuthorizer`) lets t50 slot auth in front without touching tool logic."
+
+[dependencies]
+# The policy gate the `commit` tool routes through (default-deny `gate_plan` / `resolve_policy` /
+# `Policy` / `PolicyDecision`) — the SAME enforcement the CLI / cron / watchtower committers use,
+# never a privileged shortcut. qfs-mcp is a LEAF integration consumer of qfs-server, the same role
+# qfs-http / qfs-cron / qfs-watchtower play.
+qfs-server = { path = "../server" }
+# The plan builder + dry-run preview the `preview` and `commit` tools shape their results from
+# (`build_plan` returns the hub `Plan`; `plan_preview` / `PlanPreview` is the secret-free effect
+# summary). qfs-mcp is a LEAF integration consumer of the read/plan executor, like qfs-http.
+qfs-exec = { path = "../exec" }
+# The hub: the owned `Plan`, the `IrreversibleGuard` / `RunMode` / `Ack` safety gate, and the
+# `preview` constructor the committed result is shaped from. No live driver / runtime ever crosses
+# this seam — the apply itself is the INJECTED `McpEngine::apply` closure (the binary owns the
+# runtime; qfs-mcp must stay off qfs-runtime).
+qfs-core = { path = "../core" }
+# The pure, vendor-free HTTP exchange DTOs (`HttpRequest` / `HttpResponse` / `HttpMethod`) the
+# binding frames a request into and renders a response from — shared with the rest of the workspace
+# so qfs-mcp does NOT depend on the qfs-http LEAF (which would break its leaf-consumer guard). The
+# binary's serve composition adapts the listener's native request onto these DTOs and back.
+qfs-http-core = { path = "../http-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

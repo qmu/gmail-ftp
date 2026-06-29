@@ -226,7 +226,7 @@ pub fn compile_endpoint(
 /// (the t32 access-widening fix). The check is **schema-precise where possible and fail-closed
 /// otherwise**:
 ///
-///   * For every `FROM /driver/...` source the query reads, resolve the driver via `engine`'s
+///   * For every `/driver/...` source the query reads, resolve the driver via `engine`'s
 ///     mounts and `describe` its REAL column names. A param whose name is one of those columns
 ///     is a genuine shadow → refuse (the precise access-widening case, e.g. param `id` in
 ///     `WHERE id = id` over a source with an `id` column).

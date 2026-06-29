@@ -1,0 +1,26 @@
+[package]
+name = "qfs-driver-directory"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "qfs /directories identity-directory driver (RFD-0001 §5; roadmap §1.2 decision I / M5, t58): an external identity directory (LDAP / Active Directory / Entra ID / Google Workspace) exposed as ordinary qfs paths — /directories/<provider>/groups, /directories/<provider>/users, and a flat /directories/<provider>/memberships relation — so the t57 `member_of('/directories/...')` policy predicate resolves against a real directory. READ-FIRST: listing groups/users/memberships only, no directory mutation in this slice. The introspective half (mount/describe/capabilities/pushdown) is PURE — a stable, credential-free schema with NO directory connection and NO secrets, mirroring the /sys administration driver's NoopApplier split. The impure read half (the live LDAP/AD/Entra/Workspace client) is INJECTED from the qfs binary leaf through the vendor-free DirectorySource seam, so this crate stays tokio-free, SDK-free, and wasm-buildable. A hermetic in-memory FixtureDirectory implements the same seam for tests + the local membership case. The directory read FEEDS the policy decision but is never gated BY it (no member_of re-entry): the binary resolves an actor's memberships up front and freezes them into the t57 DecisionContext, keeping qfs-server's policy `evaluate` pure."
+
+[dependencies]
+# The introspective Driver contract (t13): trait, archetype/capability/pushdown DTOs, the shared
+# CfsError, and the Path boundary adapter.
+qfs-driver = { path = "../driver" }
+# The effect substrate (t06/t09): the synchronous PlanApplier seam. READ-FIRST means this driver
+# ships only a NoopApplier (like the /sys self-config driver) — no live write leg — so it carries
+# NO qfs-runtime dep and stays a pure, wasm-buildable introspective + read-source crate.
+qfs-plan = { path = "../plan" }
+# The canonical typed row model + Schema/Column/Value/RowBatch (t05) the describe schema and the
+# scanned group/user/membership rows speak. No vendor directory type crosses this boundary.
+qfs-types = { path = "../types" }
+# Structured, secret-free DirectoryError taxonomy (RFD §5, AI-consumable).
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

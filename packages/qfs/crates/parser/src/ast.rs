@@ -63,9 +63,13 @@ where
 /// semantic phase (E2), never grammar (RFD §3).
 pub type Ident = String;
 
-/// The top-level statement sum type (RFD §3). **Closed core**: exactly these four
+/// The top-level statement sum type (RFD §3). **Closed core**: exactly these six
 /// forms. Not `#[non_exhaustive]` — the governance test locks this variant set so a
-/// later ticket cannot smuggle in a per-driver statement form.
+/// later ticket cannot smuggle in a per-driver statement form. The fifth and sixth forms,
+/// [`Statement::Let`] (ticket t60) and [`Statement::Transaction`] (ticket t62), are the
+/// **deliberate** M6 functional-core additions: each is gated by exactly the same governance
+/// tripwire as the keyword freeze (the variant-count lock in `tests`), updated in step so the
+/// addition is reviewed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Statement {
     /// `FROM <source> |> op |> op …` — a pure read pipeline.
@@ -76,6 +80,50 @@ pub enum Statement {
     Ddl(ServerDdl),
     /// `PREVIEW <stmt>` / `COMMIT <stmt>` — a plan wrapper (RFD §6).
     Plan(PlanWrap),
+    /// `LET <name> = <pipeline>` — a relation binding (M6 functional core, ticket t60).
+    ///
+    /// The program model the roadmap settled on (§1.2): a program is a sequence of
+    /// statements with **no terminator**, and a `LET` names an intermediate relation that
+    /// stays in scope for everything after it. This is encoded as a **let-in nesting**: the
+    /// `body` is the rest of the program (the next `LET`, or the final statement that uses
+    /// the binding). Scoping is therefore lexical and conservative — a binding is visible to
+    /// its `body` only, shadowing is allowed (an inner `LET` of the same name wins for its
+    /// own `body`), and there are no recursive/forward references (`value` is resolved
+    /// without `name` in scope). `value` is restricted by the grammar to a **relation**
+    /// (a `Statement::Query` pipeline), never an effect — so a `LET` can never smuggle a
+    /// write into a pure context (the safety floor holds trivially).
+    Let {
+        /// The bound name, referenced later as a bare-identifier [`Source::Name`].
+        name: Ident,
+        /// The bound relation — always a [`Statement::Query`] (grammar-enforced).
+        value: Box<Statement>,
+        /// The rest of the program, with `name` in scope.
+        body: Box<Statement>,
+    },
+    /// `TRANSACTION { <effect> ; <effect> ; … }` — a reversible-only, all-or-nothing block
+    /// (M6 transactional core, ticket t62, decision G).
+    ///
+    /// The block groups effect statements into ONE atomic unit with a defined **commit-point
+    /// ordering** (source order): the effects apply all-or-nothing via the existing `qfs-txn`
+    /// envelope (single transactional source → ACID `BEGIN…COMMIT`/rollback; cross-source →
+    /// reverse-order saga compensation). Because a transaction promises rollback, every effect
+    /// inside **must be reversible** — an irreversible effect (a `REMOVE`, an irreversible `CALL`)
+    /// is a hard **eval-time error** (`EvalError::IrreversibleInTransaction`), not the milder
+    /// "needs an ack" of the outside-transaction case. The grammar restricts `body` to **effect**
+    /// statements only (no read pipeline, no nested `TRANSACTION`, no `LET`) so the block stays a
+    /// thin wrapper over existing [`EffectStmt`]s and adds NO new effect kind. Kept conservative
+    /// this slice (no nesting) so a later relaxation is non-breaking.
+    Transaction {
+        /// The effect statements in the block, in source (commit-point) order. Each is a
+        /// [`Statement::Effect`] (grammar-enforced).
+        body: Vec<Statement>,
+        /// Source span of the `TRANSACTION { … }` block.
+        #[serde(
+            serialize_with = "serialize_span",
+            deserialize_with = "deserialize_span"
+        )]
+        span: Span,
+    },
 }
 
 /// A `PREVIEW`/`COMMIT` wrapper around an inner statement (RFD §3 plan keywords).
@@ -106,12 +154,16 @@ pub struct Pipeline {
 /// `VALUES` block, or a parenthesised sub-pipeline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Source {
-    /// `FROM /driver/seg/seg` (the open path registry).
+    /// `/driver/seg/seg` (the open path registry).
     Path(PathExpr),
     /// `FROM VALUES (..),(..)` — an inline literal relation.
     Values(Values),
     /// `FROM ( <pipeline> )` — a sub-query.
     Subquery(Box<Pipeline>),
+    /// `FROM <name>` — a bare identifier naming a `LET`-bound relation (M6, ticket t60).
+    /// Unresolved here (the parser validates shape only); a name with no matching binding
+    /// in scope is a structured resolve/eval error, never a silent empty relation.
+    Name(Ident),
 }
 
 /// One pipe operation following `|>` (RFD §3 query/transform + codec + call).
@@ -307,6 +359,34 @@ pub struct PolicyRuleAst {
     pub all_token: bool,
     /// The optional `ON <driver-glob>` scope (e.g. `mail`, `s3/*`); `None` = every driver.
     pub driver: Option<String>,
+    /// The optional `FOR <subject>` actor clause (t57): the user/role/group this rule is for.
+    /// `None` = the unscoped `FOR`-less rule (applies to every actor). A shape-only AST node;
+    /// the `Subject` semantics live in `qfs-server::policy`. Adds NO keyword —
+    /// `FOR`/`user`/`role`/`group` are contextual UPPERCASE idents (the t31 `AT` lesson).
+    #[serde(default)]
+    pub subject: Option<PolicySubjectAst>,
+    /// The optional `AT <path-glob>` realm-scoped path clause (t57): a realm-qualified glob like
+    /// `/members/alice/**`. Captured as raw text; the realm/segment semantics live in
+    /// `qfs-server::policy`. `None` = every path. `AT` is a contextual ident (no new keyword).
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// The optional `WHERE <expr>` conditional grant (t57). `WHERE` IS a frozen keyword, so this
+    /// adds none. The expression is an ORDINARY call (`member_of('/directories/...')`, the
+    /// "functions are values" [`Expr::Fn`] seam) — NOT new grammar vocabulary. `None` = no
+    /// condition (the grant always applies).
+    #[serde(default)]
+    pub condition: Option<Expr>,
+}
+
+/// One `FOR <kind> <name>` actor clause inside a `CREATE POLICY` rule (t57). A shape-only AST
+/// node — the `Subject` semantics live in `qfs-server::policy`. `kind` is the
+/// contextual word `user`/`role`/`group`; `name` is the bare principal/role/group identifier.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PolicySubjectAst {
+    /// The subject kind word (`user`/`role`/`group`), as written (case-insensitive downstream).
+    pub kind: String,
+    /// The subject name (a bare identifier: a user id, role label, or group name).
+    pub name: String,
 }
 
 /// The kind of a server-DDL statement (RFD §8). Frozen, driver-agnostic.
@@ -389,6 +469,54 @@ pub enum Expr {
         /// The candidate set.
         set: Vec<Expr>,
     },
+    /// A lambda literal `(p, …) => <expr>` — a first-class **value** (M6 ticket t61,
+    /// roadmap §1.2, decision H "functions are values").
+    ///
+    /// **No keyword added.** A lambda rides the *expression* grammar — it is a new
+    /// [`Expr`] variant, not a new [`Statement`]/[`PipeOp`] form and not a new reserved
+    /// word — so the frozen closed core (the `qfs-lang` keyword/operator freeze) is
+    /// **untouched**. It reuses the existing `=>` arrow token (already used by named call
+    /// args); the parenthesised parameter list is what distinguishes a lambda from a
+    /// named-arg or a parenthesised sub-expression. A *named* function is just a
+    /// `LET`-bound lambda (no `DEF`): `LET normalize = (addr) => …`.
+    ///
+    /// The body is a single sub-expression evaluated under the params bound — a lambda is
+    /// a **pure** transformation over values/rows (RFD §3 purity), it performs no I/O and
+    /// constructs no effect node, so a `LET`-bound lambda or a `map`/`filter`/`reduce`
+    /// over a relation stays in the read/transform half (the safety floor is untouched).
+    Lambda {
+        /// The parameter list (possibly empty), each with an optional type annotation.
+        params: Vec<Param>,
+        /// The body expression, evaluated with the params in scope.
+        body: Box<Expr>,
+    },
+}
+
+/// One lambda parameter: a name with an optional type annotation (`addr: string`).
+///
+/// The annotation is **parsed-and-retained** (`Option<TypeAnn>`) but not yet enforced —
+/// the plan-time static type checker is its own later slice (roadmap decision T, ticket
+/// t75), which builds on this retained annotation so adding inference is non-breaking. A
+/// bare `(addr) => …` parameter carries `ty: None`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Param {
+    /// The parameter name, bound in the lambda body.
+    pub name: Ident,
+    /// The optional type annotation (`: string`), retained for a later type checker.
+    pub ty: Option<TypeAnn>,
+}
+
+/// A retained lambda parameter type annotation (`string`, `bool`, `i64`, `Row`, …).
+///
+/// Stored as the raw annotation text (parse-and-retain, roadmap decision S/T): the
+/// canonical surface uses lowercase primitive names (`string`/`bool`/`i64`), but the
+/// grammar accepts any bare identifier here so the annotation round-trips losslessly into
+/// the later static-type-system ticket (t75) without this slice having to commit to a
+/// type lattice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeAnn {
+    /// The raw type name as written (e.g. `string`, `Row`).
+    pub name: Ident,
 }
 
 /// The frozen operator set (RFD §3). No operator can be added without editing this

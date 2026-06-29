@@ -76,7 +76,7 @@ pub fn source_registry(mounts: &MountRegistry) -> SourceRegistry {
 }
 
 /// Lower + partition a query [`Statement`] into a [`PhysicalPlan`] using the live mount
-/// registry (ticket t14 entry point). The source of each `FROM /driver/...` leaf is the
+/// registry (ticket t14 entry point). The source of each `/driver/...` leaf is the
 /// driver its first path segment routes to; its schema comes from the driver's pure
 /// `describe` (no I/O). A non-query statement is [`PushdownError::NotAQuery`].
 ///
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn single_source_query_lowers_to_one_scan_via_registry() {
         let mounts = registry();
-        let stmt = parse_statement("FROM /db/users |> WHERE id > 0 |> SELECT id").unwrap();
+        let stmt = parse_statement("/db/users |> WHERE id > 0 |> SELECT id").unwrap();
         let phys = plan_query(&stmt, &mounts).unwrap();
         assert_eq!(phys.scan_count(), 1);
         // /db is Full → everything pushes.
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn cross_source_join_via_registry_federates() {
         let mounts = registry();
-        let stmt = parse_statement("FROM /db/users |> JOIN /git/commits ON id = id").unwrap();
+        let stmt = parse_statement("/db/users |> JOIN /git/commits ON id == id").unwrap();
         let phys = plan_query(&stmt, &mounts).unwrap();
         assert_eq!(phys.scan_count(), 2);
         // /db pushes nothing extra (bare scan), /git is None (bare). The join federates.
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn none_source_leaves_residual_local_via_registry() {
         let mounts = registry();
-        let stmt = parse_statement("FROM /git/log |> WHERE id > 0").unwrap();
+        let stmt = parse_statement("/git/log |> WHERE id > 0").unwrap();
         let phys = plan_query(&stmt, &mounts).unwrap();
         // /git is None → the WHERE is a local residual.
         assert_eq!(explain(&phys), "Combine[Filter]\n  Scan[git] pushed=[]\n");

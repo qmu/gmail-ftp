@@ -8,21 +8,21 @@ as of a tag, branch, or commit.
 **Read a file as it was at a tag:**
 
 ```qfs
-FROM /git/myrepo@v1.2/src/main.rs
+/git/myrepo@v1.2/src/main.rs
 ```
 
 **List a directory at a specific commit:**
 
 ```qfs
-FROM /git/myrepo@9f2c1a/src
-|> SELECT path
+/git/myrepo@9f2c1a/src
+|> select path
 ```
 
 **Record a commit** (history is append-only; this adds one commit):
 
 ```qfs
-INSERT INTO /git/myrepo/commits
-  VALUES ('add feature', 'main')
+insert into /git/myrepo/commits
+  values ('add feature', 'main')
 ```
 
 ## GitHub — pull requests and issues
@@ -32,18 +32,18 @@ GitHub is an **object graph**: things (PRs, issues) with actions you `CALL`.
 **List open pull requests, newest first:**
 
 ```qfs
-FROM /github/acme/web/pulls
-|> WHERE state = 'open'
-|> SELECT number, title
-|> ORDER BY number DESC
-|> LIMIT 10
+/github/acme/web/pulls
+|> where state == 'open'
+|> select number, title
+|> order by number DESC
+|> limit 10
 ```
 
 **Squash-merge a pull request** (irreversible — a gate):
 
 ```qfs
-FROM /github/acme/web/pulls/42
-|> CALL github.merge(method => 'squash')
+/github/acme/web/pulls/42
+|> call github.merge(method => 'squash')
 ```
 
 ::: warning Irreversible
@@ -57,16 +57,16 @@ A Slack channel is an **append log**: read the tail, append a message.
 **Post a message:**
 
 ```qfs
-INSERT INTO /slack/acme/general/messages
-  VALUES ('Deploy finished ✅')
+insert into /slack/acme/general/messages
+  values ('Deploy finished ✅')
 ```
 
 **Read the latest messages in a channel:**
 
 ```qfs
-FROM /slack/acme/general/messages
-|> SELECT text
-|> LIMIT 20
+/slack/acme/general/messages
+|> select text
+|> limit 20
 ```
 
 ::: tip

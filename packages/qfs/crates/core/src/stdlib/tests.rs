@@ -570,10 +570,7 @@ fn prelude_round_trips_and_namespaces_aliases() {
     // A test mail driver prelude: SEND(d) desugars to a single CALL mail.send.
     let prelude = Prelude::new(
         mail.clone(),
-        vec![AliasDecl::new(
-            "SEND",
-            "FROM /mail/drafts |> CALL mail.send",
-        )],
+        vec![AliasDecl::new("SEND", "/mail/drafts |> CALL mail.send")],
     );
     reg.register_prelude(&prelude).unwrap();
 
@@ -597,15 +594,12 @@ fn same_alias_on_two_drivers_stays_scoped() {
     let chat = DriverId::new("chat");
     reg.register_prelude(&Prelude::new(
         mail.clone(),
-        vec![AliasDecl::new(
-            "SEND",
-            "FROM /mail/drafts |> CALL mail.send",
-        )],
+        vec![AliasDecl::new("SEND", "/mail/drafts |> CALL mail.send")],
     ))
     .unwrap();
     reg.register_prelude(&Prelude::new(
         chat.clone(),
-        vec![AliasDecl::new("SEND", "FROM /chat/room |> CALL chat.send")],
+        vec![AliasDecl::new("SEND", "/chat/room |> CALL chat.send")],
     ))
     .unwrap();
     // Both drivers ship SEND — no global clash; each desugars to its own proc.
@@ -624,8 +618,8 @@ fn within_prelude_duplicate_is_rejected() {
         .register_prelude(&Prelude::new(
             DriverId::new("mail"),
             vec![
-                AliasDecl::new("SEND", "FROM /mail/drafts |> CALL mail.send"),
-                AliasDecl::new("SEND", "FROM /mail/drafts |> CALL mail.send2"),
+                AliasDecl::new("SEND", "/mail/drafts |> CALL mail.send"),
+                AliasDecl::new("SEND", "/mail/drafts |> CALL mail.send2"),
             ],
         ))
         .unwrap_err();
@@ -639,7 +633,7 @@ fn impure_alias_body_is_rejected() {
     let err = reg
         .register_prelude(&Prelude::new(
             DriverId::new("mail"),
-            vec![AliasDecl::new("BAD", "FROM /mail/drafts |> WHERE x = 1")],
+            vec![AliasDecl::new("BAD", "/mail/drafts |> WHERE x == 1")],
         ))
         .unwrap_err();
     assert_eq!(err.code(), "prelude_impure_alias");

@@ -122,6 +122,11 @@ pub struct ExecCtx<'a> {
     /// The injected real-commit hook (the binary's interpreter-backed applier). `None` falls back
     /// to the in-memory [`apply_commit`] (preview-grade, no real I/O) — what unit tests use.
     pub world_apply: Option<&'a WorldApply<'a>>,
+    /// The active selectable **safety mode** (t59) governing this one-shot's commit gate, resolved
+    /// by the binary from the deployment setting (`/sys/settings` → env → safe default). The
+    /// `Default` is [`SafetyMode::AutonomousInPolicy`](qfs_core::SafetyMode) — the historical CLI
+    /// posture (reversible-in-policy applies, irreversible needs `--commit-irreversible`).
+    pub safety_mode: qfs_core::SafetyMode,
 }
 
 /// A binary-injected "apply this plan to the World" hook (RFD §6 `COMMIT : Plan -> World`).
@@ -181,41 +186,47 @@ fn run_oneshot_inner(
 
     let renderer = fmt.renderer();
 
-    match inner {
+    // Classify by the program's *terminal* statement: a `LET` program (M6, t60) is a read or a
+    // write according to the statement its bindings lead into. The full `inner` (bindings and
+    // all) is handed to the read/effect path — the evaluator folds the bindings through it.
+    match terminal_statement(inner) {
         // 4. Read path: the t20 carry-over closure.
         Statement::Query(_) => {
             let rows = block_on_read(inner, &ctx.engine.mounts, ctx.reads)?;
             renderer.rows(&rows, streams.out).map_err(io_err)?;
             Ok(ExitCode::Ok)
         }
-        // 5. Effect / DDL path: PREVIEW by default, COMMIT on demand.
-        Statement::Effect(_) | Statement::Ddl(_) => {
+        // 5. Effect / DDL / TRANSACTION path: PREVIEW by default, COMMIT on demand. A
+        // `TRANSACTION { … }` block (M6, t62) lowers to one effect plan (reversible-only,
+        // all-or-nothing), so it routes through the same plan/commit machinery as a plain effect.
+        Statement::Effect(_) | Statement::Ddl(_) | Statement::Transaction { .. } => {
             let plan = build_plan(inner, ctx.engine)?;
             if commit {
-                // The irreversible-effect gate (t37, RFD §6/§10). `qfs run … --commit` is a
-                // NON-INTERACTIVE one-shot (no TTY to confirm on), so an irreversible plan
-                // (REMOVE / declared-irreversible CALL) is refused unless the operator passed
-                // `--commit-irreversible`. We still rendered nothing yet, so a block is a clean
-                // fail-closed refusal that applies ZERO effects.
+                // The selectable safety mode (t59) governs this one-shot's commit, composed on the
+                // t37 irreversible floor. `qfs run … --commit` is a NON-INTERACTIVE one-shot (no TTY
+                // to confirm on), so a held effect is refused unless the operator passed the explicit
+                // `--commit-irreversible` ack. `within_policy` is `true` here: the CLI one-shot trusts
+                // the local operator's capability set (capability gating already ran at parse time;
+                // the server faces gate with their POLICY instead). The mode then decides:
+                //   - Autonomous-in-policy (default): reversible applies, irreversible held (ack).
+                //   - Approve-everything: BOTH held — even a reversible write is refused without ack.
+                //   - Policy-only: BOTH auto-apply unattended (CI). We still rendered nothing yet, so
+                //     a hold is a clean fail-closed refusal that applies ZERO effects.
                 let ack = if irreversible_ack {
                     qfs_core::Ack::Granted
                 } else {
                     qfs_core::Ack::Absent
                 };
-                if let Err(needs) = qfs_core::IrreversibleGuard::require_ack(
-                    &plan,
-                    qfs_core::RunMode::CliOneShot,
-                    ack,
-                ) {
-                    // Render the PREVIEW so the operator sees exactly what would have applied,
-                    // then refuse on the commit-required exit class with the irreversible reason.
+                if qfs_core::IrreversibleGuard::decide(&plan, ctx.safety_mode, true, ack)
+                    != qfs_core::SafetyDecision::AutoCommit
+                {
+                    // Render the PREVIEW so the operator sees exactly what would have applied, then
+                    // refuse on the commit-required exit class. The code distinguishes the held
+                    // cause: the irreversible-ack floor vs. an approve-everything hold on a write.
                     let summary = plan_preview(&plan);
                     renderer.plan(&summary, streams.out).map_err(io_err)?;
-                    return Err(ExecError::new(
-                        ErrorKind::CommitRequired,
-                        "irreversible_ack_required",
-                        needs.reason(),
-                    ));
+                    let (code, message) = held_commit_reason(ctx.safety_mode, &plan);
+                    return Err(ExecError::new(ErrorKind::CommitRequired, code, message));
                 }
                 let summary = apply_via(&plan, ctx.world_apply)?;
                 renderer.plan(&summary, streams.out).map_err(io_err)?;
@@ -236,9 +247,44 @@ fn run_oneshot_inner(
                 Ok(ExitCode::Ok)
             }
         }
-        // A nested PlanWrap is already unwrapped by `unwrap_plan`; this arm is unreachable but
-        // kept total (no panic) by treating it as a pure preview.
-        Statement::Plan(_) => Ok(ExitCode::Ok),
+        // `terminal_statement` descends through PlanWrap/LET to a leaf, so these arms are
+        // unreachable; kept total (no panic) by treating them as a pure preview.
+        Statement::Plan(_) | Statement::Let { .. } => Ok(ExitCode::Ok),
+    }
+}
+
+/// The stable `(code, message)` for a one-shot commit HELD by the active safety mode (t59). An
+/// irreversible plan keeps the historical `irreversible_ack_required` contract (so the exit-class
+/// code is stable across modes); a reversible plan held by the *approve-everything* mode reports
+/// `approval_required`. Both fail closed on the `commit_required` exit class (exit 4) with a
+/// secret-free message naming the ack to supply.
+fn held_commit_reason(mode: qfs_core::SafetyMode, plan: &qfs_core::Plan) -> (&'static str, String) {
+    if plan.is_irreversible() {
+        (
+            "irreversible_ack_required",
+            "plan contains an irreversible effect (REMOVE / CALL); re-run with \
+             --commit-irreversible to apply (or in an interactive session)"
+                .to_string(),
+        )
+    } else {
+        (
+            "approval_required",
+            format!(
+                "the `{mode}` safety mode holds every write for explicit approval; re-run with \
+                 --commit-irreversible to apply this write"
+            ),
+        )
+    }
+}
+
+/// The terminal statement a program leads into, descending through `LET` bindings (M6, t60) and
+/// `PREVIEW`/`COMMIT` wrappers to the underlying read/effect/DDL leaf. Used to route a `LET`
+/// program to the read or effect path — the leaf is never a `LET` or a `Plan`.
+fn terminal_statement(stmt: &Statement) -> &Statement {
+    match stmt {
+        Statement::Let { body, .. } => terminal_statement(body),
+        Statement::Plan(PlanWrap { inner, .. }) => terminal_statement(inner),
+        other => other,
     }
 }
 

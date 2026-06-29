@@ -51,6 +51,8 @@ pub mod wrangler;
 pub mod daemon;
 #[cfg(feature = "host-daemon")]
 pub mod from_server;
+#[cfg(feature = "host-daemon")]
+pub mod job;
 
 #[cfg(feature = "host-workers")]
 pub mod workers;
@@ -73,6 +75,13 @@ pub use wrangler::{generate_wrangler_toml, DURABLE_OBJECT_CLASS, WORKER_MODULE};
 pub use daemon::{AuditLedger, FileDurableStore};
 #[cfg(feature = "host-daemon")]
 pub use from_server::{bindings_from_config, bindings_from_state, derivation_input};
+// t65: saved-JOB extraction + the policy gate the external invocation (`qfs job run`) commits
+// under. Re-export `qfs-server`'s pure policy-gate fns so the terminal binary gates the rehydrated
+// plan WITHOUT a direct `qfs-server` edge (its dep-allowlist stays the thin-entrypoint set).
+#[cfg(feature = "host-daemon")]
+pub use job::{jobs_from_config, ConfigJobs, JobSpec};
+#[cfg(feature = "host-daemon")]
+pub use qfs_server::{gate_plan, resolve_policy, GateOutcome, Policy, PolicyTable};
 
 // --- Workers side (parked) ---
 #[cfg(feature = "host-workers")]

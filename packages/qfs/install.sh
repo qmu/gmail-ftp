@@ -31,7 +31,13 @@ next_steps() {
      (qfs run PREVIEWs by default; add --commit to actually apply.)
 
   2) Connect a service — only needed to apply real changes:
-       qfs account add mail work      # then: qfs account list
+     First export QFS_PASSPHRASE — the master passphrase that unlocks your local
+     credential vault (argon2id KDF; NOT a service credential). It must stay set
+     for the shell that runs `connection add/list/remove`:
+       read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE   # no shell-history leak
+     Then add the connection, piping the credential VALUE via stdin (never argv,
+     which leaks into the process table + shell history):
+       printf %s "$TOKEN" | qfs connection add mail work   # then: qfs connection list
      Your credential is stored locally and never printed back.
 
   3) Update qfs later — re-run the installer (always fetches the latest):

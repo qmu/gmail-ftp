@@ -22,13 +22,25 @@
 //! - [`audit`] — the [`audit::FiredPlanRecord`] emitted for EVERY fired plan (allow + deny).
 
 pub mod audit;
+pub mod context;
 pub mod enforce;
 pub mod gate;
 pub mod grammar;
 pub mod model;
+// t81 (roadmap M5, decision U / §3.3): the shared-connection USE gate — the pure actor-policy
+// decision the binary's commit-time bind consults for a project/team-owned connection.
+pub mod shared;
 
 pub use audit::{FiredDecision, FiredPlanRecord};
-pub use enforce::{classify_effect, evaluate, verb_for_effect, EffectClass, PolicyDecision};
-pub use gate::{effect_summaries, gate_plan, resolve_policy, GateOutcome, PolicyTable};
+pub use context::{resolve_memberships, DecisionContext, MembershipResolver};
+pub use enforce::{
+    classify_effect, evaluate, evaluate_with_context, verb_for_effect, EffectClass, PolicyDecision,
+};
+pub use gate::{
+    effect_summaries, gate_plan, gate_plan_with_context, resolve_policy, GateOutcome, PolicyTable,
+};
 pub use grammar::{policy_from_ddl, policy_from_def, policy_to_rule_strings, rule_to_string};
-pub use model::{DriverGlob, Effectivity, Policy, Rule, Verb, VerbSet};
+pub use model::{
+    Condition, DriverGlob, Effectivity, Policy, RoleGraph, Rule, ScopeGlob, Subject, Verb, VerbSet,
+};
+pub use shared::{evaluate_shared_use, SharedUseDecision};

@@ -37,12 +37,12 @@
             }
           ],
           "span": [
-            5,
-            16
+            0,
+            11
           ]
         }
       }
     }
   },
-  "source": "FROM /mail/inbox |> WHERE id > 5 |> LIMIT 10"
+  "source": "/mail/inbox |> WHERE id > 5 |> LIMIT 10"
 }

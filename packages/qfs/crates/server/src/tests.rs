@@ -142,7 +142,7 @@ fn create_job_and_insert_into_server_jobs_yield_identical_plans() {
 
 #[test]
 fn materialized_view_sugar_routes_to_views_collection() {
-    let plan = lower("CREATE MATERIALIZED VIEW cached AS FROM /mail/inbox");
+    let plan = lower("CREATE MATERIALIZED VIEW cached AS /mail/inbox");
     let node = &plan.nodes()[0];
     assert_eq!(
         node.kind,
@@ -346,7 +346,7 @@ fn boot_rejects_a_non_server_statement_with_a_line_located_error() {
     let mut rt = Runtime::new();
     // A pure read pipeline is not a /server config write — boot rejects it, line-located.
     let err = rt
-        .apply_source("test", 7, "FROM /mail/inbox |> LIMIT 5")
+        .apply_source("test", 7, "/mail/inbox |> LIMIT 5")
         .expect_err("non-server statement rejected");
     match err {
         ServerError::NotServerConfig { line, .. } => assert_eq!(line, 7),

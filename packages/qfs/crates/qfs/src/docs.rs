@@ -8,8 +8,8 @@
 //!   frozen §3 vocabulary + the grammar; the reserved-word table is the one frozen slice).
 //! - `docs/drivers.md` ← [`crate::catalog::driver_catalog`] (archetypes / capabilities /
 //!   procedures / codecs, folded from the t39 describe surface — never hand-authored).
-//! - `docs/server.md` ← the frozen server-DDL keyword set (CREATE ENDPOINT|TRIGGER|JOB|VIEW|
-//!   WEBHOOK|POLICY) + the t36 deployment mapping prose.
+//! - `docs/server.md` ← the frozen server-DDL keyword set (create endpoint|trigger|job|view|
+//!   webhook|policy) + the t36 deployment mapping prose.
 //!
 //! The render functions are **pure** `-> String`: no creds, no live tokens, only schema +
 //! capabilities (RFD §10). The golden/idempotency test ([`tests`]) and the `--check` mode
@@ -50,7 +50,7 @@ pub fn render_language() -> String {
          source followed by stages joined by `|>` (a pipe), and the same grammar reads mail, \
          queries a database, joins across services, transforms formats, and writes changes.\n\n\
          The grammar is **fixed and small** — adding a new service never adds new keywords. A new \
-         service is just a new path; a new action is a `CALL`; a new format is a `DECODE`/`ENCODE`. \
+         service is just a new path; a new action is a `call`; a new format is a `decode`/`encode`. \
          This page is generated from the binary itself, so it always matches the version you have \
          installed.\n"
     );
@@ -58,8 +58,9 @@ pub fn render_language() -> String {
     let _ = writeln!(s, "## Reserved keywords\n");
     let _ = writeln!(
         s,
-        "These {} words make up the whole language. Because the set is fixed, anything you learn \
-         here keeps working as new services are added.\n",
+        "These {} words make up the whole language — written in **lowercase** (recognized \
+         case-insensitively, so an older uppercase query still works). Because the set is fixed, \
+         anything you learn here keeps working as new services are added.\n",
         RESERVED_KEYWORDS.len()
     );
     let _ = writeln!(s, "| # | keyword |");
@@ -72,16 +73,18 @@ pub fn render_language() -> String {
     let _ = writeln!(s, "## Grammar (EBNF)\n");
     let _ = writeln!(
         s,
-        "The pipe-SQL grammar. Every UPPERCASE terminal is a frozen reserved keyword above.\n"
+        "The pipe-SQL grammar. Every quoted lowercase terminal is a frozen reserved keyword above; \
+         the quoted UPPERCASE terminals are the word operators (`AND`/`OR`/`NOT`/`LIKE`/`IN`/`ANY`/\
+         `BETWEEN`).\n"
     );
     let _ = writeln!(s, "```text\n{}```\n", grammar_ebnf());
 
     let _ = writeln!(s, "## Nothing happens until you commit\n");
     let _ = writeln!(
         s,
-        "Writing a statement never acts on its own. A statement *plans* an effect; `PREVIEW` (the \
-         default) shows you that plan without touching anything, and `COMMIT` applies it. Even a \
-         convenience alias like `SEND(...)` doesn't send — it just adds a `CALL mail.send` step to \
+        "Writing a statement never acts on its own. A statement *plans* an effect; `preview` (the \
+         default) shows you that plan without touching anything, and `commit` applies it. Even a \
+         convenience alias like `send(...)` doesn't send — it just adds a `call mail.send` step to \
          the plan you preview first. This is what makes the whole loop safe: \
          **describe → write → preview → commit**.\n"
     );
@@ -93,8 +96,8 @@ pub fn render_language() -> String {
          things:\n\n\
          - **a path** — a new service mounted at a new prefix (e.g. `/mail`, `/s3`); see the \
            [driver catalog](drivers.md).\n\
-         - **an action** — a `CALL service.action(..)` procedure (and optional alias).\n\
-         - **a format** — a `DECODE`/`ENCODE` codec; see the [driver catalog](drivers.md).\n\n\
+         - **an action** — a `call service.action(..)` procedure (and optional alias).\n\
+         - **a format** — a `decode`/`encode` codec; see the [driver catalog](drivers.md).\n\n\
          Because the language stays fixed, you learn it once and every service speaks it.\n"
     );
 
@@ -123,7 +126,7 @@ fn render_driver(s: &mut String, d: &DriverDoc) {
     } else {
         let _ = writeln!(
             s,
-            "Procedures (`CALL {}.action(..)`):\n",
+            "Procedures (`call {}.action(..)`):\n",
             mount_id(&d.mount)
         );
         let _ = writeln!(s, "| procedure | params | irreversible |");
@@ -183,10 +186,10 @@ pub fn render_drivers() -> String {
          it supports. A path only offers the verbs that make sense for it; using an unsupported \
          verb is **rejected immediately with a clear error**, never half-applied. The catalog \
          below is generated from your installed binary, so it always matches what you have.\n\n\
-         The verbs are always `SELECT` / `INSERT` / `UPSERT` / `UPDATE` / `REMOVE` (plus `CALL`). \
+         The verbs are always `select` / `insert` / `upsert` / `update` / `remove` (plus `call`). \
          Where a `native verbs` line mentions `ls`/`cp`/`mv`/`rm`, those are just familiar \
-         filesystem **aliases** for the same verbs in the interactive shell (`ls` is a `SELECT`, \
-         `cp` an `UPSERT`, `rm` a `REMOVE`) — not a second set of operations.\n"
+         filesystem **aliases** for the same verbs in the interactive shell (`ls` is a `select`, \
+         `cp` an `upsert`, `rm` a `remove`) — not a second set of operations.\n"
     );
 
     let _ = writeln!(s, "## Drivers\n");
@@ -194,7 +197,7 @@ pub fn render_drivers() -> String {
         render_driver(&mut s, d);
     }
 
-    let _ = writeln!(s, "## Codecs (DECODE / ENCODE formats)\n");
+    let _ = writeln!(s, "## Codecs (decode / encode formats)\n");
     let _ = writeln!(
         s,
         "Codecs bridge blob ↔ relational independent of driver identity. Builtin formats:\n"
@@ -214,57 +217,57 @@ pub fn render_server() -> String {
     let _ = writeln!(
         s,
         "`qfs serve <config.qfs>` runs the server from a config file. A config is just a list of \
-         `CREATE …` bindings — each one takes a query you already know and runs it on an event, a \
+         `create …` bindings — each one takes a query you already know and runs it on an event, a \
          schedule, or an HTTP request. Bindings use the same language as everything else (see the \
          [language reference](language.md)), so you can preview exactly what a binding would do \
          before installing it.\n"
     );
 
-    let _ = writeln!(s, "## Bindings (`CREATE …`)\n");
+    let _ = writeln!(s, "## Bindings (`create …`)\n");
     let _ = writeln!(s, "| binding | shape | what causes the plan to run |");
     let _ = writeln!(s, "|---------|-------|-----------------------------|");
     let _ = writeln!(
         s,
-        "| `CREATE ENDPOINT` | `ENDPOINT <name> DO <stmt>` | an HTTP `fetch` to the endpoint route |"
+        "| `create endpoint` | `endpoint <name> do <stmt>` | an HTTP `fetch` to the endpoint route |"
     );
     let _ = writeln!(
         s,
-        "| `CREATE TRIGGER` | `TRIGGER <name> ON <event> DO <stmt>` | an event/watcher firing |"
+        "| `create trigger` | `trigger <name> on <event> do <stmt>` | an event/watcher firing |"
     );
     let _ = writeln!(
         s,
-        "| `CREATE JOB` | `JOB <name> EVERY <interval> DO <stmt>` | the cron scheduler / Cron trigger |"
+        "| `create job` | `job <name> every <interval> do <stmt>` | a saved plan an EXTERNAL scheduler runs (`qfs job run` from OS cron; Cloudflare Cron Triggers) |"
     );
     let _ = writeln!(
         s,
-        "| `CREATE VIEW` | `[MATERIALIZED] VIEW <name> AS <pipeline>` | a query against the view |"
+        "| `create view` | `[materialized] view <name> as <pipeline>` | a query against the view |"
     );
     let _ = writeln!(
         s,
-        "| `CREATE WEBHOOK` | `WEBHOOK <name> DO <stmt>` | a signed inbound `/hooks/...` POST |"
+        "| `create webhook` | `webhook <name> do <stmt>` | a signed inbound `/hooks/...` POST |"
     );
     let _ = writeln!(
         s,
-        "| `CREATE POLICY` | `POLICY <name> <predicate>` | (gate) blocks plans that violate it |"
+        "| `create policy` | `policy <name> <predicate>` | (gate) blocks plans that violate it |"
     );
     s.push('\n');
 
     let _ = writeln!(s, "## Policy & least privilege\n");
     let _ = writeln!(
         s,
-        "`CREATE POLICY` gates writes by verb / path / irreversibility — an irreversible effect \
-         (`REMOVE`, `CALL mail.send`) can be blocked or required to be explicitly acknowledged. \
-         **Credentials are never inline in a config**: a binding references a stored account by \
-         handle (`qfs account add <driver> <name>`), and no token is ever written to a config, a \
+        "`create policy` gates writes by verb / path / irreversibility — an irreversible effect \
+         (`remove`, `call mail.send`) can be blocked or required to be explicitly acknowledged. \
+         **Credentials are never inline in a config**: a binding references a stored connection by \
+         handle (`qfs connection add <driver> <name>`), and no token is ever written to a config, a \
          log, or a generated doc. Examples below use placeholder handles only.\n"
     );
     let _ = writeln!(
         s,
         "```qfs\n\
-         CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5\n\
-         CREATE TRIGGER notify ON /mail/inbox DO INSERT INTO /slack/acme/general/messages VALUES (NEW.subject)\n\
-         CREATE JOB nightly EVERY '1h' DO REMOVE /tmp/scratch WHERE age > 7\n\
-         CREATE POLICY api ALLOW SELECT DENY INSERT, UPDATE, REMOVE, CALL\n\
+         create endpoint recent on 'GET /recent' as /mail/inbox |> limit 5\n\
+         create trigger notify on /mail/inbox do insert into /slack/acme/general/messages values (NEW.subject)\n\
+         create job nightly every '1h' do remove /tmp/scratch where age > 7\n\
+         create policy api ALLOW select DENY insert, update, remove, call\n\
          ```\n"
     );
 
@@ -276,9 +279,9 @@ pub fn render_server() -> String {
          adapters:\n\n\
          | binding | EC2 daemon (`host-daemon`) | Cloudflare Workers (`host-workers`, parked) |\n\
          |---------|---------------------------|---------------------------------------------|\n\
-         | `ENDPOINT` | the qfs-http listener | Worker `fetch` |\n\
-         | `JOB` | the qfs-cron interval daemon | Cron Trigger |\n\
-         | `WEBHOOK` / event | the watchtower bus + `/hooks/...` ingest | Queues |\n\
+         | `endpoint` | the qfs-http listener | Worker `fetch` |\n\
+         | `job` | OS `cron` runs `qfs job run` (no internal scheduler) | Cron Trigger |\n\
+         | `webhook` / event | the watchtower bus + `/hooks/...` ingest | Queues |\n\
          | watcher / `LAST_RUN` | the on-disk durable store | Durable Object |\n\
          | `/d1` · `/r2` · `/kv` | (native only on Workers) | native bindings |\n\n\
          The Workers host is honestly **parked** (the worker crate is offline in this build); the \
@@ -291,15 +294,15 @@ pub fn render_server() -> String {
 /// so the catalog documents capabilities explicitly, never by omission (RFD §5).
 fn capability_rows(c: &Capabilities) -> [(&'static str, bool); 9] {
     [
-        ("SELECT", c.select),
-        ("INSERT", c.insert),
-        ("UPSERT", c.upsert),
-        ("UPDATE", c.update),
-        ("REMOVE", c.remove),
-        ("LS", c.ls),
-        ("CP", c.cp),
-        ("MV", c.mv),
-        ("RM", c.rm),
+        ("select", c.select),
+        ("insert", c.insert),
+        ("upsert", c.upsert),
+        ("update", c.update),
+        ("remove", c.remove),
+        ("ls", c.ls),
+        ("cp", c.cp),
+        ("mv", c.mv),
+        ("rm", c.rm),
     ]
 }
 
@@ -443,12 +446,12 @@ mod tests {
     fn server_doc_carries_bindings_and_mapping() {
         let doc = render_server();
         for kw in [
-            "CREATE ENDPOINT",
-            "CREATE TRIGGER",
-            "CREATE JOB",
-            "CREATE VIEW",
-            "CREATE WEBHOOK",
-            "CREATE POLICY",
+            "create endpoint",
+            "create trigger",
+            "create job",
+            "create view",
+            "create webhook",
+            "create policy",
         ] {
             assert!(doc.contains(kw), "{kw} documented in server.md");
         }

@@ -38,6 +38,11 @@ pub enum FiredDecision {
         driver: String,
         /// The matching rule index, or `None` for the default-deny.
         rule: Option<usize>,
+        /// t57: the failing richer-ACL axis when a rule matched the verb/driver but its
+        /// subject/realm-scope/`member_of` condition held it back (e.g. `"actor"`,
+        /// `"scope /members/alice/**"`, `"member_of('/directories/...')"`). Secret-free; `None`
+        /// for an ordinary verb/driver default-deny. Keeps a narrowed denial legible in the ledger.
+        detail: Option<String>,
     },
 }
 
@@ -48,11 +53,16 @@ impl FiredDecision {
         match decision {
             PolicyDecision::Allow => FiredDecision::Allow,
             PolicyDecision::Deny {
-                verb, driver, rule, ..
+                verb,
+                driver,
+                rule,
+                detail,
+                ..
             } => FiredDecision::Deny {
                 verb: verb.label().to_string(),
                 driver: driver.clone(),
                 rule: *rule,
+                detail: detail.clone(),
             },
         }
     }
@@ -80,11 +90,20 @@ impl FiredPlanRecord {
                 self.effects.len(),
                 self.ts
             ),
-            FiredDecision::Deny { verb, driver, rule } => format!(
-                "DENY handler={} policy={pol} verb={verb} driver={driver} rule={} ts={}",
+            FiredDecision::Deny {
+                verb,
+                driver,
+                rule,
+                detail,
+            } => format!(
+                "DENY handler={} policy={pol} verb={verb} driver={driver} rule={}{} ts={}",
                 self.handler,
                 rule.map(|r| r.to_string())
                     .unwrap_or_else(|| "default".to_string()),
+                detail
+                    .as_deref()
+                    .map(|d| format!(" axis={d}"))
+                    .unwrap_or_default(),
                 self.ts
             ),
         }

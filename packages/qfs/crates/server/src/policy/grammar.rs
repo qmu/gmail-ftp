@@ -12,9 +12,11 @@
 //! `Policy` (the acceptance round-trip). No schema change — the existing `allow` array column
 //! carries the rules.
 
-use qfs_parser::{PolicyRuleAst, ServerDdl};
+use qfs_parser::{Expr, Literal, PolicyRuleAst, PolicySubjectAst, ServerDdl};
 
-use super::model::{DriverGlob, Effectivity, Policy, Rule, Verb, VerbSet};
+use super::model::{
+    Condition, DriverGlob, Effectivity, Policy, Rule, ScopeGlob, Subject, Verb, VerbSet,
+};
 use crate::state::PolicyDef;
 
 /// Build a [`Policy`] from a parsed `CREATE POLICY` [`ServerDdl`] (t35). The `name` is the row
@@ -53,12 +55,62 @@ fn rule_from_ast(ast: &PolicyRuleAst) -> Result<Rule, String> {
         .as_deref()
         .map(DriverGlob::new)
         .unwrap_or_else(DriverGlob::any);
+    // t57: the optional `FOR <subject>` / `AT <scope>` / `WHERE <condition>` axes.
+    let subject = match &ast.subject {
+        Some(s) => subject_from_ast(s)?,
+        None => Subject::Anyone,
+    };
+    let scope = match &ast.scope {
+        Some(raw) => Some(
+            ScopeGlob::parse(raw).ok_or_else(|| format!("malformed policy scope path `{raw}`"))?,
+        ),
+        None => None,
+    };
+    let condition = match &ast.condition {
+        Some(expr) => condition_from_expr(expr)?,
+        None => Condition::Always,
+    };
     Ok(Rule {
         effect,
         verbs,
         driver,
         all_token: ast.all_token,
+        subject,
+        scope,
+        condition,
     })
+}
+
+/// Convert a parsed `FOR <subject>` clause ([`PolicySubjectAst`]) into a [`Subject`]. The `kind`
+/// token is one of `user`/`role`/`group` (case-insensitive); anything else is a secret-free error.
+fn subject_from_ast(ast: &PolicySubjectAst) -> Result<Subject, String> {
+    let name = ast.name.clone();
+    Ok(match ast.kind.to_ascii_lowercase().as_str() {
+        "user" => Subject::User(name),
+        "role" => Subject::Role(name),
+        "group" => Subject::Group(name),
+        other => return Err(format!("unknown policy subject kind `{other}`")),
+    })
+}
+
+/// Interpret a parsed `WHERE <expr>` conditional grant. t57 supports exactly the
+/// `member_of('/directories/...')` predicate — a **function-valued** predicate (the "functions
+/// are values" seam, [`Expr::Fn`]), NOT a new keyword. Any other shape is a secret-free error so
+/// an unsupported condition is never silently dropped (which would *widen* the grant).
+fn condition_from_expr(expr: &Expr) -> Result<Condition, String> {
+    let Expr::Fn(call) = expr else {
+        return Err("policy WHERE condition must be a `member_of('/directories/...')` call".into());
+    };
+    if !call.name.eq_ignore_ascii_case("member_of") {
+        return Err(format!(
+            "unsupported policy condition function `{}`",
+            call.name
+        ));
+    }
+    let [Expr::Lit(Literal::Str(dir))] = call.args.as_slice() else {
+        return Err("member_of(...) takes one string directory ref argument".into());
+    };
+    Ok(Condition::MemberOf(dir.clone()))
 }
 
 /// Render one [`Rule`] to its canonical storable string (the round-trip form). E.g.
@@ -79,6 +131,21 @@ pub fn rule_to_string(rule: &Rule) -> String {
     if !rule.driver.is_any() {
         s.push_str(" ON ");
         s.push_str(rule.driver.as_str());
+    }
+    // t57: the richer axes round-trip as space-free trailing tokens (`FOR role:admin`,
+    // `AT /members/alice/**`, `WHERE member_of('/directories/...')`). Each is omitted at its
+    // unscoped default, so a pre-t57 rule renders byte-for-byte as before.
+    if !rule.subject.is_anyone() {
+        s.push_str(" FOR ");
+        s.push_str(&rule.subject.label());
+    }
+    if let Some(scope) = &rule.scope {
+        s.push_str(" AT ");
+        s.push_str(&scope.render());
+    }
+    if let Some(cond) = rule.condition.label() {
+        s.push_str(" WHERE ");
+        s.push_str(&cond);
     }
     s
 }
@@ -122,18 +189,43 @@ fn parse_rule_string(s: &str) -> Option<Rule> {
         }
         (VerbSet::from_verbs(&parsed), false)
     };
-    // Optional `ON <glob>`.
-    let driver = match parts.next() {
-        Some("ON") => DriverGlob::new(parts.next()?.to_string()),
-        Some(_) => return None, // unexpected trailing token ⇒ malformed
-        None => DriverGlob::any(),
-    };
+    // The optional trailing clauses, in canonical order: `ON <glob>`, then the t57 axes
+    // `FOR <subject>`, `AT <scope>`, `WHERE <condition>`. Each clause keyword is followed by one
+    // space-free token. An unrecognized token ⇒ malformed ⇒ the whole rule is dropped fail-closed.
+    let mut driver = DriverGlob::any();
+    let mut subject = Subject::Anyone;
+    let mut scope = None;
+    let mut condition = Condition::Always;
+    while let Some(clause) = parts.next() {
+        match clause {
+            "ON" => driver = DriverGlob::new(parts.next()?.to_string()),
+            "FOR" => subject = Subject::from_label(parts.next()?)?,
+            "AT" => scope = Some(ScopeGlob::parse(parts.next()?)?),
+            "WHERE" => condition = condition_from_canonical(parts.next()?)?,
+            _ => return None, // unexpected trailing token ⇒ malformed
+        }
+    }
     Some(Rule {
         effect,
         verbs,
         driver,
         all_token,
+        subject,
+        scope,
+        condition,
     })
+}
+
+/// Parse a canonical `WHERE` condition token back into a [`Condition`]. t57 supports the single
+/// `member_of('/directories/...')` form (the same surface [`rule_to_string`] renders). `None` for
+/// anything else (malformed ⇒ the rule is dropped fail-closed — a broken condition must never
+/// silently *widen* the grant by becoming unconditional).
+fn condition_from_canonical(tok: &str) -> Option<Condition> {
+    let inner = tok.strip_prefix("member_of('")?.strip_suffix("')")?;
+    if inner.is_empty() {
+        return None;
+    }
+    Some(Condition::MemberOf(inner.to_string()))
 }
 
 #[cfg(test)]
@@ -213,5 +305,80 @@ mod tests {
         // The garbage rule is dropped (fail-closed); only the valid ALLOW SELECT survives.
         assert_eq!(p.rules.len(), 1);
         assert_eq!(p.rules[0].effect, Effectivity::Allow);
+    }
+
+    // ---- t57: the richer axes parse + round-trip through `/sys/policies` -------------------
+
+    #[test]
+    fn ddl_parses_actor_scope_and_condition() {
+        let p = policy_of(
+            "CREATE POLICY eng ALLOW INSERT ON mail FOR role admin AT /members/alice/** \
+             WHERE member_of('/directories/google/groups/eng')",
+        );
+        assert_eq!(p.rules.len(), 1);
+        let r = &p.rules[0];
+        assert_eq!(r.subject, super::Subject::Role("admin".into()));
+        assert_eq!(
+            r.scope.as_ref().map(super::ScopeGlob::render).as_deref(),
+            Some("/members/alice/**")
+        );
+        assert_eq!(
+            r.condition,
+            super::Condition::MemberOf("/directories/google/groups/eng".into())
+        );
+    }
+
+    #[test]
+    fn richer_rule_round_trips_through_def() {
+        let p = policy_of(
+            "CREATE POLICY eng ALLOW INSERT ON mail FOR group eng AT /me/mail/* \
+             WHERE member_of('/directories/x')",
+        );
+        let strings = policy_to_rule_strings(&p);
+        assert_eq!(
+            strings[0],
+            "ALLOW INSERT ON mail FOR group:eng AT /me/mail/* WHERE member_of('/directories/x')",
+            "canonical rule string carries every axis"
+        );
+        let def = PolicyDef {
+            name: p.name.clone(),
+            handler: String::new(),
+            allow: strings,
+        };
+        // The whole richer model round-trips through the `/sys/policies` row representation.
+        assert_eq!(p, policy_from_def(&def));
+    }
+
+    #[test]
+    fn member_of_must_be_a_call_expression() {
+        // A non-call WHERE body is rejected (a stray column reference is not a condition).
+        let Statement::Ddl(ddl) =
+            parse_statement("CREATE POLICY bad ALLOW INSERT WHERE foo").unwrap()
+        else {
+            panic!("not a DDL")
+        };
+        assert!(policy_from_ddl(&ddl).is_err());
+    }
+
+    #[test]
+    fn unsupported_condition_function_is_rejected() {
+        let Statement::Ddl(ddl) =
+            parse_statement("CREATE POLICY bad ALLOW INSERT WHERE is_admin('x')").unwrap()
+        else {
+            panic!("not a DDL")
+        };
+        assert!(policy_from_ddl(&ddl).is_err());
+    }
+
+    #[test]
+    fn malformed_condition_string_drops_rule_fail_closed() {
+        // A stored WHERE token that is not a well-formed `member_of('...')` drops the rule (never
+        // becomes an unconditional grant, which would widen the policy).
+        let def = PolicyDef {
+            name: "x".to_string(),
+            handler: String::new(),
+            allow: vec!["ALLOW INSERT WHERE member_of()".to_string()],
+        };
+        assert!(policy_from_def(&def).rules.is_empty());
     }
 }

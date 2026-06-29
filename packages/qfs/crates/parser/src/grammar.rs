@@ -13,7 +13,7 @@
 //!
 //! ## Closed core, structurally (RFD §3)
 //! Keyword surface comes from the frozen `qfs_lang::Keyword` set — there is no second
-//! transcription. The grammar rejects unknown core constructs (lowercase keywords,
+//! transcription. The grammar rejects unknown core constructs (incomplete multi-word keywords,
 //! reserved-word-as-identifier) but leaves the three registry seams open: `CALL
 //! driver.action`, `fn(...)`, `DECODE/ENCODE fmt`, and `/driver/...` paths all parse
 //! into string-named reference nodes without resolving the names.
@@ -32,8 +32,9 @@ use winnow::{ModalResult, Parser};
 
 use crate::ast::{
     Assignment, CallRef, Codec, DdlKind, EffectBody, EffectStmt, EffectVerb, Expr, FnRef, Ident,
-    JoinOp, Literal, NamedArg, Op, OrderKey, PathExpr, PathRef, PathSegment, PipeOp, Pipeline,
-    PlanWrap, PolicyRuleAst, Projection, ServerDdl, Source, Statement, Values,
+    JoinOp, Literal, NamedArg, Op, OrderKey, Param, PathExpr, PathRef, PathSegment, PipeOp,
+    Pipeline, PlanWrap, PolicyRuleAst, PolicySubjectAst, Projection, ServerDdl, Source, Statement,
+    TypeAnn, Values,
 };
 use crate::error::{ParseError, ParseErrorCode};
 
@@ -105,22 +106,29 @@ fn map_error(
     )
 }
 
-/// Classify the offending token into a structured code + message. Lowercase
-/// keyword-shaped identifiers are flagged distinctly (closed-core keywords are
-/// UPPERCASE, RFD §3); reserved keywords in identifier position are flagged too.
+/// Classify the offending token into a structured code + message. Keyword-shaped
+/// identifiers are flagged distinctly (an incomplete multi-word keyword like `group`
+/// without `by`, or a keyword used where the grammar wants a name); reserved keywords
+/// in identifier position are flagged too. Keyword recognition is case-insensitive
+/// (t74, decision S), so this is no longer a *case* mistake.
 fn classify(tok: &Token) -> (ParseErrorCode, String) {
     match tok {
-        Token::Ident(s)
-            if s.chars().next().is_some_and(char::is_lowercase) && is_keyword_word(s) =>
-        {
-            (
-                ParseErrorCode::UnknownKeyword,
-                "closed-core keywords are UPPERCASE (RFD §3)".to_string(),
-            )
-        }
+        Token::Ident(s) if is_keyword_word(s) => (
+            ParseErrorCode::UnknownKeyword,
+            "closed-core keywords are lowercase (recognized case-insensitively); this keyword \
+             is not valid here (RFD §3, decision S)"
+                .to_string(),
+        ),
         Token::Keyword(_) => (
             ParseErrorCode::ReservedAsIdentifier,
             "a reserved keyword cannot be used here".to_string(),
+        ),
+        // A lone `=` where the grammar wanted a comparison or pipe boundary is almost
+        // always a stale SQL-style equality. Steer to `==` (RFD decision O, t70): `=`
+        // binds (assignment / named-arg / SET), `==` compares.
+        Token::Eq => (
+            ParseErrorCode::UnexpectedToken,
+            "`=` binds (assignment); use `==` for equivalence (RFD decision O)".to_string(),
         ),
         _ => (
             ParseErrorCode::UnexpectedToken,
@@ -129,12 +137,15 @@ fn classify(tok: &Token) -> (ParseErrorCode, String) {
     }
 }
 
-/// Whether `s`, uppercased, would be a closed-core keyword word (used to detect
-/// lowercase keyword typos like `where`).
+/// Whether `s` is a closed-core keyword word (case-insensitive, t74) — a single-word
+/// keyword, or a multi-word keyword lead/tail / contextual sub-word the lexer leaves
+/// as a bare identifier (`group`, `by`, `into`, `materialized`, …). Used to give a
+/// crisp diagnostic when such a word stands where a name/stage was expected (e.g. a
+/// `group` with no `by`).
 fn is_keyword_word(s: &str) -> bool {
-    Keyword::from_word(&s.to_uppercase()).is_some()
+    Keyword::from_word(s).is_some()
         || matches!(
-            s.to_uppercase().as_str(),
+            s.to_ascii_uppercase().as_str(),
             "GROUP"
                 | "ORDER"
                 | "INSERT"
@@ -152,7 +163,7 @@ fn is_keyword_word(s: &str) -> bool {
 /// structured-error contract, RFD §5).
 fn expected_set() -> Vec<String> {
     vec![
-        Keyword::From.text().to_string(),
+        "a source path".to_string(),
         Keyword::InsertInto.text().to_string(),
         Keyword::Create.text().to_string(),
         Keyword::Preview.text().to_string(),
@@ -167,12 +178,14 @@ fn describe(tok: &Token) -> String {
     match tok {
         Token::Keyword(k) => format!("keyword `{}`", k.text()),
         Token::Pipe => "`|>`".to_string(),
-        Token::Eq | Token::Ne | Token::Lt | Token::Gt | Token::Le | Token::Ge | Token::Tilde => {
+        Token::Eq => "`=`".to_string(),
+        Token::EqEq | Token::Ne | Token::Lt | Token::Gt | Token::Le | Token::Ge | Token::Tilde => {
             "an operator".to_string()
         }
         Token::LParen => "`(`".to_string(),
         Token::RParen => "`)`".to_string(),
         Token::Comma => "`,`".to_string(),
+        Token::Colon => "`:`".to_string(),
         Token::Dot => "`.`".to_string(),
         Token::Star => "`*`".to_string(),
         Token::Arrow => "`=>`".to_string(),
@@ -199,12 +212,15 @@ fn kw<'a>(k: Keyword) -> impl Parser<Stream<'a>, Span, Err> {
     })
 }
 
-/// Match an UPPERCASE identifier word equal to `word` (used for multi-word keyword
-/// tails and DDL sub-keywords the lexer leaves as identifiers, e.g. `BY`, `INTO`,
-/// `OF`, `ASC`, `DESC`, `MATERIALIZED`).
+/// Match an identifier word equal to `word`, **case-insensitively** (t74, decision S):
+/// used for multi-word keyword tails/leads and the word operators / DDL sub-keywords the
+/// lexer leaves as identifiers, e.g. `by`, `into`, `materialized`, `and`, `or`, `of`,
+/// `asc`, `desc`. The `word` argument is written UPPERCASE by convention; recognition
+/// folds case so `INSERT`/`Insert`/`insert` all match — keeping the closed core lowercase
+/// (canonical) while accepting any case.
 fn word<'a>(word: &'static str) -> impl Parser<Stream<'a>, Span, Err> {
     any.verify_map(move |t: Spanned<Token>| match t.node {
-        Token::Ident(ref s) if s == word => Some(t.span),
+        Token::Ident(ref s) if s.eq_ignore_ascii_case(word) => Some(t.span),
         _ => None,
     })
 }
@@ -223,7 +239,7 @@ fn punct<'a>(tok: Token) -> impl Parser<Stream<'a>, Span, Err> {
     any.verify_map(move |t: Spanned<Token>| if t.node == tok { Some(t.span) } else { None })
 }
 
-/// Multi-word keyword: `GROUP BY` (= `GROUP` ident + `BY` ident, both UPPERCASE).
+/// Multi-word keyword: `group by` (= `group` ident + `by` ident, case-insensitive).
 fn group_by(input: &mut Stream<'_>) -> ModalResult<Span> {
     (word("GROUP"), word("BY"))
         .map(|(a, b)| Span::new(a.start, b.end))
@@ -353,7 +369,10 @@ fn predicate_tail(input: &mut Stream<'_>) -> ModalResult<TailFn> {
 
 fn cmp_op(input: &mut Stream<'_>) -> ModalResult<Op> {
     any.verify_map(|t: Spanned<Token>| match t.node {
-        Token::Eq => Some(Op::Eq),
+        // Equivalence is `==` (RFD decision O, t70). A lone `=` is the binding token
+        // and is intentionally NOT a comparator here — it surfaces as a crisp error
+        // steering to `==` (see `classify`).
+        Token::EqEq => Some(Op::Eq),
         Token::Ne => Some(Op::Ne),
         Token::Lt => Some(Op::Lt),
         Token::Gt => Some(Op::Gt),
@@ -422,10 +441,62 @@ fn paren_expr_list(input: &mut Stream<'_>) -> ModalResult<Vec<Expr>> {
     Ok(items)
 }
 
-/// A primary expression: literal, parenthesised expr, `*`, function call, dotted
-/// path / column.
+/// A primary expression: literal, lambda, parenthesised expr, `*`, function call,
+/// dotted path / column.
+///
+/// `lambda` is tried **before** `paren_expr`: both start with `(`, but only a lambda has
+/// the trailing `=> <body>` after the parameter list. The lambda parser backtracks
+/// cleanly when the `( … )` is not followed by `=>`, so a plain parenthesised expression
+/// `(a == b)` still parses as `paren_expr`.
 fn primary(input: &mut Stream<'_>) -> ModalResult<Expr> {
-    alt((literal.map(Expr::Lit), paren_expr, fn_call, dotted_path)).parse_next(input)
+    alt((
+        literal.map(Expr::Lit),
+        lambda,
+        paren_expr,
+        fn_call,
+        dotted_path,
+    ))
+    .parse_next(input)
+}
+
+/// A lambda literal `( params ) => <expr>` — a first-class value (M6 ticket t61,
+/// decision H "functions are values"). **No keyword is added**: the form rides the
+/// expression grammar and reuses the existing `=>` arrow token (also used by named call
+/// args); the parenthesised parameter list is what distinguishes a lambda from a
+/// named-arg pair or a parenthesised sub-expression.
+///
+/// The whole production is backtrackable up to the `=>`: if a `( … )` group is **not**
+/// followed by `=>` it is not a lambda, so `opt` lets the enclosing `alt` fall through to
+/// `paren_expr`. Once `=>` is seen the body is parsed as a full expression (a lambda body
+/// is expression-only — a lambda is a pure transformation, it can name no effect, RFD §3).
+fn lambda(input: &mut Stream<'_>) -> ModalResult<Expr> {
+    let _ = punct(Token::LParen).parse_next(input)?;
+    let params: Vec<Param> = separated(0.., lambda_param, punct(Token::Comma)).parse_next(input)?;
+    let _ = punct(Token::RParen).parse_next(input)?;
+    // The arrow is the commit point: only here do we know this `( … )` is a lambda and
+    // not a parenthesised expression. `opt` (no `cut_err`) lets a non-lambda backtrack.
+    let _ = punct(Token::Arrow).parse_next(input)?;
+    let body = expr(input)?;
+    Ok(Expr::Lambda {
+        params,
+        body: Box::new(body),
+    })
+}
+
+/// One lambda parameter: a bare name with an optional `: <type>` annotation. The
+/// annotation is parsed-and-retained (`Option<TypeAnn>`); the type name is any bare
+/// identifier (the canonical surface is a lowercase primitive `string`/`bool`/`i64`, but
+/// the grammar accepts any ident so the annotation round-trips into the later type-system
+/// ticket, t75).
+fn lambda_param(input: &mut Stream<'_>) -> ModalResult<Param> {
+    let name = ident(input)?;
+    let ty = opt(preceded(punct(Token::Colon), ident))
+        .parse_next(input)?
+        .map(|t| TypeAnn { name: t.node });
+    Ok(Param {
+        name: name.node,
+        ty,
+    })
 }
 
 fn paren_expr(input: &mut Stream<'_>) -> ModalResult<Expr> {
@@ -539,12 +610,16 @@ fn order_key(input: &mut Stream<'_>) -> ModalResult<OrderKey> {
 
 // ---- sources --------------------------------------------------------------
 
-/// A pipeline source: `VALUES …`, `( <pipeline> )`, or a `/driver/...` path.
+/// A pipeline source: `VALUES …`, `( <pipeline> )`, a `/driver/...` path, or a bare
+/// identifier naming a `LET`-bound relation (M6, ticket t60). The bare-identifier form is
+/// tried **last** so it never shadows a keyword/path/values form; a reserved keyword is
+/// already a `Token::Keyword` (not an `Ident`), so it cannot be mistaken for a name source.
 fn source(input: &mut Stream<'_>) -> ModalResult<Source> {
     alt((
         values.map(Source::Values),
         subquery_source,
         path_expr.map(Source::Path),
+        ident.map(|s| Source::Name(s.node)),
     ))
     .parse_next(input)
 }
@@ -573,14 +648,32 @@ fn values(input: &mut Stream<'_>) -> ModalResult<Values> {
     Ok(Values { columns, rows })
 }
 
+/// A **column name** in a name-only position: a bare identifier, or a reserved keyword
+/// spelled as a name. Keywords are reserved (t74, case-insensitive), but a column name in
+/// a `VALUES (…)` list is unambiguous, so a keyword token contributes its canonical
+/// lowercase text as the name. This keeps schema fields whose names collide with keyword
+/// words usable without quoting — e.g. the `/server/jobs` field `every` and the
+/// `/server/triggers` field `on` — which decision S's lowercase keyword set would
+/// otherwise shadow. It is a pure surface accommodation: no effect, no new vocabulary.
+fn column_name(input: &mut Stream<'_>) -> ModalResult<Spanned<Ident>> {
+    any.verify_map(|t: Spanned<Token>| match t.node {
+        Token::Ident(s) => Some(Spanned::new(s, t.span)),
+        Token::Keyword(k) => Some(Spanned::new(k.text().to_string(), t.span)),
+        _ => None,
+    })
+    .parse_next(input)
+}
+
 /// A `VALUES` column list `(a, b)` that is followed by a row `(` (lookahead). We
-/// only treat a leading paren-group as columns when all its members are bare
-/// identifiers AND a second `(` (the first row) follows — otherwise the group is
-/// itself the first/only row and this parser backtracks. winnow `&[T]` streams are
-/// `Copy`, so the post-list cursor is restored after the non-consuming lookahead.
+/// only treat a leading paren-group as columns when all its members are column
+/// names ([`column_name`]: a bare identifier or a keyword-in-name-position) AND a
+/// second `(` (the first row) follows — otherwise the group is itself the first/only
+/// row and this parser backtracks. winnow `&[T]` streams are `Copy`, so the post-list
+/// cursor is restored after the non-consuming lookahead.
 fn value_column_list(input: &mut Stream<'_>) -> ModalResult<Vec<Ident>> {
     let _ = punct(Token::LParen).parse_next(input)?;
-    let cols: Vec<Spanned<Ident>> = separated(1.., ident, punct(Token::Comma)).parse_next(input)?;
+    let cols: Vec<Spanned<Ident>> =
+        separated(1.., column_name, punct(Token::Comma)).parse_next(input)?;
     let _ = punct(Token::RParen).parse_next(input)?;
     // Non-consuming lookahead for a following row `(`.
     let after_cols = *input;
@@ -594,11 +687,15 @@ fn value_column_list(input: &mut Stream<'_>) -> ModalResult<Vec<Ident>> {
 // ---- pipe operations ------------------------------------------------------
 
 fn pipeline(input: &mut Stream<'_>) -> ModalResult<Pipeline> {
-    let _ = kw(Keyword::From).parse_next(input)?;
-    let source = cut_err(source).parse_next(input)?;
+    // Decision R (t73): the source position needs no `FROM`. A leading `/path`, a `(subquery)`,
+    // a `VALUES …` literal, or a `LET`-bound name *is* the source. The leading `/` is unambiguous
+    // by position (an expression-start `/` is a path; the lexer never emits a division `/`), so
+    // this composes with future infix arithmetic. The source is parsed backtrackably so a non-
+    // pipeline statement (an effect/DDL/plan wrapper) can still win in the enclosing `alt`.
+    let source = source(input)?;
     // Once a `|>` is consumed we are committed to a pipe op: `cut_err` turns an
     // inner failure into a non-backtracking error so the diagnostic points *inside*
-    // the op (a dangling `WHERE`, a lowercase keyword) instead of back at the `|>`.
+    // the op (a dangling `where`, an incomplete multi-word keyword) instead of back at the `|>`.
     let ops: Vec<PipeOp> =
         repeat(0.., preceded(punct(Token::Pipe), cut_err(pipe_op))).parse_next(input)?;
     Ok(Pipeline { source, ops })
@@ -872,6 +969,159 @@ fn returning_clause(input: &mut Stream<'_>) -> ModalResult<Vec<Projection>> {
     preceded(kw(Keyword::Returning), projection_list).parse_next(input)
 }
 
+// ---- writes as pipeline stages (decision Q, t72) --------------------------
+
+/// The head of a terminal **pipe-stage write** (decision Q, t72): the write verb plus its
+/// *own* operands — a target path for `INSERT INTO`/`UPSERT INTO`, the `SET` assignments for
+/// `UPDATE`, nothing for `REMOVE`. The rows the write CONSUMES are the upstream pipeline (the
+/// relation flowing into the stage), supplied separately by [`build_pipe_effect`]. Kept as a
+/// small enum so the upstream → [`EffectStmt`] lowering is shared with — and byte-for-byte
+/// identical to — the verb-leading [`effect_stmt`] form: two spellings, one plan.
+enum PipeWriteHead {
+    /// `|> INSERT INTO <target>` — the upstream is the inserted relation.
+    Insert(PathExpr),
+    /// `|> UPSERT INTO <target>` — the upstream is the upserted relation.
+    Upsert(PathExpr),
+    /// `|> UPDATE SET <assignments>` — target/filter are lifted from the upstream.
+    Update(Vec<Assignment>),
+    /// `|> REMOVE` — target/filter are lifted from the upstream.
+    Remove,
+}
+
+/// Parse a terminal write stage's head after the `|>` has been consumed. Each arm backtracks
+/// cleanly on its leading verb (so a non-write stage falls through to the ordinary
+/// [`pipe_op`]); once a verb is committed the remainder is `cut_err` so a malformed write is a
+/// crisp error pointing *inside* the stage, not a silent fallthrough.
+fn pipe_write_head(input: &mut Stream<'_>) -> ModalResult<PipeWriteHead> {
+    alt((
+        preceded(insert_into, cut_err(path_expr)).map(PipeWriteHead::Insert),
+        preceded(upsert_into, cut_err(path_expr)).map(PipeWriteHead::Upsert),
+        preceded(
+            kw(Keyword::Update),
+            cut_err(preceded(kw(Keyword::Set), assignment_list)),
+        )
+        .map(PipeWriteHead::Update),
+        kw(Keyword::Remove).map(|_| PipeWriteHead::Remove),
+    ))
+    .parse_next(input)
+}
+
+/// Lower a terminal pipe-stage write into the SAME [`EffectStmt`] the verb-leading
+/// [`effect_stmt`] builds (decision Q: `… |> INSERT INTO /b` and `INSERT INTO /b …` are two
+/// renderings of one effect, so they MUST produce one plan). `source`/`ops` are the upstream
+/// relation the write consumes; an optional trailing `|> RETURNING …` stage (the pipe-stage
+/// spelling of the verb-leading inline `RETURNING`) carries the projection.
+fn build_pipe_effect(
+    input: &mut Stream<'_>,
+    head: PipeWriteHead,
+    source: Source,
+    ops: Vec<PipeOp>,
+) -> ModalResult<EffectStmt> {
+    // `RETURNING` rides as its own trailing `|>` stage in the pipe-stage form (the verb-leading
+    // form takes it inline); both populate the same `EffectStmt.returning`. `opt` checkpoints,
+    // so a missing `|> RETURNING` restores the cursor for the enclosing `eof`/clause.
+    let returning = opt(preceded(
+        punct(Token::Pipe),
+        preceded(kw(Keyword::Returning), projection_list),
+    ))
+    .parse_next(input)?;
+    match head {
+        PipeWriteHead::Insert(target) => Ok(EffectStmt {
+            verb: EffectVerb::Insert,
+            target,
+            body: EffectBody::Pipeline(Box::new(Pipeline { source, ops })),
+            returning,
+        }),
+        PipeWriteHead::Upsert(target) => Ok(EffectStmt {
+            verb: EffectVerb::Upsert,
+            target,
+            body: EffectBody::Pipeline(Box::new(Pipeline { source, ops })),
+            returning,
+        }),
+        PipeWriteHead::Update(set) => {
+            let (target, filter) = lift_target_filter(source, ops)?;
+            Ok(EffectStmt {
+                verb: EffectVerb::Update,
+                target,
+                body: EffectBody::SetWhere { set, filter },
+                returning,
+            })
+        }
+        PipeWriteHead::Remove => {
+            let (target, filter) = lift_target_filter(source, ops)?;
+            Ok(EffectStmt {
+                verb: EffectVerb::Remove,
+                target,
+                body: EffectBody::SetWhere {
+                    set: Vec::new(),
+                    filter,
+                },
+                returning,
+            })
+        }
+    }
+}
+
+/// A pipe-stage `UPDATE`/`REMOVE` rewrites rows *in place* on its upstream mount, so the
+/// upstream must be a bare `/path` optionally narrowed by `WHERE` predicates — precisely what
+/// the verb-leading `UPDATE <path> … WHERE …` / `REMOVE <path> WHERE …` expresses. Lift the
+/// path as the target and AND-fold the `WHERE`s into the one filter, so the two spellings lower
+/// identically. Any other upstream shape (a `SELECT`/`JOIN`/codec stage, a `VALUES`/subquery/
+/// name source) cannot lower to that form and is a crisp error — decision Q: anything that is
+/// neither legal form is rejected, never silently accepted.
+fn lift_target_filter(source: Source, ops: Vec<PipeOp>) -> ModalResult<(PathExpr, Option<Expr>)> {
+    let Source::Path(target) = source else {
+        return Err(ErrMode::Cut(ContextError::new()));
+    };
+    let mut filter: Option<Expr> = None;
+    for op in ops {
+        let PipeOp::Where(pred) = op else {
+            return Err(ErrMode::Cut(ContextError::new()));
+        };
+        filter = Some(match filter {
+            None => pred,
+            Some(prev) => Expr::Binary {
+                op: Op::And,
+                lhs: Box::new(prev),
+                rhs: Box::new(pred),
+            },
+        });
+    }
+    Ok((target, filter))
+}
+
+/// A statement-position pipeline that may terminate in a **write stage** (decision Q, t72).
+/// Without a terminal write it is an ordinary read [`Statement::Query`]; with one it lowers to
+/// the SAME [`Statement::Effect`] the verb-leading [`effect_stmt`] builds. The write stage is
+/// recognised ONLY here (statement position) — never inside a `(subquery)`, a `JOIN`/`UNION`
+/// arm, or a `LET` value, all of which keep using the pure [`pipeline`] — so a write can never
+/// hide in a read context and the §3 safety floor holds structurally.
+fn pipeline_or_effect(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    let source = source(input)?;
+    let mut ops: Vec<PipeOp> = Vec::new();
+    let mut write: Option<PipeWriteHead> = None;
+    loop {
+        // A `|>` boundary. `&[T]` streams are `Copy`, so a non-`|>` token restores the cursor
+        // for the enclosing parser (the `eof`, or a `LET` body / DDL clause that follows).
+        let checkpoint = *input;
+        if punct(Token::Pipe).parse_next(input).is_err() {
+            *input = checkpoint;
+            break;
+        }
+        // A terminal write verb wins over a normal op; a non-write stage backtracks (its leading
+        // verb never matched) and falls through to the ordinary, cut-on-commit pipe op.
+        if let Some(head) = opt(pipe_write_head).parse_next(input)? {
+            write = Some(head);
+            break;
+        }
+        ops.push(cut_err(pipe_op).parse_next(input)?);
+    }
+    match write {
+        Some(head) => build_pipe_effect(input, head, source, ops).map(Statement::Effect),
+        None => Ok(Statement::Query(Pipeline { source, ops })),
+    }
+}
+
 // ---- server DDL -----------------------------------------------------------
 
 fn server_ddl(input: &mut Stream<'_>) -> ModalResult<ServerDdl> {
@@ -971,7 +1221,7 @@ fn policy_attach_clause(input: &mut Stream<'_>) -> ModalResult<String> {
 /// `ALLOW`/`DENY`/`ALL` are **NOT** in the frozen RFD §3 keyword table; only `POLICY`/`ON` and
 /// the verbs (`SELECT`/`UPDATE`/`REMOVE`/`CALL` as keywords; `INSERT`/`UPSERT` as the
 /// `INTO`-lead idents) are frozen. So this binds over the **existing surface**: `ALLOW`/`DENY`/
-/// `ALL` are matched as contextual UPPERCASE identifiers ([`word`]) — adding no new closed-core
+/// `ALL` are matched as contextual identifiers ([`word`], case-insensitive) — adding no new closed-core
 /// keyword — exactly as t31 bound `AT` and the DDL handles `MATERIALIZED`.
 fn policy_rule_clause(input: &mut Stream<'_>) -> ModalResult<PolicyRuleAst> {
     let allow =
@@ -979,17 +1229,80 @@ fn policy_rule_clause(input: &mut Stream<'_>) -> ModalResult<PolicyRuleAst> {
     let (verbs, all_token) = policy_verb_list(input)?;
     // The optional per-rule `ON <driver-glob>` scope (`ON` IS a frozen keyword).
     let driver = opt(preceded(kw(Keyword::On), raw_token_text)).parse_next(input)?;
+    // t57: the optional richer axes, collected in any order (sugar shape, like the DDL clauses).
+    // `FOR`/`AT` are contextual UPPERCASE idents (no new keyword, the t31 `AT` lesson); `WHERE` is
+    // a frozen keyword whose body is an ORDINARY expression (`member_of(...)` via `Expr::Fn`).
+    let mut subject = None;
+    let mut scope = None;
+    let mut condition = None;
+    loop {
+        if subject.is_none() {
+            if let Some(v) = opt(policy_for_clause).parse_next(input)? {
+                subject = Some(v);
+                continue;
+            }
+        }
+        if scope.is_none() {
+            if let Some(v) = opt(policy_at_clause).parse_next(input)? {
+                scope = Some(v);
+                continue;
+            }
+        }
+        if condition.is_none() {
+            if let Some(v) = opt(policy_where_clause).parse_next(input)? {
+                condition = Some(v);
+                continue;
+            }
+        }
+        break;
+    }
     Ok(PolicyRuleAst {
         allow,
         verbs,
         all_token,
         driver,
+        subject,
+        scope,
+        condition,
     })
+}
+
+/// `FOR (user|role|group) <name>` — the optional t57 actor clause. `FOR` and the kind words are
+/// contextual UPPERCASE idents (matched case-insensitively via [`word`]), so this adds NO frozen
+/// keyword (the t31 `AT` lesson). The name is a bare identifier.
+fn policy_for_clause(input: &mut Stream<'_>) -> ModalResult<PolicySubjectAst> {
+    let _ = word("FOR").parse_next(input)?;
+    let kind = alt((
+        word("USER").map(|_| "user"),
+        word("ROLE").map(|_| "role"),
+        word("GROUP").map(|_| "group"),
+    ))
+    .parse_next(input)?;
+    let name = ident(input)?;
+    Ok(PolicySubjectAst {
+        kind: kind.to_string(),
+        name: name.node,
+    })
+}
+
+/// `AT <path-glob>` — the optional t57 realm-scoped path clause. `AT` is a contextual ident (no
+/// new keyword); the glob is captured as raw path text (`/members/alice/**`).
+fn policy_at_clause(input: &mut Stream<'_>) -> ModalResult<String> {
+    let _ = word("AT").parse_next(input)?;
+    raw_token_text(input)
+}
+
+/// `WHERE <expr>` — the optional t57 conditional grant. `WHERE` IS a frozen keyword; the body is
+/// an ordinary expression (a `member_of('/directories/...')` call — the `Expr::Fn` "functions are
+/// values" seam), so NO keyword is added for the predicate itself.
+fn policy_where_clause(input: &mut Stream<'_>) -> ModalResult<Expr> {
+    let _ = kw(Keyword::Where).parse_next(input)?;
+    expr(input)
 }
 
 /// A POLICY rule's verb list: the bare `ALL` token, or a comma-separated list of verbs. The
 /// verbs span both lexer shapes — `SELECT`/`UPDATE`/`REMOVE`/`CALL` are reserved keyword
-/// tokens, while `INSERT`/`UPSERT` are the bare `INTO`-lead UPPERCASE idents — so this accepts
+/// tokens, while `INSERT`/`UPSERT` are the bare `INTO`-lead idents (case-insensitive) — so this accepts
 /// either. Returns `(verb_labels, was_all_token)`.
 fn policy_verb_list(input: &mut Stream<'_>) -> ModalResult<(Vec<String>, bool)> {
     if opt(word("ALL")).parse_next(input)?.is_some() {
@@ -1003,14 +1316,17 @@ fn policy_verb_list(input: &mut Stream<'_>) -> ModalResult<(Vec<String>, bool)> 
 }
 
 /// A single POLICY verb token: a reserved verb keyword (`SELECT`/`UPDATE`/`REMOVE`/`CALL`) or a
-/// bare UPPERCASE verb ident (`INSERT`/`UPSERT`). Returns the uppercase label.
+/// bare verb ident (`insert`/`upsert`, case-insensitive). Returns the canonical uppercase label.
 fn policy_verb_token(input: &mut Stream<'_>) -> ModalResult<String> {
     any.verify_map(|t: Spanned<Token>| match t.node {
         Token::Keyword(Keyword::Select) => Some("SELECT".to_string()),
         Token::Keyword(Keyword::Update) => Some("UPDATE".to_string()),
         Token::Keyword(Keyword::Remove) => Some("REMOVE".to_string()),
         Token::Keyword(Keyword::Call) => Some("CALL".to_string()),
-        Token::Ident(ref s) if s == "INSERT" || s == "UPSERT" => Some(s.clone()),
+        // `insert`/`upsert` are the multi-word verb leads (bare idents), matched
+        // case-insensitively (t74) and normalized to the canonical uppercase label.
+        Token::Ident(ref s) if s.eq_ignore_ascii_case("INSERT") => Some("INSERT".to_string()),
+        Token::Ident(ref s) if s.eq_ignore_ascii_case("UPSERT") => Some("UPSERT".to_string()),
         _ => None,
     })
     .parse_next(input)
@@ -1047,8 +1363,8 @@ fn ddl_kind(input: &mut Stream<'_>) -> ModalResult<DdlKind> {
     .parse_next(input)
 }
 
-/// `MATERIALIZED VIEW` — `MATERIALIZED` is an UPPERCASE ident the lexer leaves bare,
-/// followed by the `VIEW` keyword.
+/// `materialized view` — `materialized` is an ident the lexer leaves bare (matched
+/// case-insensitively), followed by the `view` keyword.
 fn materialized_view(input: &mut Stream<'_>) -> ModalResult<()> {
     let _ = word("MATERIALIZED").parse_next(input)?;
     let _ = kw(Keyword::View).parse_next(input)?;
@@ -1096,6 +1412,11 @@ fn do_clause(input: &mut Stream<'_>) -> ModalResult<Statement> {
 fn raw_token_text(input: &mut Stream<'_>) -> ModalResult<String> {
     any.verify_map(|t: Spanned<Token>| match t.node {
         Token::Ident(s) => Some(s),
+        // A keyword word standing as a raw label operand (e.g. an `on webhook` event kind,
+        // where `webhook` collides with the keyword). Recognized case-insensitively (t74);
+        // its canonical lowercase text is the label. A pure surface accommodation — these
+        // operands are routes/intervals/event-kinds, never effects.
+        Token::Keyword(k) => Some(k.text().to_string()),
         Token::Str(s) => Some(s),
         Token::Int(i) => Some(i.to_string()),
         Token::Size { value, unit } => Some(format!("{value} {}", unit.text())),
@@ -1122,11 +1443,56 @@ fn raw_token_text(input: &mut Stream<'_>) -> ModalResult<String> {
 fn inner_statement(input: &mut Stream<'_>) -> ModalResult<Statement> {
     alt((
         plan_wrap,
+        // A `TRANSACTION { … }` block (M6, t62): a distinct leading keyword, so order-independent.
+        transaction_block,
         server_ddl.map(Statement::Ddl),
+        // Verb-leading effect (`INSERT INTO …`, the source-less `VALUES` literal form among
+        // them) wins first; a source-leading pipeline then either reads (`Statement::Query`)
+        // or terminates in a write stage and lowers to the same `Statement::Effect` (t72).
         effect_stmt.map(Statement::Effect),
-        pipeline.map(Statement::Query),
+        pipeline_or_effect,
     ))
     .parse_next(input)
+}
+
+/// One statement inside a `TRANSACTION { … }` block (M6, ticket t62): an **effect** statement
+/// only — a verb-leading `INSERT/UPSERT/UPDATE/REMOVE …` (the source-less `VALUES` literal form
+/// among them) or a terminal pipe-stage write (`/path |> … |> REMOVE`). A pure read pipeline, a
+/// nested `TRANSACTION`, a `LET`, a DDL, or a `PREVIEW`/`COMMIT` wrapper is rejected here (the
+/// shape gate) so the block stays a thin, reversible-only wrapper over [`EffectStmt`]s; the
+/// reversibility check itself is the eval-time gate, not this parser.
+fn transaction_item(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    // Verb-leading effect wins first; backtracks cleanly when the next item is absent (`}`).
+    if let Some(e) = opt(effect_stmt).parse_next(input)? {
+        return Ok(Statement::Effect(e));
+    }
+    // Otherwise a source-leading pipeline that MUST terminate in a write stage. A bare read is
+    // not a legal transaction member: once a non-effect is parsed it is a crisp authoring error
+    // (`cut`), never a silent accept — decision G's reversible-only block holds no read.
+    match pipeline_or_effect(input)? {
+        eff @ Statement::Effect(_) => Ok(eff),
+        _ => Err(ErrMode::Cut(ContextError::new())),
+    }
+}
+
+/// A `TRANSACTION { <effect> ; <effect> ; … }` block (M6, ticket t62, decision G): a
+/// reversible-only, all-or-nothing group of effect statements in commit-point (source) order.
+/// Once `TRANSACTION` is consumed we are committed (`cut_err` on the braces), so a malformed
+/// block is a crisp error pointing *inside* it. The effects are `;`-separated (a trailing `;` is
+/// allowed) and an empty block parses to an empty (trivially reversible) plan. Reversibility is
+/// enforced at eval time (`EvalError::IrreversibleInTransaction`), not here.
+fn transaction_block(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    let open = kw(Keyword::Transaction).parse_next(input)?;
+    let _ = cut_err(punct(Token::LBrace)).parse_next(input)?;
+    let body: Vec<Statement> =
+        separated(0.., transaction_item, punct(Token::Semicolon)).parse_next(input)?;
+    // An optional trailing `;` after the final effect (winnow's `separated` leaves it unconsumed).
+    let _ = opt(punct(Token::Semicolon)).parse_next(input)?;
+    let close = cut_err(punct(Token::RBrace)).parse_next(input)?;
+    Ok(Statement::Transaction {
+        body,
+        span: Span::new(open.start, close.end),
+    })
 }
 
 /// `PREVIEW <stmt>` / `COMMIT <stmt>` — the plan wrapper (RFD §6).
@@ -1144,9 +1510,80 @@ fn plan_wrap(input: &mut Stream<'_>) -> ModalResult<Statement> {
     }))
 }
 
-/// The top-level statement parser: one statement, then end-of-input.
+/// A `LET <name> = <pipeline>` binding followed by the rest of the program (M6, ticket
+/// t60). Once `LET` is consumed we are committed (`cut_err`), so a malformed binding is a
+/// crisp error pointing *inside* the binding. The `value` is restricted to a `pipeline`
+/// (a relation) — never an effect — so a `LET` cannot smuggle a write into a pure context;
+/// the `body` is the rest of the program, with `name` in scope.
+fn let_binding(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    let _ = kw(Keyword::Let).parse_next(input)?;
+    let name = cut_err(ident).parse_next(input)?;
+    let _ = cut_err(punct(Token::Eq)).parse_next(input)?;
+    let value = cut_err(let_value).parse_next(input)?;
+    let body = cut_err(program_seq).parse_next(input)?;
+    Ok(Statement::Let {
+        name: name.node,
+        value: Box::new(value),
+        body: Box::new(body),
+    })
+}
+
+/// The bound value of a `LET` (M6, ticket t60 + t61): a **relation** (a pipeline) OR a
+/// first-class **value** (a lambda or a scalar expression — t61, decision H "functions are
+/// values"). A *named function* is just a `LET`-bound lambda (`LET f = (x) => …`), so no
+/// `DEF` keyword is needed.
+///
+/// The alternatives are ordered so each shape wins unambiguously:
+/// 1. `lambda` first — a `( params ) => body` value; tried before `pipeline` because a
+///    bare `(x)` would otherwise be read as a parenthesised sub-pipeline source.
+/// 2. `pipeline` — the t60 relation binding (`/path |> …`, a bound name, `VALUES`, a
+///    subquery). Unchanged, so every existing relation `LET` parses exactly as before.
+/// 3. `expr` — a scalar value binding (`LET cutoff = '2026-03-27'`), reached only when the
+///    value is neither a lambda nor a pipeline source.
+///
+/// A value binding (lambda/scalar) is retained as a single-cell `VALUES` relation so the
+/// `Statement::Let { value: Box<Statement> }` shape — and its governance variant lock — is
+/// **untouched** (no new `Statement` variant): the bound expression rides in the relation's
+/// one row, available verbatim to a later type-checker / value runtime.
+fn let_value(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    alt((
+        lambda.map(wrap_value_binding),
+        pipeline.map(Statement::Query),
+        // A scalar value binding (`LET cutoff = '2026-03-27'`). Restricted to a *literal* so
+        // it cannot collide with the `pipeline` source forms above: a bare identifier stays a
+        // `LET`-bound relation name (`LET b = a`, t60), and a fn-call (`map(…)`) belongs in a
+        // pipeline stage, not as a bare `LET` value — keeping every existing relation binding
+        // parsing exactly as before.
+        literal.map(|lit| wrap_value_binding(Expr::Lit(lit))),
+    ))
+    .parse_next(input)
+}
+
+/// Wrap a `LET`-bound value expression (a lambda or scalar) into the single-cell `VALUES`
+/// relation that carries it, so a value binding reuses the existing relation-valued
+/// `Statement::Let` shape without adding a `Statement` variant (see [`let_value`]).
+fn wrap_value_binding(value: Expr) -> Statement {
+    Statement::Query(Pipeline {
+        source: Source::Values(Values {
+            columns: None,
+            rows: vec![vec![value]],
+        }),
+        ops: vec![],
+    })
+}
+
+/// One program: zero or more `LET` bindings in scope for the final statement (RFD §1.2 —
+/// statements with no terminator). Encoded as a let-in nesting (see [`Statement::Let`]).
+/// A bare (non-`LET`) statement is the program's terminal statement; the top-level
+/// `eof` then rejects a second non-binding statement (`FROM a` `FROM b`) as trailing input.
+fn program_seq(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    alt((let_binding, inner_statement)).parse_next(input)
+}
+
+/// The top-level program parser: a `LET`-binding sequence then a final statement, then
+/// end-of-input (one statement per line, `;`-free — RFD §1.2 statement model).
 fn statement(input: &mut Stream<'_>) -> ModalResult<Statement> {
-    let stmt = inner_statement(input)?;
+    let stmt = program_seq(input)?;
     winnow::combinator::eof(input)?;
     Ok(stmt)
 }

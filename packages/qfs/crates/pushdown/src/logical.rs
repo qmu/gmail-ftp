@@ -117,7 +117,7 @@ pub struct OrderKey {
 /// The pushdown planner's logical IR (RFD §6). Pure-query operators only.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalPlan {
-    /// A base relation from one source (`FROM /driver/...`). The leaf the
+    /// A base relation from one source (`/driver/...`). The leaf the
     /// source-tagging pass keys on.
     Scan {
         /// Which source/driver this scan reads.

@@ -129,12 +129,12 @@ fn github_merge_call_resolves_declared_irreversible_proc() {
     // resolution capability-gates the path and proves `github.merge` is a DECLARED procedure. Its
     // irreversibility is asserted on the procedure contract (the COMMIT leg is the runtime's).
     let value = eval_value(
-        "FROM /github/acme/web/pulls/42 |> CALL github.merge(method => 'squash')",
+        "/github/acme/web/pulls/42 |> CALL github.merge(method => 'squash')",
         &service_registry(),
     );
     assert!(
         matches!(value, EvalValue::Relation(_)),
-        "a `FROM … |> CALL` pipeline is a pure read (Relation)"
+        "a `/path |> CALL` pipeline is a pure read (Relation)"
     );
     // The declared `merge` procedure is irreversible (the agent's COMMIT gate).
     let reg = service_registry();
@@ -222,10 +222,10 @@ mod sql_fixture {
 
     #[test]
     fn sql_read_resolves_against_fixture_catalog_no_io() {
-        // FROM /sql/pg/orders |> WHERE total > 100 |> SELECT id, total — a PURE read. It evaluates
+        // /sql/pg/orders |> WHERE total > 100 |> SELECT id, total — a PURE read. It evaluates
         // to a Relation (not an effect Plan), proving the read path resolves with no live backend.
         let value = eval_value(
-            "FROM /sql/pg/orders |> WHERE total > 100 |> SELECT id, total",
+            "/sql/pg/orders |> WHERE total > 100 |> SELECT id, total",
             &sql_registry(),
         );
         assert!(
@@ -326,7 +326,7 @@ fn negative_unsupported_verb_fails_structurally() {
     // Planning an UPDATE must fail at resolve time with the structured `unsupported_verb` error
     // (RFD §5) — the agent-legible failure path — BEFORE any plan or I/O exists.
     let reg = service_registry();
-    let stmt = parse_statement("UPDATE /slack/acme/general/messages SET text = 'x' WHERE id = 1")
+    let stmt = parse_statement("UPDATE /slack/acme/general/messages SET text = 'x' WHERE id == 1")
         .expect("the statement parses (UPDATE is closed-core; the NODE rejects it)");
     let err = Evaluator::new(&reg)
         .eval(&stmt)

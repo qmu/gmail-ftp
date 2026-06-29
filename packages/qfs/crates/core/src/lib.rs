@@ -27,11 +27,13 @@
 pub mod ddl;
 mod describe;
 mod eval;
+mod lambda;
 mod plan;
 mod registry;
 mod resolve;
 mod security;
 mod stdlib;
+mod typeck;
 
 pub use ddl::server::{
     binding_config_row, config_row_batch, desugar_to_insert, from_server_ddl, normalize_spans,
@@ -42,15 +44,26 @@ pub use ddl::server::{
 };
 pub use describe::{archetype_hint, DescribeReport, PushdownSummary};
 pub use eval::{call_proc_id, effect_kind_for, EvalError, EvalValue, Evaluator, PlanSource};
+pub use lambda::{
+    apply as apply_lambda, eval_expr as eval_lambda_expr, Closure, LambdaValue, ValueEnv,
+};
 pub use plan::{plan_pipeline, plan_query, source_registry, PushdownError};
-pub use registry::{CodecRegistry, MountRegistry, ProcRegistry};
+pub use registry::{
+    peel_scope, resolve_name, CodecRegistry, MountRegistry, NameRealm, PathScope, PathScopeError,
+    ProcRegistry, Realm, ScopeResolution, RESERVED_REALMS,
+};
 pub use resolve::{capability_verb_for, write_verb_for, ResolveError, ResolvedCall, Resolver};
-pub use security::{Ack, IrreversibleGuard, NeedsPreview, RunMode};
+pub use security::{
+    Ack, IrreversibleGuard, NeedsPreview, RunMode, SafetyDecision, SafetyMode, UnknownSafetyMode,
+};
 pub use stdlib::{
     AggregateFactory, AggregateKind, AggregateState, AliasDecl, BuiltinEval, BuiltinFn, EnvSource,
-    EvalCtx, FnError, FnSig, MapEnv, NoEnv, PlanNode, PlanNodeKind, Prelude, PreludeError,
-    ResolvedAlias, StdlibRegistry,
+    EvalCtx, FnError, FnSig, HigherOrderKind, MapEnv, NoEnv, PlanNode, PlanNodeKind, Prelude,
+    PreludeError, ResolvedAlias, StdlibRegistry,
 };
+// The plan-time static primitive type checker (decision T, ticket t75): a pure pass over the
+// parser `Expr` that the evaluator runs at plan/preview time so a type error never reaches commit.
+pub use typeck::{check_expr, Ty, TyEnv};
 
 // Re-export the trait seams and shared types so consumers depend on `qfs-core` only.
 pub use qfs_codec::Codec;
@@ -76,17 +89,17 @@ pub use qfs_types::{
     Predicate, Provenance, Row, RowBatch, Schema, SchemaSource, TypeError, Typed, TypedPredicate,
     Value,
 };
-// The credential / secret store + multi-account resolution (t27, RFD §10), re-exported
+// The credential / secret store + multi-connection resolution (t27, RFD §10), re-exported
 // so drivers and the server reach the one secrets surface through `qfs-core`. `Secret`
 // is the only type holding key material (redacting Debug/Display, no Clone/Serialize,
-// zeroized on drop); the store keys by `(driver, account)` and the resolver turns a
-// statement's context into a concrete account, recording the `AccountSource` for the
+// zeroized on drop); the store keys by `(driver, connection)` and the resolver turns a
+// statement's context into a concrete connection, recording the `ConnectionSource` for the
 // audit ledger — never the credential.
 pub use qfs_secrets::{
-    grant_scopes, resolve as resolve_account, AccountId, AccountIdError, AccountRecord,
-    AccountSource, ActiveAccounts, CredentialKey, EnvStore, InMemoryStore,
-    Resolution as AccountResolution, ResolveError as AccountResolveError, ScopeError, ScopeGrant,
-    Secret, SecretError, Secrets,
+    grant_scopes, resolve as resolve_connection, ActiveConnections, ConnectionId,
+    ConnectionIdError, ConnectionRecord, ConnectionSource, CredentialKey, EnvStore, InMemoryStore,
+    Resolution as ConnectionResolution, ResolveError as ConnectionResolveError, ScopeError,
+    ScopeGrant, Secret, SecretError, Secrets,
 };
 
 /// The output mode for a session (RFD-0001 §7: `-json` vs human).
@@ -126,10 +139,10 @@ pub struct Engine {
     pub audit_sink: Option<std::sync::Arc<dyn AuditSink>>,
     /// The credential / secret store (t27, RFD §10): the one [`Secrets`] surface the
     /// driver-bind context fetches credentials from at COMMIT time, keyed by
-    /// `(driver, account)`. `None` until a backend is installed (the CLI installs a
+    /// `(driver, connection)`. `None` until a backend is installed (the CLI installs a
     /// [`qfs_secrets::LocalStore`]; the server a `WorkerStore`/`EnvStore`). Held behind
     /// the trait so the engine is oblivious to the backend, and a `Plan` never embeds a
-    /// secret — only an account *selector* (purity invariant, RFD §3).
+    /// secret — only an connection *selector* (purity invariant, RFD §3).
     pub secrets: Option<std::sync::Arc<dyn Secrets>>,
     /// Reserved capability-enforcement flag (E5). Shape only at E0.
     pub capabilities_enforced: bool,
@@ -199,7 +212,7 @@ mod tests {
         // The driver-bind context fetches credentials via the one `Secrets` trait (t27).
         // An in-memory backend (no fs, no network, no real keychain) proves the wiring.
         let store = std::sync::Arc::new(InMemoryStore::new());
-        let key = CredentialKey::new(DriverId::new("mail"), AccountId::new("work").unwrap());
+        let key = CredentialKey::new(DriverId::new("mail"), ConnectionId::new("work").unwrap());
         store.put(&key, Secret::from("tok")).unwrap();
 
         let engine = Engine::new().with_secrets(store);

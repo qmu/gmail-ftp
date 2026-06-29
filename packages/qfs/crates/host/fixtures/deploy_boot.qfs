@@ -12,12 +12,12 @@ CREATE POLICY deploypriv ALLOW INSERT,REMOVE;
 # credentials (the daemon registers the `/status` built-in unconditionally — serve_builtins.rs). The
 # /cf/d1 native binding is referenced by the VIEW below instead, so the binding-set/wrangler tests
 # still see d1 + r2 + kv.
-CREATE ENDPOINT events ON 'GET /events' AS FROM /status |> LIMIT 5;
+CREATE ENDPOINT events ON 'GET /events' AS /status |> LIMIT 5;
 
 # A VIEW that reads a CF D1 table (native d1 binding) — the d1 reference the binding-set scan picks
 # up. A view is pure config data here (the daemon does not serve it as a route), so it carries the
 # d1 native-store ref without affecting the served ENDPOINT body.
-CREATE VIEW d1_events AS FROM /cf/d1/analytics/events;
+CREATE VIEW d1_events AS /cf/d1/analytics/events;
 
 # ONE JOB EVERY: fires every 6 hours, writing to a CF R2 bucket (native r2 binding).
 CREATE JOB archive EVERY '6h' DO INSERT INTO /cf/r2/backups VALUES ('snapshot') POLICY deploypriv;

@@ -144,7 +144,7 @@ fn eval(src: &str) -> Result<EvalValue, EvalError> {
 
 #[test]
 fn query_pipeline_folds_to_relation_with_threaded_schema() {
-    let v = eval("FROM /db/users |> WHERE active = true |> SELECT id, name").unwrap();
+    let v = eval("/db/users |> WHERE active == true |> SELECT id, name").unwrap();
     let rel = v.as_relation().expect("a query yields a relation");
     // The fold produced a Project at the top, threading the source schema down.
     assert!(matches!(rel, PlanSource::Project { .. }));
@@ -160,7 +160,7 @@ fn query_pipeline_folds_to_relation_with_threaded_schema() {
 
 #[test]
 fn select_star_preserves_full_schema() {
-    let v = eval("FROM /db/users |> SELECT *").unwrap();
+    let v = eval("/db/users |> SELECT *").unwrap();
     let schema = v.as_relation().unwrap().schema();
     assert_eq!(
         schema.columns.len(),
@@ -171,7 +171,7 @@ fn select_star_preserves_full_schema() {
 
 #[test]
 fn extend_adds_a_column_to_the_threaded_schema() {
-    let v = eval("FROM /db/users |> EXTEND label = name").unwrap();
+    let v = eval("/db/users |> EXTEND label = name").unwrap();
     let schema = v.as_relation().unwrap().schema();
     assert!(schema.column("label").is_some(), "EXTEND added the column");
     assert_eq!(schema.columns.len(), 4);
@@ -212,7 +212,7 @@ fn upsert_and_update_evaluate_to_their_kinds() {
         .unwrap();
     assert_eq!(upsert.nodes()[0].kind, EffectKind::Upsert);
 
-    let update = eval("UPDATE /db/users SET name = 'b' WHERE id = 1")
+    let update = eval("UPDATE /db/users SET name = 'b' WHERE id == 1")
         .unwrap()
         .as_plan()
         .cloned()
@@ -222,9 +222,9 @@ fn upsert_and_update_evaluate_to_their_kinds() {
 
 #[test]
 fn insert_from_query_emits_a_read_dependency() {
-    // `INSERT INTO /db/users FROM /mail/inbox |> SELECT id, subject` should build a Read
+    // `INSERT INTO /db/users /mail/inbox |> SELECT id, subject` should build a Read
     // node (the sub-pipeline) the Insert depends on — the plan DAG with a dependency edge.
-    let plan = eval("INSERT INTO /db/users FROM /mail/inbox |> SELECT id, subject")
+    let plan = eval("INSERT INTO /db/users /mail/inbox |> SELECT id, subject")
         .unwrap()
         .as_plan()
         .cloned()
@@ -240,7 +240,7 @@ fn insert_from_query_emits_a_read_dependency() {
 
 #[test]
 fn remove_is_flagged_inherently_irreversible() {
-    let plan = eval("REMOVE /db/users WHERE id = 1")
+    let plan = eval("REMOVE /db/users WHERE id == 1")
         .unwrap()
         .as_plan()
         .cloned()
@@ -285,7 +285,7 @@ fn returning_projection_schema_is_computed() {
 
 #[test]
 fn preview_of_evaluated_plan_is_secret_free_and_ordered() {
-    let plan = eval("REMOVE /db/users WHERE id = 1")
+    let plan = eval("REMOVE /db/users WHERE id == 1")
         .unwrap()
         .as_plan()
         .cloned()
@@ -309,7 +309,7 @@ fn preview_of_evaluated_plan_is_secret_free_and_ordered() {
 fn preview_of_pure_query_has_no_effects() {
     // PREVIEW of a pure read evaluates to a relation; there is no plan to apply, so a
     // caller building a plan for it (the empty plan) previews as pure.
-    let v = eval("PREVIEW FROM /db/users |> SELECT id").unwrap();
+    let v = eval("PREVIEW /db/users |> SELECT id").unwrap();
     // A PREVIEW wrapper over a query is transparent: still a relation.
     assert!(v.as_relation().is_some());
 }
@@ -318,7 +318,7 @@ fn preview_of_pure_query_has_no_effects() {
 
 #[test]
 fn unknown_column_in_projection_is_structured() {
-    let err = eval("FROM /db/users |> SELECT nope").unwrap_err();
+    let err = eval("/db/users |> SELECT nope").unwrap_err();
     assert_eq!(err.code(), "unknown_column");
     assert!(matches!(
         err,
@@ -330,7 +330,7 @@ fn unknown_column_in_projection_is_structured() {
 fn capability_denied_verb_never_reaches_a_plan() {
     // /mail allows only select+insert; UPDATE is denied at resolve time — the evaluator
     // surfaces the structured resolve error, no plan is built.
-    let err = eval("UPDATE /mail/inbox SET subject = 'x' WHERE id = 1").unwrap_err();
+    let err = eval("UPDATE /mail/inbox SET subject = 'x' WHERE id == 1").unwrap_err();
     assert_eq!(err.code(), "unsupported_verb");
     assert!(matches!(
         err,
@@ -340,7 +340,7 @@ fn capability_denied_verb_never_reaches_a_plan() {
 
 #[test]
 fn unknown_procedure_is_structured() {
-    let err = eval("FROM /mail/inbox |> CALL mail.nuke()").unwrap_err();
+    let err = eval("/mail/inbox |> CALL mail.nuke()").unwrap_err();
     assert_eq!(err.code(), "unknown_procedure");
     assert!(matches!(
         err,
@@ -370,7 +370,7 @@ fn ambiguous_alias_is_structured() {
             .with_caps(Capabilities::none().select()),
     ))
     .unwrap();
-    let stmt = parse_statement("FROM /git/repo |> WHERE SEND()").unwrap();
+    let stmt = parse_statement("/git/repo |> WHERE SEND()").unwrap();
     let err = Evaluator::new(&reg).eval(&stmt).unwrap_err();
     assert_eq!(err.code(), "ambiguous_alias");
 }
@@ -379,11 +379,11 @@ fn ambiguous_alias_is_structured() {
 
 #[test]
 fn send_alias_desugars_to_call_mail_send() {
-    // `FROM /mail/inbox |> WHERE SEND()` resolves (the receiver ships SEND); the relation
+    // `/mail/inbox |> WHERE SEND()` resolves (the receiver ships SEND); the relation
     // it folds to is equivalent to the explicit `CALL mail.send` pipeline — both schema-
     // preserving relations over the same scan. Resolution proves the desugaring.
-    let aliased = eval("FROM /mail/inbox |> WHERE SEND()").unwrap();
-    let explicit = eval("FROM /mail/inbox |> CALL mail.send(to => 'a@b.c')").unwrap();
+    let aliased = eval("/mail/inbox |> WHERE SEND()").unwrap();
+    let explicit = eval("/mail/inbox |> CALL mail.send(to => 'a@b.c')").unwrap();
     assert_eq!(
         aliased.as_relation().unwrap().schema().column_names(),
         explicit.as_relation().unwrap().schema().column_names(),
@@ -442,8 +442,7 @@ fn eval_with_stdlib(src: &str) -> Result<EvalValue, EvalError> {
 /// not the late-bound `Unknown` of t07 — `UPPER` → `Text`, `LENGTH` → `Int`.
 #[test]
 fn select_over_builtin_carries_the_functions_return_type() {
-    let v =
-        eval_with_stdlib("FROM /db/users |> SELECT UPPER(name) AS u, LENGTH(name) AS n").unwrap();
+    let v = eval_with_stdlib("/db/users |> SELECT UPPER(name) AS u, LENGTH(name) AS n").unwrap();
     let schema = v.as_relation().unwrap().schema();
     assert_eq!(schema.column("u").unwrap().ty, ColumnType::Text);
     assert_eq!(schema.column("n").unwrap().ty, ColumnType::Int);
@@ -453,7 +452,7 @@ fn select_over_builtin_carries_the_functions_return_type() {
 /// `Unknown` column) once the registry is wired.
 #[test]
 fn select_over_unknown_function_is_a_structured_error() {
-    let err = eval_with_stdlib("FROM /db/users |> SELECT NOPE(name) AS x").unwrap_err();
+    let err = eval_with_stdlib("/db/users |> SELECT NOPE(name) AS x").unwrap_err();
     assert_eq!(err.code(), "unknown_function");
 }
 
@@ -462,10 +461,10 @@ fn select_over_unknown_function_is_a_structured_error() {
 #[test]
 fn aggregate_dispatch_is_context_sensitive() {
     // SUM in a SELECT → aggregate-outside-aggregate, a typed error.
-    let err = eval_with_stdlib("FROM /db/users |> SELECT SUM(id) AS s").unwrap_err();
+    let err = eval_with_stdlib("/db/users |> SELECT SUM(id) AS s").unwrap_err();
     assert_eq!(err.code(), "aggregate_outside_aggregate");
     // SUM under AGGREGATE → typed to Float, no error.
-    let v = eval_with_stdlib("FROM /db/users |> AGGREGATE SUM(id) AS s").unwrap();
+    let v = eval_with_stdlib("/db/users |> AGGREGATE SUM(id) AS s").unwrap();
     let schema = v.as_relation().unwrap().schema();
     assert_eq!(schema.column("s").unwrap().ty, ColumnType::Float);
 }
@@ -474,7 +473,193 @@ fn aggregate_dispatch_is_context_sensitive() {
 /// t07 behaviour is preserved for `Evaluator::new`.
 #[test]
 fn unwired_evaluator_keeps_functions_late_bound() {
-    let v = eval("FROM /db/users |> SELECT UPPER(name) AS u").unwrap();
+    let v = eval("/db/users |> SELECT UPPER(name) AS u").unwrap();
     let schema = v.as_relation().unwrap().schema();
     assert_eq!(schema.column("u").unwrap().ty, ColumnType::Unknown);
+}
+
+// ---- t75: plan-time static primitive type checking ------------------------
+
+/// A well-typed `WHERE` comparison type-checks at plan time and folds to a filtered relation.
+#[test]
+fn well_typed_where_checks_and_folds() {
+    let v = eval_with_stdlib("/db/users |> WHERE id == 1 |> SELECT id").unwrap();
+    assert!(v.as_relation().is_some(), "a well-typed pipeline folds");
+}
+
+/// A mismatched comparison (`name` is `Text`, compared to an `Int` literal) is a structured
+/// **plan-time** error — surfaced from the pure fold, before any effect/relation is built.
+#[test]
+fn mismatched_where_comparison_is_a_plan_time_error() {
+    let err = eval_with_stdlib("/db/users |> WHERE name == 1").unwrap_err();
+    assert_eq!(err.code(), "incomparable_types");
+    assert!(matches!(
+        err,
+        EvalError::Type(qfs_types::TypeError::IncomparableTypes { .. })
+    ));
+}
+
+/// A built-in handed a statically-wrong argument type (`UPPER` of the `Int` column `id`) is a
+/// structured plan-time error, not a runtime surprise.
+#[test]
+fn builtin_bad_arg_type_in_where_is_a_plan_time_error() {
+    let err = eval_with_stdlib("/db/users |> WHERE UPPER(id) == 'x'").unwrap_err();
+    assert_eq!(err.code(), "fn_type");
+}
+
+/// A type-failing plan **never reaches commit**: `COMMIT REMOVE … WHERE name == 1` compares a
+/// `Text` key column to an `Int`, so evaluation fails at plan time and the `PanicApplier` (which
+/// would fire on any I/O) is never reached — zero effects applied.
+#[test]
+fn type_failing_plan_never_reaches_commit() {
+    let err = eval_with_stdlib("COMMIT REMOVE /db/users WHERE name == 1").unwrap_err();
+    assert_eq!(err.code(), "incomparable_types");
+    // The same REMOVE with a correctly-typed key plans (and would commit) cleanly.
+    let plan = eval_with_stdlib("REMOVE /db/users WHERE id == 1")
+        .unwrap()
+        .as_plan()
+        .cloned()
+        .unwrap();
+    assert_eq!(plan.nodes()[0].kind, EffectKind::Remove);
+}
+
+// ---- LET binding evaluation (M6, ticket t60) ------------------------------
+
+/// A `LET`-bound name substitutes its folded relation in the body: the bound scan's real
+/// schema threads through the body's projection (the `id` column keeps its `Int` type — an
+/// empty/late-bound schema would not), proving the binding is the *same* relation, reused.
+#[test]
+fn let_substitutes_bound_relation_with_its_schema() {
+    let v = eval(
+        "LET u = /db/users\n\
+         u |> SELECT id, name",
+    )
+    .unwrap();
+    let rel = v
+        .as_relation()
+        .expect("a LET program ending in a query is a relation");
+    assert!(matches!(rel, PlanSource::Project { .. }));
+    let schema = rel.schema();
+    assert_eq!(
+        schema.column_names(),
+        vec!["id".to_string(), "name".to_string()]
+    );
+    assert_eq!(
+        schema.column("id").unwrap().ty,
+        ColumnType::Int,
+        "the bound relation's real schema threaded into the body"
+    );
+}
+
+/// A `LET`-bound relation flows into a set operation in the body (referenced as a source on
+/// both sides) — the binding is reusable, not single-use.
+#[test]
+fn let_bound_relation_is_reusable() {
+    let v = eval(
+        "LET u = /db/users\n\
+         u |> UNION u",
+    )
+    .unwrap();
+    assert!(matches!(v.as_relation().unwrap(), PlanSource::SetOp { .. }));
+}
+
+/// An unbound bare-identifier source fails evaluation with the structured `UnknownBinding`
+/// resolve error (resolution runs first) — never a silent empty relation.
+#[test]
+fn unbound_name_fails_evaluation() {
+    let err = eval("ghost |> SELECT id").unwrap_err();
+    assert_eq!(err.code(), "unknown_binding");
+}
+
+/// Shadowing: the innermost binding wins. The body sees `/db/users` (3 columns), not the
+/// outer `/mail/inbox` (2 columns), so `SELECT *` yields the inner relation's schema.
+#[test]
+fn shadowing_uses_the_innermost_binding() {
+    let v = eval(
+        "LET x = /mail/inbox\n\
+         LET x = /db/users\n\
+         x |> SELECT *",
+    )
+    .unwrap();
+    let schema = v.as_relation().unwrap().schema();
+    assert_eq!(
+        schema.columns.len(),
+        3,
+        "the inner /db/users binding (3 cols) shadows the outer /mail/inbox (2 cols)"
+    );
+}
+
+// ---- TRANSACTION block (M6, ticket t62): reversible-only + commit-point ordering ----
+
+/// A transaction of two reversible effects lowers to ONE plan whose nodes carry a deterministic
+/// commit-point ordering — the block's source order, recovered by `topo_order`.
+#[test]
+fn transaction_of_reversible_effects_plans_with_source_order() {
+    let plan = eval(
+        "TRANSACTION { \
+           UPSERT INTO /db/users VALUES (1, 'a', true); \
+           INSERT INTO /db/users VALUES (2, 'b', false) \
+         }",
+    )
+    .unwrap()
+    .as_plan()
+    .cloned()
+    .unwrap();
+    assert_eq!(plan.nodes().len(), 2, "two effect nodes, one per member");
+    assert!(
+        !plan.is_irreversible(),
+        "an all-UPSERT/INSERT block is reversible"
+    );
+    plan.validate()
+        .expect("a sequenced transaction is a valid DAG");
+    // Commit-point ordering: the topo walk yields the members in source order (the first
+    // UPSERT before the second INSERT), because `then` made the second depend on the first.
+    let order = qfs_plan::topo_order(&plan).expect("acyclic");
+    let kinds: Vec<&qfs_plan::EffectKind> = order
+        .iter()
+        .map(|id| &plan.node(*id).unwrap().kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![&qfs_plan::EffectKind::Upsert, &qfs_plan::EffectKind::Insert],
+        "commit-point order is the block's source order"
+    );
+    assert_eq!(
+        plan.deps().len(),
+        1,
+        "the second effect depends on the first"
+    );
+}
+
+/// An irreversible effect (`REMOVE`) inside a transaction is rejected at EVAL time with the
+/// structured `IrreversibleInTransaction` error — before anything touches the world (the
+/// `PanicApplier` is never reached, proving zero effects applied / full purity).
+#[test]
+fn irreversible_remove_in_transaction_is_rejected_at_plan_time() {
+    let err = eval(
+        "TRANSACTION { \
+           UPSERT INTO /db/users VALUES (1, 'a', true); \
+           REMOVE /db/users WHERE id == 2 \
+         }",
+    )
+    .unwrap_err();
+    assert_eq!(err.code(), "irreversible_in_transaction");
+    let EvalError::IrreversibleInTransaction { effect } = err else {
+        panic!("expected IrreversibleInTransaction, got {err:?}")
+    };
+    assert_eq!(
+        effect, "REMOVE",
+        "the offending effect is named for recovery"
+    );
+}
+
+/// The reversible-only guard fires on the per-node `irreversible` flag too, not only the inherent
+/// `REMOVE` classification — but note the canonical irreversible `CALL mail.send` lives OUTSIDE a
+/// transaction (it is not an effect statement). A transaction of only reversible writes commits
+/// atomically; the same writes plus an irreversible follow-up keep that follow-up out of the block.
+#[test]
+fn empty_transaction_is_a_reversible_empty_plan() {
+    let plan = eval("TRANSACTION { }").unwrap().as_plan().cloned().unwrap();
+    assert!(plan.nodes().is_empty(), "an empty block has no effects");
+    assert!(!plan.is_irreversible());
 }

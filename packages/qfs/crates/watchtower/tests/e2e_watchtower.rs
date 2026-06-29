@@ -23,7 +23,7 @@ use qfs_core::{
 };
 use qfs_exec::{ReadDriver, ReadRegistry};
 use qfs_pushdown::ScanNode;
-use qfs_secrets::{AccountId, CredentialKey, DriverId, InMemoryStore, Secret, Secrets};
+use qfs_secrets::{ConnectionId, CredentialKey, DriverId, InMemoryStore, Secret, Secrets};
 use qfs_server::{AuditEntry, AuditSink, Binding, ServerState, TriggerDef, WebhookDef};
 
 use qfs_watchtower::{
@@ -198,7 +198,7 @@ fn event_with(source: &str, kind: EventKind, native_id: &str, fields: &[(&str, V
 
 fn secrets_with(handle: &str, secret: &str) -> Arc<dyn Secrets> {
     let store = InMemoryStore::new();
-    let key = CredentialKey::new(DriverId::new("webhook"), AccountId::new(handle).unwrap());
+    let key = CredentialKey::new(DriverId::new("webhook"), ConnectionId::new(handle).unwrap());
     store
         .put(&key, Secret::from_string(secret.to_string()))
         .unwrap();

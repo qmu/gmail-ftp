@@ -166,7 +166,7 @@ impl<'a> Completer<'a> {
     /// Run the bounded `ls` scan for `parent` and extract the `name` column. The scan runs under
     /// [`COMPLETE_TIMEOUT`] so a slow driver cannot hang the prompt.
     fn scan_names(&self, parent: &VfsPath) -> Option<Vec<String>> {
-        let stmt_src = format!("FROM {} |> SELECT name", parent.render());
+        let stmt_src = format!("{} |> SELECT name", parent.render());
         let stmt = crate::exec::parse(&stmt_src).ok()?;
         // block_on_read builds its own current-thread runtime; bound the whole read with a
         // wall-clock guard by running it on a thread we join with a timeout. This keeps the

@@ -118,7 +118,7 @@ pub fn lower_predicate(expr: &Expr) -> Result<Predicate, LowerError> {
 }
 
 /// Lower a whole read [`Pipeline`] into a [`LogicalPlan`], threading the source schema.
-/// `source_of` maps a `FROM /driver/...` path to its [`SourceId`]; `schema_of` supplies
+/// `source_of` maps a `/driver/...` path to its [`SourceId`]; `schema_of` supplies
 /// the leaf schema (the driver's pure `describe`, supplied by the caller so this crate
 /// stays I/O-free). This is the AST → planner-IR bridge the pushdown pass runs over.
 ///
@@ -156,6 +156,13 @@ fn lower_source(
             // An inline VALUES relation has no driver source; model it as a synthetic
             // local source so the partitioner treats it as a (trivially) local leaf.
             let src = SourceId::new("(values)");
+            Ok(LogicalPlan::scan(src, Schema::empty()))
+        }
+        Source::Name(name) => {
+            // A `LET`-bound relation (M6, t60) is not a driver mount; the binding is folded
+            // upstream by the evaluator. Model it as a synthetic local source so the
+            // partitioner treats it as a local leaf with nothing to push into a driver.
+            let src = SourceId::new(format!("(let:{name})"));
             Ok(LogicalPlan::scan(src, Schema::empty()))
         }
     }
@@ -413,5 +420,8 @@ fn describe_expr(expr: &Expr) -> String {
         Expr::Between { .. } => "BETWEEN".into(),
         Expr::Like { .. } => "LIKE".into(),
         Expr::AnyOp { .. } => "ANY".into(),
+        // A lambda is a value, never a backend-pushable predicate (M6 t61) — it surfaces
+        // here only as the secret-free label of an unsupported predicate shape.
+        Expr::Lambda { .. } => "lambda".into(),
     }
 }

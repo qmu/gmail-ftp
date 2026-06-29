@@ -275,5 +275,6 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::Between { .. } => "BETWEEN",
         Expr::Like { .. } => "LIKE",
         Expr::AnyOp { .. } => "ANY",
+        Expr::Lambda { .. } => "lambda",
     }
 }

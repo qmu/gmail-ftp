@@ -6,8 +6,8 @@
           "Decode": {
             "fmt": "json",
             "span": [
-              24,
-              28
+              19,
+              23
             ]
           }
         },
@@ -17,8 +17,8 @@
             "args": [],
             "driver": "git",
             "span": [
-              32,
-              46
+              27,
+              41
             ]
           }
         }
@@ -39,12 +39,12 @@
             }
           ],
           "span": [
-            5,
-            13
+            0,
+            8
           ]
         }
       }
     }
   },
-  "source": "FROM /s3/data |> DECODE json |> CALL git.merge()"
+  "source": "/s3/data |> DECODE json |> CALL git.merge()"
 }

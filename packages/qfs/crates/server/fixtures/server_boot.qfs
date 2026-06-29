@@ -17,14 +17,14 @@ CREATE JOB nightly EVERY '1h' DO REMOVE /tmp WHERE age > 7 POLICY leastpriv;
 
 # An HTTP endpoint (sugar), backed by a read query. A pure READ produces no commit plan, so it
 # needs no POLICY (the read path is separate from the COMMIT plan the policy gates).
-CREATE ENDPOINT recent ON 'GET /recent' AS FROM /mail/inbox |> LIMIT 5;
+CREATE ENDPOINT recent ON 'GET /recent' AS /mail/inbox |> LIMIT 5;
 
 # An event trigger (sugar). It INSERTs, so it attaches the `leastpriv` POLICY.
 CREATE TRIGGER notify ON inbox DO INSERT INTO /log VALUES ('fired') POLICY leastpriv;
 
 # A view and a materialized view (sugar).
-CREATE VIEW recent_view AS FROM /mail/inbox;
-CREATE MATERIALIZED VIEW cached_view AS FROM /mail/inbox;
+CREATE VIEW recent_view AS /mail/inbox;
+CREATE MATERIALIZED VIEW cached_view AS /mail/inbox;
 
 # A webhook route (sugar).
 CREATE WEBHOOK inbound ON '/hooks/x';

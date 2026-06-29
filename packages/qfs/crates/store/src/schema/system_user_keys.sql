@@ -1,0 +1,14 @@
+-- System DB — migration #11 (t80, roadmap M5 — decision U / §4.5): the member PUBLIC KEY column on
+-- `users`, registering each human's per-recipient (E2E) keypair public half.
+--
+-- APPEND-ONLY: migrations #1–#10 are FROZEN (the checksum guard forbids editing a shipped migration);
+-- this column ships as a NEW version that ALTERs the table forward. ALTER runs exactly once (the
+-- migration runner records the applied version), so it never collides with itself.
+--
+-- For a HIGH-SENSITIVITY connection, the data-key (DEK) is wrapped PER RECIPIENT to a member's PUBLIC
+-- key (ECDH, `qfs_oauth::wrap_dek_to_recipient`) so only that member — holding the matching PRIVATE
+-- key CLIENT-SIDE — can unwrap it, and NOT the server at rest (the E2E property, §4.5 threat 3). This
+-- column stores ONLY the public half (uncompressed SEC1 P-256 bytes, hex-encoded). It is NOT a
+-- secret: a public key is publishable metadata. The matching private key NEVER touches the server —
+-- it stays with the member. NULL until the member registers a recipient keypair (`identity register-key`).
+ALTER TABLE users ADD COLUMN public_key TEXT;
