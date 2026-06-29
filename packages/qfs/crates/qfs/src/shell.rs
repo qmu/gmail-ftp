@@ -296,6 +296,23 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
             ))),
         );
     }
+    // Cloud sources whose reads fundamentally need a live OAuth/credentialed account (mail, drive,
+    // analytics, object stores) have no offline read. Register an honest "connect your account" read
+    // facet for each so a fresh-user `FROM /mail/...` gets an ACTIONABLE error instead of the
+    // internal-sounding `unknown_source` (t5). The real networked read (t6/t7) registers over this
+    // for a credentialed operator. Each reason is a stable, secret-free `&'static str`.
+    for (source, reason) in [
+        ("mail", "connect a Google account to read mail — run `qfs identity signup <email>`, then `qfs connection add gmail` (gmail reads are not available without an authenticated account)"),
+        ("drive", "connect a Google account to read Drive — run `qfs identity signup <email>`, then `qfs connection add gdrive`"),
+        ("ga", "connect a Google Analytics account to read it — run `qfs identity signup <email>`, then `qfs connection add ga`"),
+        ("s3", "connect AWS credentials to read S3 — run `qfs connection add s3` (S3 reads need a credentialed bucket)"),
+        ("r2", "connect Cloudflare R2 credentials to read it — run `qfs connection add r2`"),
+    ] {
+        reads = reads.with(
+            DriverId::new(source),
+            Arc::new(crate::read_facets::ConnectAccountReadDriver::new(reason)),
+        );
+    }
     (engine, reads, safety_mode)
 }
 

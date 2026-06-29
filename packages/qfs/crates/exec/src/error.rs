@@ -169,6 +169,13 @@ impl ExecError {
             | CfsError::UnknownCodec(_)
             | CfsError::UnknownProcedure(_) => ErrorKind::Capability,
             CfsError::Parse => ErrorKind::Parse,
+            // A read facet that needs a connected account fails with an actionable "connect …" path
+            // error — that is a CAPABILITY denial (exit 3: "this source is not available here yet"),
+            // not a usage/syntax error (exit 2), so an agent connects rather than rewriting the
+            // query. A genuinely malformed path (empty / not absolute) stays usage.
+            CfsError::InvalidPath { reason, .. } if reason.starts_with("connect ") => {
+                ErrorKind::Capability
+            }
             CfsError::InvalidPath { .. } => ErrorKind::Usage,
             CfsError::Decode { .. } | CfsError::Encode { .. } => ErrorKind::Internal,
             CfsError::DuplicateRegistration(_) | CfsError::NotImplemented { .. } => {

@@ -165,6 +165,35 @@ impl ReadDriver for SqlReadDriver {
 /// optimization, mirroring the SQL facet). Generous enough for ordinary histories.
 const GIT_READ_CAP: usize = 10_000;
 
+/// An honest read facet for a cloud source whose reads fundamentally need a live, authenticated
+/// account (mail / drive / analytics / object stores). It always fails with a clear, actionable
+/// reason — "connect your account" — instead of leaving the source UNREGISTERED, which surfaces the
+/// internal-sounding `unknown_source` ("no read driver registered") to a fresh user (the t5 honesty
+/// fix). When the real networked read facet lands (t6/t7) it is registered over this one for a
+/// credentialed operator; until then every reader gets the same actionable nudge, never empty rows.
+pub struct ConnectAccountReadDriver {
+    reason: &'static str,
+}
+
+impl ConnectAccountReadDriver {
+    /// Build the facet with a service-specific actionable `reason` (a stable `&'static str` that
+    /// the executor renders as the error message — secret-free, machine-legible).
+    #[must_use]
+    pub fn new(reason: &'static str) -> Self {
+        Self { reason }
+    }
+}
+
+#[async_trait::async_trait]
+impl ReadDriver for ConnectAccountReadDriver {
+    async fn scan(&self, scan: &ScanNode) -> Result<RowBatch, CfsError> {
+        Err(CfsError::InvalidPath {
+            path: scan.path.clone(),
+            reason: self.reason,
+        })
+    }
+}
+
 /// Build a [`RowBatch`] from typed DTO rows via their `schema()` + `to_row()` (the git relational
 /// nodes: `commits`/`changes`/`refs`/`tags`/`reflog`/`blame`).
 fn dto_batch<T>(schema: Schema, rows: &[T], to_row: impl Fn(&T) -> Row) -> RowBatch {
@@ -324,6 +353,25 @@ mod tests {
         let filtered = read.scan(&scan).await.unwrap();
         assert_eq!(filtered.rows.len(), 2, "WHERE total>100 keeps bob + carol");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn connect_account_facet_errors_actionably_not_unknown_source() {
+        // A cloud source with no offline read returns an ACTIONABLE error (carrying the connect
+        // hint) rather than leaving the source unregistered (the internal-sounding unknown_source).
+        let facet =
+            ConnectAccountReadDriver::new("connect a Google account to read mail — run signup");
+        let err = facet.scan(&scan_for("/mail/inbox")).await.unwrap_err();
+        match err {
+            CfsError::InvalidPath { reason, path } => {
+                assert!(
+                    reason.contains("connect"),
+                    "actionable connect hint: {reason}"
+                );
+                assert_eq!(path, "/mail/inbox");
+            }
+            other => panic!("expected an actionable InvalidPath, got {other:?}"),
+        }
     }
 
     #[tokio::test]
