@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: bugfix
 layer: [UX, Infrastructure]
 effort: 4h
-commit_hash:
+commit_hash: 9acb053
 category: Changed
 depends_on: []
 ---
