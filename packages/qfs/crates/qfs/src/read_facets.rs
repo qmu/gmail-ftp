@@ -27,6 +27,7 @@ use std::sync::Arc;
 use qfs_core::{CfsError, Driver, Path, Row, RowBatch, Schema};
 use qfs_driver_git::{blobfs, relational, GitDriver, GitNode, GitPath};
 use qfs_driver_github::GitHubClient;
+use qfs_driver_gmail::GmailClient;
 use qfs_driver_slack::SlackClient;
 use qfs_driver_sql::{QuerySpec, SqlDriver};
 use qfs_exec::ReadDriver;
@@ -190,6 +191,37 @@ impl ReadDriver for ConnectAccountReadDriver {
         Err(CfsError::InvalidPath {
             path: scan.path.clone(),
             reason: self.reason,
+        })
+    }
+}
+
+/// The Gmail read facet (t7): adapts [`qfs_driver_gmail::read_rows`] (parse the `/mail/<label>` or
+/// `/mail/drafts` path → search the label's message ids → fetch each into the canonical
+/// `MailMessage` rows) to the async [`ReadDriver`] seam — the structural twin of [`GitHubReadDriver`]
+/// over the credentialed [`GmailClient`]. Network: the composition is proven hermetically by
+/// driver-gmail's mock-client test; a real read needs a live OAuth account (registered over the
+/// connect-account fallback only when the operator is connected and the bind gate passes).
+pub struct GmailReadDriver {
+    client: Arc<dyn GmailClient>,
+}
+
+impl GmailReadDriver {
+    /// Build the read adapter over an injected credentialed [`GmailClient`].
+    #[must_use]
+    pub fn new(client: Arc<dyn GmailClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait]
+impl ReadDriver for GmailReadDriver {
+    async fn scan(&self, scan: &ScanNode) -> Result<RowBatch, CfsError> {
+        let predicate = scan.pushed.filter.as_ref();
+        qfs_driver_gmail::read_rows(self.client.as_ref(), &scan.path, predicate).map_err(|e| {
+            CfsError::InvalidPath {
+                path: scan.path.clone(),
+                reason: e.code(),
+            }
         })
     }
 }

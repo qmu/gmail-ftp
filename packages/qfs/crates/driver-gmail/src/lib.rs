@@ -59,6 +59,7 @@ mod error;
 pub mod mime;
 mod path;
 pub mod query;
+pub mod read;
 mod schema;
 
 use std::sync::Arc;
@@ -79,6 +80,7 @@ pub use effect::{
 };
 pub use error::GmailError;
 pub use path::{MailPath, DRAFTS_SEGMENT, MOUNT};
+pub use read::read_rows;
 pub use schema::{Attachment, AttachmentMeta, MailDraft, MailMessage};
 
 /// The least-privilege **modify** scope — list/search/read, trash, and label modify. NOT the
