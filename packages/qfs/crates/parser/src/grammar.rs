@@ -31,10 +31,10 @@ use winnow::token::any;
 use winnow::{ModalResult, Parser};
 
 use crate::ast::{
-    Assignment, CallRef, Codec, DdlKind, EffectBody, EffectStmt, EffectVerb, Expr, FnRef, Ident,
-    JoinOp, Literal, NamedArg, Op, OrderKey, Param, PathExpr, PathRef, PathSegment, PipeOp,
-    Pipeline, PlanWrap, PolicyRuleAst, PolicySubjectAst, Projection, ServerDdl, Source, Statement,
-    TypeAnn, Values,
+    Assignment, CallRef, Codec, ConnectionDeclAst, DdlKind, EffectBody, EffectStmt, EffectVerb,
+    Expr, FnRef, Ident, JoinOp, Literal, NamedArg, Op, OrderKey, Param, PathExpr, PathRef,
+    PathSegment, PipeOp, Pipeline, PlanWrap, PolicyRuleAst, PolicySubjectAst, Projection,
+    ServerDdl, Source, Statement, TypeAnn, Values,
 };
 use crate::error::{ParseError, ParseErrorCode};
 
@@ -1137,7 +1137,33 @@ fn server_ddl(input: &mut Stream<'_>) -> ModalResult<ServerDdl> {
     let mut do_plan = None;
     let mut policy_rules: Vec<PolicyRuleAst> = Vec::new();
     let mut policy_attach: Option<String> = None;
+    let mut driver: Option<String> = None;
+    let mut at_locator: Option<String> = None;
+    let mut secret_ref: Option<String> = None;
     loop {
+        // `CREATE CONNECTION <name> DRIVER <driver> [AT '<loc>'] [SECRET '<ref>']` — the
+        // connection-declaration clauses (contextual idents, no frozen keyword). Probed first for
+        // the CONNECTION form so `DRIVER`/`SECRET` are consumed before the generic clause probes.
+        if matches!(kind, DdlKind::Connection) {
+            if driver.is_none() {
+                if let Some(v) = opt(conn_driver_clause).parse_next(input)? {
+                    driver = Some(v);
+                    continue;
+                }
+            }
+            if at_locator.is_none() {
+                if let Some(v) = opt(conn_at_clause).parse_next(input)? {
+                    at_locator = Some(v);
+                    continue;
+                }
+            }
+            if secret_ref.is_none() {
+                if let Some(v) = opt(conn_secret_clause).parse_next(input)? {
+                    secret_ref = Some(v);
+                    continue;
+                }
+            }
+        }
         // The `POLICY <name>` ATTACHMENT clause (t35) on a binding DDL — the policy a fired
         // plan commits under. `POLICY` is a frozen keyword (no new keyword). Only on a
         // non-POLICY DDL (for `CREATE POLICY` the leading POLICY is the kind, not an attach).
@@ -1205,6 +1231,13 @@ fn server_ddl(input: &mut Stream<'_>) -> ModalResult<ServerDdl> {
         on,
         policy_rules,
         policy: policy_attach,
+        connection: (driver.is_some() || at_locator.is_some() || secret_ref.is_some()).then(|| {
+            Box::new(ConnectionDeclAst {
+                driver,
+                at_locator,
+                secret_ref,
+            })
+        }),
     })
 }
 
@@ -1359,7 +1392,38 @@ fn ddl_kind(input: &mut Stream<'_>) -> ModalResult<DdlKind> {
         kw(Keyword::View).map(|_| DdlKind::View),
         kw(Keyword::Webhook).map(|_| DdlKind::Webhook),
         kw(Keyword::Policy).map(|_| DdlKind::Policy),
+        // `CONNECTION` is a contextual ident (no frozen keyword), like `materialized`.
+        word("CONNECTION").map(|_| DdlKind::Connection),
     ))
+    .parse_next(input)
+}
+
+/// `DRIVER <driver>` — the connection's driver kind (a bare ident). `DRIVER` is a contextual ident.
+fn conn_driver_clause(input: &mut Stream<'_>) -> ModalResult<String> {
+    let _ = word("DRIVER").parse_next(input)?;
+    ident(input).map(|s| s.node)
+}
+
+/// `AT '<locator>'` — the connection's non-secret location, a quoted string (consistent with the
+/// rest of the grammar's literal locators). `AT` is a contextual ident.
+fn conn_at_clause(input: &mut Stream<'_>) -> ModalResult<String> {
+    let _ = word("AT").parse_next(input)?;
+    string_value(input)
+}
+
+/// `SECRET '<ref>'` — the connection's secret REFERENCE (`env:<VAR>` / `vault:<path>`), a quoted
+/// string. `SECRET` is a contextual ident; the value is a reference, never an inline secret.
+fn conn_secret_clause(input: &mut Stream<'_>) -> ModalResult<String> {
+    let _ = word("SECRET").parse_next(input)?;
+    string_value(input)
+}
+
+/// A single string-literal token's text (the `'…'` body).
+fn string_value(input: &mut Stream<'_>) -> ModalResult<String> {
+    any.verify_map(|t: Spanned<Token>| match t.node {
+        Token::Str(s) => Some(s),
+        _ => None,
+    })
     .parse_next(input)
 }
 
@@ -1380,6 +1444,7 @@ fn ddl_kind_segment(kind: DdlKind) -> &'static str {
         DdlKind::MaterializedView => "materialized_views",
         DdlKind::Webhook => "webhooks",
         DdlKind::Policy => "policies",
+        DdlKind::Connection => "connections",
     }
 }
 

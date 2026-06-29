@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: enhancement
 layer: [Domain]
 effort:
-commit_hash:
+commit_hash: 6d52bce
 category: Added
 depends_on: [20260630004110-design-connection-declaration-grammar.md]
 ---

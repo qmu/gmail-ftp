@@ -344,6 +344,29 @@ pub struct ServerDdl {
     /// `CREATE POLICY` statement itself.
     #[serde(default)]
     pub policy: Option<String>,
+    /// The `CREATE CONNECTION` clauses (`DRIVER`/`AT`/`SECRET`), present only for the `Connection`
+    /// kind. **Boxed** so the rare connection form doesn't widen every parsed `Statement` (the
+    /// `large_enum_variant` discipline). `None` for every non-CONNECTION DDL.
+    #[serde(default)]
+    pub connection: Option<Box<ConnectionDeclAst>>,
+}
+
+/// The clauses of a `CREATE CONNECTION <name> DRIVER <driver> [AT '<loc>'] [SECRET '<ref>']`
+/// declaration — the in-language replacement for the `QFS_SQL_*` / `QFS_GIT_*` env-var alias
+/// convention. A shape-only AST node (the driver→path-family map + secret resolution live
+/// downstream); `CONNECTION`/`DRIVER`/`SECRET` are contextual idents, so this adds NO frozen keyword.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionDeclAst {
+    /// `DRIVER <driver>` — the driver kind (`sqlite`/`postgres`/`mysql`/`git`/`gmail`/…) that
+    /// decides which path family the connection mounts under. `None` only in the permissive parse;
+    /// a real declaration requires it (validated downstream).
+    pub driver: Option<String>,
+    /// `AT '<locator>'` — the non-secret location (a file path / URL / bucket / base URL). `None`
+    /// when the driver's locator is implicit (e.g. Gmail).
+    pub at_locator: Option<String>,
+    /// `SECRET '<ref>'` — a secret **reference** (`env:<VAR>` / `vault:<path>`), never an inline
+    /// value (a literal is rejected downstream). `None` when the connection needs no secret.
+    pub secret_ref: Option<String>,
 }
 
 /// One `ALLOW`/`DENY` rule clause inside a `CREATE POLICY` form (t35). A shape-only AST node —
@@ -406,6 +429,10 @@ pub enum DdlKind {
     Webhook,
     /// `CREATE POLICY`
     Policy,
+    /// `CREATE CONNECTION` — an in-language connection declaration (the env-var alias replacement).
+    /// `CONNECTION` is parsed as a contextual UPPERCASE ident (the `AT` lesson, like `MATERIALIZED`)
+    /// so it adds NO frozen keyword.
+    Connection,
 }
 
 /// An expression (RFD §3 operators, frozen). The boolean structure (`AND`/`OR`/

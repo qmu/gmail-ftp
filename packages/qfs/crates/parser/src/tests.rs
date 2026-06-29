@@ -426,6 +426,47 @@ fn ddl_endpoint_as_query() {
 }
 
 #[test]
+fn ddl_connection_driver_at_and_secret() {
+    // The headline form: a postgres connection pointing at a URL, with a SECRET *reference*.
+    let stmt = parse_ok(
+        "CREATE CONNECTION analytics DRIVER postgres AT 'postgres://db/analytics' SECRET 'env:PG_PASSWORD'",
+    );
+    let Statement::Ddl(d) = stmt else {
+        panic!("expected Ddl")
+    };
+    assert_eq!(d.kind, DdlKind::Connection);
+    assert_eq!(d.name, "analytics");
+    assert_eq!(d.target, vec!["server", "connections", "analytics"]);
+    let c = d.connection.as_deref().expect("connection clauses");
+    assert_eq!(c.driver.as_deref(), Some("postgres"));
+    assert_eq!(c.at_locator.as_deref(), Some("postgres://db/analytics"));
+    assert_eq!(c.secret_ref.as_deref(), Some("env:PG_PASSWORD"));
+}
+
+#[test]
+fn ddl_connection_local_needs_no_secret() {
+    // A local SQLite file: a locator, no secret.
+    let stmt = parse_ok("CREATE CONNECTION orders DRIVER sqlite AT '/data/orders.db'");
+    let Statement::Ddl(d) = stmt else { panic!() };
+    assert_eq!(d.kind, DdlKind::Connection);
+    let c = d.connection.as_deref().expect("connection clauses");
+    assert_eq!(c.driver.as_deref(), Some("sqlite"));
+    assert_eq!(c.at_locator.as_deref(), Some("/data/orders.db"));
+    assert!(c.secret_ref.is_none());
+}
+
+#[test]
+fn ddl_connection_gmail_needs_no_locator() {
+    // Gmail's locator is implicit: a SECRET reference, no AT.
+    let stmt = parse_ok("CREATE CONNECTION work DRIVER gmail SECRET 'vault:gmail/work'");
+    let Statement::Ddl(d) = stmt else { panic!() };
+    let c = d.connection.as_deref().expect("connection clauses");
+    assert_eq!(c.driver.as_deref(), Some("gmail"));
+    assert!(c.at_locator.is_none());
+    assert_eq!(c.secret_ref.as_deref(), Some("vault:gmail/work"));
+}
+
+#[test]
 fn ddl_trigger_do_plan() {
     // The DO clause holds an effect-plan (a statement). A trigger that archives a
     // matched row on an inbox event:
@@ -639,6 +680,7 @@ fn closed_core_variant_counts_are_locked() {
             on: None,
             policy_rules: vec![],
             policy: None,
+            connection: None,
         }),
         Statement::Plan(PlanWrap {
             commit: false,
