@@ -108,6 +108,12 @@ Real gaps the doc-honesty pass surfaced; the guides already avoid claiming these
 - **`/cf` and `/rest` mounts** — the driver crates exist but are not mounted in the CLI.
 - **Pushdown depth** — gmail `q=` `WHERE` pushdown; `/sql` projection/`ORDER`/`LIMIT` and `/git`
   ref-range/`LIMIT` pushdown (today only `WHERE`/the ref is native, the rest is the engine residual).
+- **Plain-language onboarding** — the first-run and credential docs are too jargon-heavy to land
+  with a normal user (e.g. `install.sh` and `connections.md` explain `QFS_PASSPHRASE` as "the master
+  passphrase that unlocks your local credential vault (argon2id KDF; NOT a service credential)").
+  Rewrite the first-encounter wording in plain terms — *a password you choose that encrypts the
+  service logins you save on this machine* — and keep the crypto detail (argon2id, envelope
+  encryption) only in the dedicated "how it's stored" / threat-model sections for readers who want it.
 
 These are intentionally honest gaps, not regressions — the binary fails closed or returns a clear
 error for each, and no guide example depends on them.
