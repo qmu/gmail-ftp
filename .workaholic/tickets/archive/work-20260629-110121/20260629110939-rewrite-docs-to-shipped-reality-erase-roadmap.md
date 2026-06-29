@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: housekeeping
 layer: [UX, Config]
 effort: 4h
-commit_hash:
+commit_hash: b7e32aa
 category: Changed
 depends_on: []
 ---
