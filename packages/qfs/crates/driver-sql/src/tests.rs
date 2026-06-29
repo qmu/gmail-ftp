@@ -860,22 +860,60 @@ fn path_parses_conn_schema_table_shapes() {
 }
 
 #[test]
-fn pushdown_declares_where_only_until_queryspec_grows() {
-    // The read seam's QuerySpec lowers only the WHERE into the native SELECT today; projection /
-    // ORDER BY / LIMIT / aggregate / group_by / distinct / JOIN are NOT yet threaded through it, so
-    // they are declared unpushable and stay in the engine's local residual (correctness over
-    // optimization). Each flag flips on as the QuerySpec grows.
+fn pushdown_declares_where_order_limit_until_queryspec_grows() {
+    // The read seam's QuerySpec lowers the WHERE, ORDER BY, and LIMIT into the native SELECT;
+    // projection / aggregate / group_by / distinct / JOIN are NOT yet threaded through it, so they
+    // are declared unpushable and stay in the engine's local residual (correctness over
+    // optimization). Each remaining flag flips on as the QuerySpec grows.
     let (driver, _be) = driver_over(USERS_DDL);
     let pd = driver.pushdown();
     assert!(pd.supports_where());
+    assert!(pd.supports_order());
+    assert!(pd.supports_limit());
     assert!(!pd.supports_project());
-    assert!(!pd.supports_limit());
-    assert!(!pd.supports_order());
     assert!(!pd.supports_join());
     assert!(!pd.supports_aggregate());
     assert!(!pd.supports_distinct());
     assert!(!pd.supports_group_by());
     assert!(matches!(pd, PushdownProfile::Partial { .. }));
+}
+
+#[test]
+fn limit_is_pushed_to_sql_only_when_no_residual_remains() {
+    // With a fully-pushed WHERE the native LIMIT is safe; with a residual (regex `~`, re-filtered
+    // locally) the native LIMIT is dropped so the backend does not cap the fetch *before* the local
+    // re-filter (which would under-fetch). The read facet enforces the LIMIT after re-filtering.
+    let (driver, _be) = driver_over(USERS_DDL);
+    let (schema, table) = driver.resolve_table(&Path::new("/sql/db/users")).unwrap();
+
+    let no_residual = QuerySpec::new(Vec::new())
+        .with_predicate(Predicate::Cmp(
+            ColRef::col("active"),
+            CmpOp::Eq,
+            Literal::Bool(true),
+        ))
+        .with_limit(3);
+    let r = compile(&schema, &table, &no_residual).unwrap();
+    assert!(r.residual.is_none(), "an exact `=` pushes down fully");
+    assert_eq!(
+        r.plan.limit,
+        Some(3),
+        "LIMIT is pushed when nothing is residual"
+    );
+
+    let with_residual = QuerySpec::new(Vec::new())
+        .with_predicate(Predicate::Cmp(
+            ColRef::col("name"),
+            CmpOp::Match,
+            Literal::Text("a".to_string()),
+        ))
+        .with_limit(3);
+    let r = compile(&schema, &table, &with_residual).unwrap();
+    assert!(r.residual.is_some(), "`~` regex stays residual");
+    assert_eq!(
+        r.plan.limit, None,
+        "LIMIT is NOT pushed when a residual remains (the facet applies it after re-filtering)"
+    );
 }
 
 #[test]

@@ -135,7 +135,11 @@ pub fn compile(
         projection: spec.projection.clone(),
         where_,
         order_by,
-        limit: spec.limit,
+        // Push `LIMIT` into the SQL **only** when the whole `WHERE` pushed down (no residual). With
+        // a residual, the engine re-filters after the fetch, so a native `LIMIT n` would cap the
+        // fetch *before* that filter and under-fetch (drop rows that survive the local re-check).
+        // When a residual remains the caller applies the `LIMIT` after re-filtering instead.
+        limit: if residual.is_some() { None } else { spec.limit },
         params,
     };
 

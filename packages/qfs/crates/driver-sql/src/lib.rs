@@ -104,18 +104,20 @@ impl SqlDriver {
         Self {
             registry: registry.clone(),
             applier: SqlApplier::new(registry),
-            // The read path (`execute_query` → `QuerySpec` → `compile`) lowers a `WHERE` into the
-            // native SELECT, pushing the predicate INTO the database (a non-faithfully-renderable
-            // conjunct — LIKE/regex/OR-mixing — is returned as a residual and re-filtered locally,
-            // never wrong rows). Projection / ORDER BY / LIMIT / aggregate / group_by / distinct /
-            // JOIN are NOT yet threaded through the read seam's QuerySpec, so they are declared
-            // unpushable here and stay in the local residual the engine applies (correctness over
-            // optimization; each can be turned on one flag at a time as the QuerySpec grows).
+            // The read path (`execute_query` → `QuerySpec` → `compile`) pushes the `WHERE`, the
+            // `ORDER BY`, and the `LIMIT` INTO the database's native SELECT (a non-faithfully-
+            // renderable conjunct — LIKE/regex/OR-mixing — is returned as a residual and re-filtered
+            // locally, never wrong rows; a native `LIMIT` is emitted only when nothing is residual,
+            // and the read facet enforces the pushed `LIMIT` after the local re-filter so it is
+            // always honoured exactly). Projection / aggregate / group_by / distinct / JOIN are NOT
+            // yet threaded through the QuerySpec — projection in particular changes the row shape and
+            // can strip columns a residual still needs — so they stay in the local residual the
+            // engine applies (correctness over optimization; each flips on as the QuerySpec grows).
             pushdown: PushdownProfile::Partial {
                 where_: true,
                 project: false,
-                limit: false,
-                order: false,
+                limit: true,
+                order: true,
                 join: false,
                 aggregate: false,
                 distinct: false,

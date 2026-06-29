@@ -138,9 +138,10 @@ impl ReadDriver for SqlReadDriver {
     async fn scan(&self, scan: &ScanNode) -> Result<RowBatch, CfsError> {
         let spec = query_spec_from_pushed(&scan.pushed);
         let path = Path::new(&scan.path);
-        // The rows execute_query returns carry the table's full column set (only WHERE is pushed);
-        // the typed schema comes from the driver's pure catalog `describe`, not the planner's
-        // post-pushdown `scan.schema` (the engine's residual projection narrows columns afterwards).
+        // The rows execute_query returns carry the table's full column set (WHERE/ORDER BY/LIMIT are
+        // pushed, but projection is not); the typed schema comes from the driver's pure catalog
+        // `describe`, not the planner's post-pushdown `scan.schema` (the engine's residual projection
+        // narrows columns afterwards).
         let schema = self.driver.describe(&path)?.schema;
         let (rows, residual) =
             self.driver
@@ -153,10 +154,20 @@ impl ReadDriver for SqlReadDriver {
         // The driver applied the faithfully-renderable part natively; re-filter the residual locally
         // so the rows are exactly the pushed query's result (over-returning on the pushed predicate
         // is NOT corrected by the engine — the pushed work is the driver's responsibility).
-        Ok(match residual {
+        let mut batch = match residual {
             Some(predicate) => qfs_exec::apply_residual(batch, &predicate),
             None => batch,
-        })
+        };
+        // Enforce the pushed `LIMIT` AFTER the residual re-filter. `compile` emits a native SQL
+        // `LIMIT` only when nothing is residual (else it would under-fetch); when a residual remained
+        // the backend returned the unlimited set, so the cap is applied here. A no-op when the
+        // backend already limited (it returned ≤ limit rows).
+        if let Some(limit) = scan.pushed.limit {
+            batch
+                .rows
+                .truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        }
+        Ok(batch)
     }
 }
 
