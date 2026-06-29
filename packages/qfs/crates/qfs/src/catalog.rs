@@ -33,9 +33,9 @@ pub struct DriverDoc {
     pub example_path: String,
     /// How a representative node maps onto qfs's uniform model (the archetype, RFD §5).
     pub archetype: Archetype,
-    /// The FS/SQL-shaped native-verb hint for the archetype (the agent's one-line "what does
-    /// writing here look like").
-    pub native_verbs: &'static str,
+    /// The FS/SQL-shaped native-verb hint for the representative node (the agent's one-line "what
+    /// does writing here look like"), derived from its actual capabilities.
+    pub native_verbs: String,
     /// Which universal verbs a representative node supports — rendered **explicitly**, including
     /// the unsupported ones (RFD §5: never document a capability by omission).
     pub capabilities: Capabilities,

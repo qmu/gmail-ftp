@@ -44,9 +44,11 @@ pub struct DescribeReport {
     pub path: String,
     /// How this node maps onto qfs's uniform model (Blob / Relational / Append / ObjectGraph).
     pub archetype: Archetype,
-    /// The FS/SQL-shaped native verbs this archetype answers to — the agent's one-line hint for
-    /// "what does writing against this node look like". Derived from [`archetype_hint`].
-    pub native_verbs: &'static str,
+    /// The FS/SQL-shaped native verbs **this node** answers to — the agent's one-line hint for
+    /// "what does writing against this node look like". Derived from the node's actual
+    /// [`Capabilities`] (archetype-flavored via [`node_native_verbs`]), so it can never advertise a
+    /// verb the per-path `verbs` gate rejects (e.g. a mail label shows `UPDATE`, not `INSERT`).
+    pub native_verbs: String,
     /// The node's typed columns (name + [`qfs_types::ColumnType`] + nullability), reused from the
     /// canonical [`qfs_types::Schema`] — the agent reads `columns[i].name` / `.ty` directly.
     pub columns: Vec<Column>,
@@ -75,17 +77,61 @@ impl DescribeReport {
         let NodeDesc {
             archetype, schema, ..
         } = driver.describe(path)?;
+        let verbs = driver.capabilities(path);
         Ok(Self {
             path: path.as_str().to_string(),
             archetype,
-            native_verbs: archetype_hint(archetype),
+            native_verbs: node_native_verbs(archetype, &verbs),
             columns: schema.columns,
-            verbs: driver.capabilities(path),
+            verbs,
             procedures: driver.procedures().to_vec(),
             aliases: driver.prelude().to_vec(),
             pushdown: PushdownSummary::from_profile(driver.pushdown()),
         })
     }
+}
+
+/// The per-**node** native-verb hint: the universal verbs this node actually supports (its
+/// [`Capabilities`]), rendered in a stable order with archetype flavor (an [`Archetype::AppendLog`]
+/// reads a `SELECT(tail)` and appends with `INSERT(append)`). Unlike [`archetype_hint`] this is
+/// derived from the node's real capability gate, so the hint can never claim a verb the per-path
+/// `verbs` map rejects (RFD §5: never document a capability by omission, and never advertise one by
+/// over-claim). Falls back to the archetype hint only for a node with no supported verbs.
+#[must_use]
+pub fn node_native_verbs(archetype: Archetype, caps: &Capabilities) -> String {
+    let append = matches!(archetype, Archetype::AppendLog);
+    let mut parts: Vec<&'static str> = Vec::new();
+    if caps.select {
+        parts.push(if append { "SELECT(tail)" } else { "SELECT" });
+    }
+    if caps.insert {
+        parts.push(if append { "INSERT(append)" } else { "INSERT" });
+    }
+    if caps.upsert {
+        parts.push("UPSERT");
+    }
+    if caps.update {
+        parts.push("UPDATE");
+    }
+    if caps.remove {
+        parts.push("REMOVE");
+    }
+    if caps.ls {
+        parts.push("LS");
+    }
+    if caps.cp {
+        parts.push("CP");
+    }
+    if caps.mv {
+        parts.push("MV");
+    }
+    if caps.rm {
+        parts.push("RM");
+    }
+    if parts.is_empty() {
+        return archetype_hint(archetype).to_string();
+    }
+    parts.join(" ")
 }
 
 /// The per-[`Archetype`] **native-verb hint** the agent reads (RFD §5, "Four archetypes"): the
@@ -256,7 +302,9 @@ mod tests {
 
         assert_eq!(report.path, "/fix/rel");
         assert_eq!(report.archetype, Archetype::RelationalTable);
-        assert_eq!(report.native_verbs, "SELECT JOIN INSERT UPDATE UPSERT");
+        // Derived from the node's ACTUAL caps (Select/Insert/Upsert) — not the archetype hint, so
+        // it never over-claims JOIN/UPDATE the node rejects (the t9 honesty fix).
+        assert_eq!(report.native_verbs, "SELECT INSERT UPSERT");
         assert_eq!(report.columns.len(), 2);
         assert_eq!(report.columns[0].name, "id");
         assert!(report.verbs.select && report.verbs.insert && report.verbs.upsert);
@@ -267,6 +315,34 @@ mod tests {
         assert_eq!(report.aliases[0].name, "SEND");
         assert!(report.pushdown.where_ && report.pushdown.limit);
         assert!(!report.pushdown.project);
+    }
+
+    #[test]
+    fn native_verbs_never_overclaims_caps() {
+        // An append-log LABEL node (e.g. /mail/inbox) supports relabel (UPDATE) + trash (REMOVE)
+        // but NOT INSERT — the hint must not advertise INSERT(append) (the t9 footgun: an agent
+        // reading the hint must never try a verb the per-path gate rejects).
+        let label = Capabilities::from_verbs(&[Verb::Select, Verb::Update, Verb::Remove]);
+        let hint = node_native_verbs(Archetype::AppendLog, &label);
+        assert_eq!(hint, "SELECT(tail) UPDATE REMOVE");
+        assert!(!hint.contains("INSERT"), "a label cannot be appended to");
+        // A drafts node (the real append log) DOES advertise INSERT(append).
+        let drafts =
+            Capabilities::from_verbs(&[Verb::Insert, Verb::Upsert, Verb::Select, Verb::Remove]);
+        assert_eq!(
+            node_native_verbs(Archetype::AppendLog, &drafts),
+            "SELECT(tail) INSERT(append) UPSERT REMOVE"
+        );
+        // The hint never mentions a verb the caps map does not set (the consistency guard).
+        let caps = Capabilities::from_verbs(&[Verb::Select, Verb::Update, Verb::Remove]);
+        for (verb, supported) in [
+            ("INSERT", caps.insert),
+            ("UPSERT", caps.upsert),
+            ("UPDATE", caps.update),
+        ] {
+            let mentions = node_native_verbs(Archetype::AppendLog, &caps).contains(verb);
+            assert_eq!(mentions, supported, "hint vs caps disagree on {verb}");
+        }
     }
 
     #[test]
@@ -288,7 +364,7 @@ mod tests {
         // qfs-skill golden corpus; here we assert the contract surface exists and is flat).
         assert!(json.contains("\"path\":\"/fix/rel\""));
         assert!(json.contains("\"archetype\":\"relational_table\""));
-        assert!(json.contains("\"native_verbs\":\"SELECT JOIN INSERT UPDATE UPSERT\""));
+        assert!(json.contains("\"native_verbs\":\"SELECT INSERT UPSERT\""));
         assert!(json.contains("\"pushdown\":{\"where_\":true"));
         // No vendor type / credential shape leaked: the report is schema + capabilities only.
         assert!(!json.contains("token"));
