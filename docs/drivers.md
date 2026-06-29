@@ -313,7 +313,7 @@ Codecs bridge blob ↔ relational independent of driver identity. Builtin format
 - `csv`
 - `json`
 - `jsonl`
-- `md+frontmatter`
+- `md`
 - `toml`
 - `yaml`
 

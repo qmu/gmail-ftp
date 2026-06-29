@@ -100,12 +100,9 @@ pub fn corpus() -> Vec<(&'static str, &'static [u8])> {
         // CSV: a header row plus data rows.
         ("csv", b"a,b\n1,x\n2,y\n"),
         // Markdown + frontmatter: keys become columns, body becomes content.
-        (
-            "md+frontmatter",
-            b"---\ntitle: Hello\ntag: note\n---\nThe body text.\n",
-        ),
+        ("md", b"---\ntitle: Hello\ntag: note\n---\nThe body text.\n"),
         // Markdown with no frontmatter: a single body column.
-        ("md+frontmatter", b"Just a body, no frontmatter.\n"),
+        ("md", b"Just a body, no frontmatter.\n"),
     ]
 }
 
@@ -124,7 +121,7 @@ mod tests {
     fn covers_each_builtin_format_at_least_once() {
         let covered: std::collections::BTreeSet<&str> =
             corpus().into_iter().map(|(f, _)| f).collect();
-        for fmt in ["json", "jsonl", "yaml", "toml", "csv", "md+frontmatter"] {
+        for fmt in ["json", "jsonl", "yaml", "toml", "csv", "md"] {
             assert!(covered.contains(fmt), "corpus missing format `{fmt}`");
         }
     }

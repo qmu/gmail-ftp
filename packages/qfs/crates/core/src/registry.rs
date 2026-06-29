@@ -818,7 +818,7 @@ mod tests {
     fn codec_registry_with_builtins_resolves_all_six() {
         let reg = CodecRegistry::with_builtins();
         assert_eq!(reg.len(), 6);
-        for fmt in ["json", "jsonl", "yaml", "toml", "csv", "md+frontmatter"] {
+        for fmt in ["json", "jsonl", "yaml", "toml", "csv", "md"] {
             assert_eq!(reg.resolve(fmt).unwrap().fmt(), fmt);
         }
         assert!(matches!(

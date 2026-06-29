@@ -274,13 +274,7 @@ fn markdown_malformed_frontmatter_is_structured_error() {
     let err = MarkdownFrontmatterCodec
         .decode(b"---\n: : bad yaml :\n---\nbody")
         .unwrap_err();
-    assert!(matches!(
-        err,
-        CfsError::Decode {
-            fmt: "md+frontmatter",
-            ..
-        }
-    ));
+    assert!(matches!(err, CfsError::Decode { fmt: "md", .. }));
 }
 
 // ---------------------------------------------------------------------------
@@ -468,7 +462,7 @@ fn builtin_codecs_cover_all_six_formats() {
         .iter()
         .map(|c| c.fmt().to_string())
         .collect();
-    for expected in ["json", "jsonl", "yaml", "toml", "csv", "md+frontmatter"] {
+    for expected in ["json", "jsonl", "yaml", "toml", "csv", "md"] {
         assert!(
             names.contains(&expected.to_string()),
             "missing codec {expected}"

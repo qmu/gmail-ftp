@@ -22,18 +22,19 @@ const FENCE: &str = "---";
 /// The column name the document body is mapped to.
 const BODY: &str = "body";
 
-/// The `md+frontmatter` codec.
+/// The `md` codec — markdown with optional YAML frontmatter. (The format is named `md`, the bare
+/// token the grammar accepts in `DECODE md` / `ENCODE md`; the struct keeps its descriptive name.)
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MarkdownFrontmatterCodec;
 
 impl Codec for MarkdownFrontmatterCodec {
     fn fmt(&self) -> &str {
-        "md+frontmatter"
+        "md"
     }
 
     fn decode(&self, bytes: &[u8]) -> Result<RowBatch, CfsError> {
         let text = std::str::from_utf8(bytes).map_err(|e| CfsError::Decode {
-            fmt: "md+frontmatter",
+            fmt: "md",
             detail: format!("invalid utf-8: {e}"),
         })?;
 
@@ -45,7 +46,7 @@ impl Codec for MarkdownFrontmatterCodec {
         if let Some(fm) = frontmatter {
             let parsed: serde_json::Value =
                 serde_yaml::from_str(fm).map_err(|e| CfsError::Decode {
-                    fmt: "md+frontmatter",
+                    fmt: "md",
                     detail: format!("frontmatter yaml: {e}"),
                 })?;
             if let serde_json::Value::Object(map) = parsed {
@@ -90,7 +91,7 @@ impl Codec for MarkdownFrontmatterCodec {
             let yaml =
                 serde_yaml::to_string(&serde_json::Value::Object(frontmatter)).map_err(|e| {
                     CfsError::Encode {
-                        fmt: "md+frontmatter",
+                        fmt: "md",
                         detail: e.to_string(),
                     }
                 })?;
