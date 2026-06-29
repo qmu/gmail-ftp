@@ -37,6 +37,7 @@ export default defineConfig({
           { text: 'CLI', link: '/guide/cli' },
         ],
       },
+      { text: 'Roadmap', link: '/roadmap' },
     ],
     // One shared sidebar across every page (an array, not a path-keyed object) so navigating into
     // the Cookbook doesn't hide the rest of the docs. Sections are collapsible.
@@ -70,6 +71,10 @@ export default defineConfig({
           { text: 'Interactive shell', link: '/guide/shell' },
           { text: 'Connections & credentials', link: '/guide/connections' },
         ],
+      },
+      {
+        text: 'Where qfs is going',
+        items: [{ text: 'Roadmap (proposed)', link: '/roadmap' }],
       },
       {
         text: 'Reference (generated)',
