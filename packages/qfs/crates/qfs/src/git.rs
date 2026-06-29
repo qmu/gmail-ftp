@@ -136,18 +136,33 @@ fn planning_repo(path: &Path) -> Repo {
     repo
 }
 
-/// Whether any `/git` repository is configured.
+/// Whether any `/git` repository is configured (a declared `DRIVER git` connection OR a
+/// `QFS_GIT_*` env var).
 #[must_use]
 pub fn has_connections() -> bool {
     std::env::vars().any(|(k, v)| k.starts_with(GIT_ENV_PREFIX) && !v.is_empty())
+        || crate::connections_config::declared_for("git")
+            .iter()
+            .any(|c| c.at_locator.is_some())
 }
 
 /// Build the live [`GitDriver`]: the resolver (real-ref planning repos) + the applier (real-repo
-/// CLI-backed stores), one entry per `QFS_GIT_<repo>` env var.
+/// CLI-backed stores), one entry per declared `CREATE CONNECTION … DRIVER git AT '<path>'` AND per
+/// `QFS_GIT_<repo>` env var (the deprecated fallback, which overrides a same-named declaration).
 #[must_use]
 pub fn git_driver() -> GitDriver {
     let mut resolver = RepoResolver::new();
     let mut applier = GitApplier::new();
+    // Declared connections first; an equally-named env var below then overrides.
+    for decl in crate::connections_config::declared_for("git") {
+        let Some(path) = decl.at_locator.as_deref() else {
+            continue;
+        };
+        let p = Path::new(path);
+        let repo = decl.name.to_ascii_lowercase();
+        resolver = resolver.with_repo(repo.clone(), planning_repo(p));
+        applier = applier.with_store(repo, RepoStore::at_path(p));
+    }
     for (key, path) in std::env::vars() {
         let Some(repo) = key.strip_prefix(GIT_ENV_PREFIX) else {
             continue;

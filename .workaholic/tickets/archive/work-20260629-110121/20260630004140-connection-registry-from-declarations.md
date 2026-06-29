@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: refactoring
 layer: [Infrastructure]
 effort:
-commit_hash:
+commit_hash: ecd73ed
 category: Changed
 depends_on: [20260630004120-parser-create-connection-statement.md, 20260630004130-secret-reference-resolution.md]
 ---

@@ -26,6 +26,7 @@ pub mod claude;
 pub mod clients;
 pub mod commit;
 pub mod connection;
+pub mod connections_config;
 pub mod dashboard;
 pub mod describe;
 pub mod directory;

@@ -199,6 +199,17 @@ impl SqlBackend for SqliteBackend {
 #[must_use]
 pub fn conn_registry() -> ConnRegistry {
     let mut reg = ConnRegistry::new();
+    // Declared `CREATE CONNECTION … DRIVER sqlite AT '<path>'` connections (the in-language source
+    // of truth) come FIRST; an equally-named `QFS_SQL_*` env var (the deprecated fallback below)
+    // then takes precedence on a name clash by overwriting it — keeping pre-existing setups working.
+    for decl in crate::connections_config::declared_for("sqlite") {
+        let Some(path) = decl.at_locator.as_deref() else {
+            continue;
+        };
+        if let Some(handle) = open_sqlite_handle(path) {
+            reg = reg.with(decl.name.to_ascii_lowercase(), handle);
+        }
+    }
     for (key, path) in std::env::vars() {
         let Some(conn) = key.strip_prefix(SQL_ENV_PREFIX) else {
             continue;
@@ -207,22 +218,29 @@ pub fn conn_registry() -> ConnRegistry {
             continue;
         }
         let conn = conn.to_ascii_lowercase();
-        let Ok(backend) = SqliteBackend::open(&path) else {
-            continue;
-        };
-        let backend: Arc<dyn SqlBackend> = Arc::new(backend);
-        if let Ok(handle) = ConnHandle::new(backend) {
+        if let Some(handle) = open_sqlite_handle(&path) {
             reg = reg.with(conn, handle);
         }
     }
     reg
 }
 
-/// Whether any `/sql` connection is configured — the binary only registers the sql mount + apply
-/// driver when at least one resolves (so an unconfigured `/sql` commit fails closed).
+/// Open one SQLite file into a [`ConnHandle`] (the shared open path for an env-var or a declared
+/// connection). `None` when the file cannot be opened/introspected — best-effort, never panics.
+fn open_sqlite_handle(path: &str) -> Option<ConnHandle> {
+    let backend: Arc<dyn SqlBackend> = Arc::new(SqliteBackend::open(path).ok()?);
+    ConnHandle::new(backend).ok()
+}
+
+/// Whether any `/sql` connection is configured (a declared `DRIVER sqlite` connection OR a
+/// `QFS_SQL_*` env var) — the binary only registers the sql mount + apply driver when at least one
+/// resolves (so an unconfigured `/sql` commit fails closed).
 #[must_use]
 pub fn has_connections() -> bool {
     std::env::vars().any(|(k, v)| k.starts_with(SQL_ENV_PREFIX) && !v.is_empty())
+        || crate::connections_config::declared_for("sqlite")
+            .iter()
+            .any(|c| c.at_locator.is_some())
 }
 
 /// A fresh [`SqlDriver`] over the live registry — the planning mount AND the source the apply
