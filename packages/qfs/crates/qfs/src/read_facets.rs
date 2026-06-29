@@ -25,6 +25,7 @@
 use std::sync::Arc;
 
 use qfs_core::{CfsError, Driver, Path, Row, RowBatch, Schema};
+use qfs_driver_ga::{GaDriver, QuerySpec as GaQuerySpec};
 use qfs_driver_gdrive::GDriveClient;
 use qfs_driver_git::{blobfs, relational, GitDriver, GitNode, GitPath};
 use qfs_driver_github::GitHubClient;
@@ -270,6 +271,71 @@ impl ReadDriver for DriveReadDriver {
                 reason: e.code(),
             }
         })
+    }
+}
+
+/// The Google Analytics read facet: adapts [`GaDriver::execute_query`] (parse the `/ga/<property>`
+/// path → fetch the property catalog → compile the pushed projection/`WHERE`/`ORDER BY`/`LIMIT` into
+/// one GA4 `runReport` → project the response onto its typed schema) to qfs-exec's async
+/// [`ReadDriver`] seam. GA is the two-step (catalog + report) analog of the SQL facet; the residual
+/// (a `contains`/regex GA cannot express exactly) is re-filtered locally. Hermetically proven by
+/// driver-ga's mock-client tests; a real read needs a live OAuth account.
+pub struct GaReadDriver {
+    driver: Arc<GaDriver>,
+}
+
+impl GaReadDriver {
+    /// Build the read adapter over a live [`GaDriver`] (its injected client carries the auth).
+    #[must_use]
+    pub fn new(driver: Arc<GaDriver>) -> Self {
+        Self { driver }
+    }
+}
+
+/// Translate the planner's owned [`PushedQuery`] into the GA compiler's [`GaQuerySpec`] — the pushed
+/// projection (dimension/metric names), `WHERE`, `ORDER BY`, and `LIMIT` the `runReport` runs.
+fn ga_query_spec_from_pushed(pushed: &PushedQuery) -> GaQuerySpec {
+    let projection = pushed.project.as_ref().map_or_else(Vec::new, |cols| {
+        cols.iter().map(|c| c.as_str().to_string()).collect()
+    });
+    let mut spec = GaQuerySpec::new(projection);
+    if let Some(predicate) = &pushed.filter {
+        spec = spec.with_predicate(predicate.clone());
+    }
+    for order in &pushed.order {
+        spec = spec.order_by(order.column.as_str(), order.descending);
+    }
+    if let Some(limit) = pushed.limit {
+        spec = spec.with_limit(i64::try_from(limit).unwrap_or(i64::MAX));
+    }
+    spec
+}
+
+#[async_trait::async_trait]
+impl ReadDriver for GaReadDriver {
+    async fn scan(&self, scan: &ScanNode) -> Result<RowBatch, CfsError> {
+        let spec = ga_query_spec_from_pushed(&scan.pushed);
+        let path = Path::new(&scan.path);
+        let (rows, schema, residual) =
+            self.driver
+                .execute_query(&path, &spec)
+                .map_err(|e| CfsError::InvalidPath {
+                    path: scan.path.clone(),
+                    reason: e.code(),
+                })?;
+        let batch = RowBatch::new(schema, rows);
+        let mut batch = match residual {
+            Some(predicate) => qfs_exec::apply_residual(batch, &predicate),
+            None => batch,
+        };
+        // Enforce the pushed `LIMIT` after the residual re-filter (GA's `compile` emits a native
+        // `limit` only when nothing is residual, mirroring the SQL facet — see its `scan`).
+        if let Some(limit) = scan.pushed.limit {
+            batch
+                .rows
+                .truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        }
+        Ok(batch)
     }
 }
 

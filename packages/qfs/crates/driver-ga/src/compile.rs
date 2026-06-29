@@ -299,7 +299,15 @@ pub fn compile(
         dimension_filter: group(lowered.dimension_filters),
         metric_filter: group(lowered.metric_filters),
         order_bys,
-        limit: spec.limit,
+        // Push the GA `limit` into the report ONLY when the whole `WHERE` pushed down (no residual).
+        // With a residual the engine re-filters after the fetch, so a native `limit n` would cap the
+        // report *before* that filter and under-fetch; the read facet applies the `LIMIT` after the
+        // local re-filter instead.
+        limit: if lowered.residual.is_some() {
+            None
+        } else {
+            spec.limit
+        },
     };
 
     Ok(CompileResult {

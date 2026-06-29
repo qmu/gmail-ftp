@@ -179,6 +179,57 @@ impl GaDriver {
         Ok((rows, response.sampled))
     }
 
+    /// Compile + run a relational query against a `/ga` property in one call: parse the path → fetch
+    /// the property catalog → compile to a `runReport` request (the mandatory date range + the
+    /// dimension/metric field validation live in [`compile`]) → run it → project the response onto
+    /// its typed schema. Returns the projected rows, their schema (in `dimensions then metrics`
+    /// order), and the residual the engine still re-filters locally (RFD §6). The read counterpart
+    /// of [`fetch_catalog`](Self::fetch_catalog) + [`run_report`](Self::run_report) composed.
+    ///
+    /// # Errors
+    /// [`GaError`] when the path is not a concrete property, the projection is empty, a field is
+    /// unknown, a core report carries no `date` predicate, or the client hits an auth / transport /
+    /// API failure (secret-free `code`).
+    pub fn execute_query(
+        &self,
+        path: &Path,
+        spec: &QuerySpec,
+    ) -> Result<
+        (
+            Vec<qfs_types::Row>,
+            qfs_types::Schema,
+            Option<qfs_types::Predicate>,
+        ),
+        GaError,
+    > {
+        let (property_id, realtime) = match GaPath::parse(path)? {
+            GaPath::Property { property_id } => (property_id, false),
+            GaPath::Realtime { property_id } => (property_id, true),
+            GaPath::Root => {
+                return Err(GaError::InvalidPath {
+                    path: path.as_str().to_string(),
+                    reason: "not a concrete /ga/<propertyId> report",
+                })
+            }
+        };
+        let catalog = self.fetch_catalog(&property_id)?;
+        let compiled = compile(&property_id, realtime, &catalog, spec)?;
+        let (rows, _sampled) = self.run_report(&compiled.request, &catalog)?;
+        // Project the property's full describe schema onto the requested (dimensions then metrics)
+        // column order — the order `response_to_rows` emits row values in.
+        let full = catalog.describe_schema();
+        let schema = qfs_types::Schema::new(
+            compiled
+                .request
+                .dimensions
+                .iter()
+                .chain(compiled.request.metrics.iter())
+                .filter_map(|name| full.columns.iter().find(|c| &c.name == name).cloned())
+                .collect(),
+        );
+        Ok((rows, schema, compiled.residual))
+    }
+
     /// The `SELECT`-only capability set (RFD §5): a concrete property node (core or realtime)
     /// admits `SELECT` and nothing else; the virtual root and any invalid path admit nothing.
     /// Every write verb is absent, so the parse-time gate rejects `INSERT`/`UPSERT`/`UPDATE`/

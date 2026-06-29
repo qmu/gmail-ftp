@@ -584,6 +584,50 @@ fn report_run_records_the_compiled_request_for_the_selected_property() {
     }
 }
 
+#[test]
+fn execute_query_fetches_catalog_compiles_runs_and_types_the_projected_rows() {
+    // The read facet's one-call path: parse /ga/<property> → fetch catalog → compile → runReport →
+    // project the response onto its typed (dimensions then metrics) schema.
+    let mock = Arc::new(
+        MockGaClient::new()
+            .with_catalog(fixture_catalog())
+            .with_report(ReportResponse::new(
+                vec![ReportRow::new(
+                    vec!["JP".to_string()],
+                    vec!["7".to_string()],
+                )],
+                false,
+            )),
+    );
+    let driver = GaDriver::new(mock);
+    let spec = QuerySpec::new(vec!["country".to_string(), "sessions".to_string()])
+        .with_predicate(date_between("2024-03-01", "2024-03-31"));
+    let (rows, schema, residual) = driver
+        .execute_query(&Path::new("/ga/987654321"), &spec)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        schema.column_names(),
+        vec!["country".to_string(), "sessions".to_string()],
+        "the projected schema is the requested dimensions then metrics, in order"
+    );
+    assert!(matches!(&rows[0].values[0], qfs_types::Value::Text(s) if s == "JP"));
+    assert!(
+        residual.is_none(),
+        "an exact date predicate pushes down fully"
+    );
+}
+
+#[test]
+fn execute_query_on_the_ga_root_is_a_structured_error_not_a_report() {
+    let driver = GaDriver::new(Arc::new(
+        MockGaClient::new().with_catalog(fixture_catalog()),
+    ));
+    let spec = QuerySpec::new(vec!["country".to_string()]);
+    let err = driver.execute_query(&Path::new("/ga"), &spec).unwrap_err();
+    assert_eq!(err.code(), "invalid_path");
+}
+
 // ---------------------------------------------------------------------------------------------
 // Driver surface invariants + token safety
 // ---------------------------------------------------------------------------------------------

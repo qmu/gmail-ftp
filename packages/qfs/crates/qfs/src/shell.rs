@@ -329,11 +329,11 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
             Arc::new(crate::read_facets::ConnectAccountReadDriver::new(reason)),
         );
     }
-    // Gmail + Drive real reads (t7): when a Google account is configured AND the t54 cloud bind gate
-    // passes, register the live read facet OVER the connect-account fallback, so `FROM /mail/<label>`
-    // returns real messages and `FROM /drive/...` lists a folder's children for a connected operator.
-    // Analytics (/ga) reads still need a query→report mapping and remain the honest connect-account
-    // facet (documented follow-up). Fail closed: an unconfigured/ungated operator keeps the t5 nudge.
+    // Gmail + Drive + Analytics real reads (t7): when a Google account is configured AND the t54
+    // cloud bind gate passes, register the live read facet OVER the connect-account fallback, so
+    // `FROM /mail/<label>` returns messages, `FROM /drive/...` lists a folder's children, and
+    // `FROM /ga/<property> |> select ...` runs a GA4 report for a connected operator. Fail closed:
+    // an unconfigured/ungated operator keeps the t5 connect-account nudge.
     if let Some(stack) = crate::google::live_google_stack() {
         let gmail_conn =
             crate::connection::active_connection("gmail").unwrap_or_else(|| "default".to_string());
@@ -355,6 +355,17 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
             reads = reads.with(
                 DriverId::new("drive"),
                 Arc::new(crate::read_facets::DriveReadDriver::new(client)),
+            );
+        }
+        let ga_conn =
+            crate::connection::active_connection("ga").unwrap_or_else(|| "default".to_string());
+        if crate::commit::cloud_bind_allowed("ga", &ga_conn) {
+            let client: Arc<dyn qfs_driver_ga::GaClient> =
+                Arc::new(qfs_driver_ga::GoogleApiGaClient::new(stack.api.clone()));
+            let driver = Arc::new(qfs_driver_ga::GaDriver::new(client));
+            reads = reads.with(
+                DriverId::new("ga"),
+                Arc::new(crate::read_facets::GaReadDriver::new(driver)),
             );
         }
     }
