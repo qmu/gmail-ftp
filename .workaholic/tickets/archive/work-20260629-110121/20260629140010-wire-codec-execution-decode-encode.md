@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: enhancement
 layer: [Domain, Infrastructure]
 effort:
-commit_hash:
+commit_hash: 0841112
 category: Added
 depends_on: [20260629140000-wire-local-single-file-content-read.md]
 ---
