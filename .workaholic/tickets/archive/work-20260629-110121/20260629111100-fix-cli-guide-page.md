@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: bugfix
 layer: [UX]
 effort: 0.5h
-commit_hash:
+commit_hash: 25b70fa
 category: Changed
 depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md, 20260629140120-fix-describe-verb-map-append-logs.md]
 ---

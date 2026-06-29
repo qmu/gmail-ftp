@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: bugfix
 layer: [UX]
 effort: 0.5h
-commit_hash:
+commit_hash: 25b70fa
 category: Changed
 depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md, 20260629140000-wire-local-single-file-content-read.md, 20260629140010-wire-codec-execution-decode-encode.md]
 ---

@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: bugfix
 layer: [UX]
 effort: 0.25h
-commit_hash:
+commit_hash: 25b70fa
 category: Changed
 depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md, 20260629140000-wire-local-single-file-content-read.md, 20260629140010-wire-codec-execution-decode-encode.md, 20260629140020-wire-git-read-facet-local-repo.md, 20260629140030-wire-sql-read-facet-sqlite.md]
 ---
