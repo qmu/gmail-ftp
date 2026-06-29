@@ -64,4 +64,4 @@ qfs run "insert into /mail/drafts values ('alice@example.com', 'Hi', 'Body text'
 
 When you're ready to act on real services, [add a connection](/guide/connections).
 
-**Next:** [Your first queries →](/guide/getting-started)
+**Next:** [Get started →](/guide/getting-started)

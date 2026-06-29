@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: enhancement
 layer: [UX]
 effort: 4h
-commit_hash:
+commit_hash: 7ffcf03
 category: Changed
 depends_on: [20260630010120-connect-each-service-guide.md]
 ---

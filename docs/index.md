@@ -95,5 +95,5 @@ The same engine — and the same preview-then-commit safety model — answers on
 → commit loop as tools for an AI agent, and an **embedded web dashboard** where a human approves a
 pending irreversible commit on an approval card. You learn the loop once and it works everywhere.
 
-**Next:** [Install qfs](/guide/installation) · [Your first queries](/guide/getting-started) ·
+**Next:** [Install qfs](/guide/installation) · [Get started](/guide/getting-started) ·
 [The Cookbook](/cookbook/)

@@ -46,7 +46,7 @@ export default defineConfig({
         text: 'Get started',
         items: [
           { text: 'Installation', link: '/guide/installation' },
-          { text: 'Your first queries', link: '/guide/getting-started' },
+          { text: 'Get started', link: '/guide/getting-started' },
           { text: 'Connect a service', link: '/guide/connect' },
         ],
       },

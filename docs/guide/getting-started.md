@@ -1,10 +1,11 @@
-# Your first queries
+# Get started
 
-This page walks you from zero to running real queries. Everything in the first three sections runs
+This is the end-to-end on-ramp: from zero to a local query, converting a file, querying a database,
+**joining across sources**, connecting a cloud service, and previewing then committing a change —
+each step runnable and building on the last. Everything up to *Connecting a real service* runs
 **offline with no credentials** — against your local filesystem (`/local`), the qfs system catalog
-(`/sys`), and any local SQLite database or git repository you point qfs at. Only **committing** to a
-live cloud service (the last section) needs a connection. Follow along immediately after
-[installing](/guide/installation).
+(`/sys`), and any local SQLite database or git repository you point qfs at. Follow along immediately
+after [installing](/guide/installation).
 
 ## The loop
 
@@ -125,7 +126,7 @@ qfs run "/sys/audit |> limit 3"
 
 On a fresh install the audit log is empty (`(0 row(s))`); it fills as you commit changes.
 
-### (Optional) Query a local SQLite database
+### Query a local database
 
 `/sql` reads any SQLite file you name with an env var — `QFS_SQL_<conn>=<path>`. This is offline too;
 the env var just points qfs at a local database (no credential involved):
@@ -147,6 +148,29 @@ Umbrella | 150
 The `WHERE`/`ORDER BY`/`LIMIT` push down **into** SQLite. A local git repository works the same way
 via `QFS_GIT_<repo>=<path>` and paths like `/git/<repo>/commits`. See the
 [Cookbook](/cookbook/) for more.
+
+### Join across sources
+
+This is what qfs is *for*: because every source is the same kind of path, you can `JOIN` across them
+in one statement. Both `/sql` and `/git` read offline, so this runs end to end — match author records
+in a table to the commits they wrote (set `QFS_SQL_ORDERS` and `QFS_GIT_MYREPO` first):
+
+```sh
+qfs run "/sql/orders/authors |> join /git/myrepo/commits on name == author |> select name, team, message"
+```
+
+```text
+name           | team     | message
+-------------- | -------- | ---------------
+Test <t@e.com> | platform | add feature
+Test <t@e.com> | platform | initial commit
+(2 row(s))
+```
+
+qfs pushes each side's filters down to its own service, then joins the results locally — a SQL table
+and a git repo combine as easily as two database tables. The
+[Cross-service cookbook](/cookbook/cross-service) has more, including joins that bring in `/github`
+and `/mail` once those are connected.
 
 ## 3. Preview a write
 
