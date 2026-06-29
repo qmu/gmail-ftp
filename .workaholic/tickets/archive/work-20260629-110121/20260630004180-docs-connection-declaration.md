@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: enhancement
 layer: [UX]
 effort: 4h
-commit_hash:
+commit_hash: 6eac7b9
 category: Changed
 depends_on: [20260630004150-config-and-runtime-loading.md, 20260630004170-connection-cli-alignment.md]
 ---
