@@ -107,6 +107,14 @@ folder of files:
 | `mv <a> <b>` | moving | copy, then `REMOVE <a>` |
 | `rm <file>` | deleting | `REMOVE <file>` |
 
+Two more shell builtins — `cd <dir>` and `pwd` — are *pure navigation*, not verbs at all: `cd`
+moves you around the blob namespace (and updates the `local:/…$` prompt), `pwd` prints where you are.
+They only exist in the [interactive shell](/guide/shell), where the blob namespace is mounted at
+`/local`; `cd /sql/…` or `cd /drive/…` reports `unknown_mount` because only `/local` is walkable that
+way. To reach across services you use the query language (`/sql/…`, `/git/…`, `/mail/…`), not `cd`.
+None of `ls/cd/pwd/cat/cp/mv/rm` is one-shot grammar — `qfs run "cd …"` is a parse error; they are
+shell-only conveniences.
+
 So when the [driver catalog](/drivers) lists `ls cp mv rm` for a file store, that's just a hint that
 those friendly aliases work there — underneath, it's the same `SELECT`/`UPSERT`/`REMOVE` you use
 everywhere else.
