@@ -284,6 +284,18 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
             ))),
         );
     }
+    // Git (hermetic, no network): register the in-house object-reader read facet when a repo is
+    // configured, so `FROM /git/<repo>@<ref>/commits` (and refs/tags/reflog/changes/blame + tree
+    // listings) executes against the local `.git`. Skipped (source unresolvable) when no `QFS_GIT_*`
+    // repo resolves, so it fails closed.
+    if crate::git::has_connections() {
+        reads = reads.with(
+            DriverId::new("git"),
+            Arc::new(crate::read_facets::GitReadDriver::new(Arc::new(
+                crate::git::git_driver(),
+            ))),
+        );
+    }
     (engine, reads, safety_mode)
 }
 

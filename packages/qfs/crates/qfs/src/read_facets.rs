@@ -24,7 +24,8 @@
 
 use std::sync::Arc;
 
-use qfs_core::{CfsError, Driver, Path, RowBatch};
+use qfs_core::{CfsError, Driver, Path, Row, RowBatch, Schema};
+use qfs_driver_git::{blobfs, relational, GitDriver, GitNode, GitPath};
 use qfs_driver_github::GitHubClient;
 use qfs_driver_slack::SlackClient;
 use qfs_driver_sql::{QuerySpec, SqlDriver};
@@ -158,6 +159,88 @@ impl ReadDriver for SqlReadDriver {
     }
 }
 
+/// The history-node fetch cap: relational reads (`commits`/`changes`/`blame`) need a concrete
+/// bound, so the facet fetches up to this many rows and lets the engine residual apply the real
+/// `WHERE`/`LIMIT` (the git pushdown profile declares nothing pushable — correctness over
+/// optimization, mirroring the SQL facet). Generous enough for ordinary histories.
+const GIT_READ_CAP: usize = 10_000;
+
+/// Build a [`RowBatch`] from typed DTO rows via their `schema()` + `to_row()` (the git relational
+/// nodes: `commits`/`changes`/`refs`/`tags`/`reflog`/`blame`).
+fn dto_batch<T>(schema: Schema, rows: &[T], to_row: impl Fn(&T) -> Row) -> RowBatch {
+    RowBatch::new(schema, rows.iter().map(to_row).collect())
+}
+
+/// The git read facet: adapts the in-house object reader (`relational` history nodes +
+/// `blobfs` tree/blob reads, ADR-0003 — no `gix`) to qfs-exec's async [`ReadDriver`] seam. Reads a
+/// repository's commits / changes / refs / tags / reflog / blame and versioned-tree listings at any
+/// `@<ref>` coordinate. Hermetic against a local `.git` (no network); the engine residual applies
+/// `WHERE`/projection/`LIMIT`.
+pub struct GitReadDriver {
+    driver: Arc<GitDriver>,
+}
+
+impl GitReadDriver {
+    /// Build the read adapter over a live [`GitDriver`] (its [`qfs_driver_git::RepoResolver`] maps
+    /// each `/git/<repo>` segment to a resolved repository).
+    #[must_use]
+    pub fn new(driver: Arc<GitDriver>) -> Self {
+        Self { driver }
+    }
+}
+
+#[async_trait::async_trait]
+impl ReadDriver for GitReadDriver {
+    async fn scan(&self, scan: &ScanNode) -> Result<RowBatch, CfsError> {
+        let invalid = |reason: &'static str| CfsError::InvalidPath {
+            path: scan.path.clone(),
+            reason,
+        };
+        let gp = GitPath::parse(&scan.path).map_err(|e| invalid(e.code()))?;
+        let repo = self
+            .driver
+            .repos()
+            .repo(&gp.repo)
+            .map_err(|e| invalid(e.code()))?;
+        let r = gp.reference.as_str();
+        use qfs_driver_git::{BlameRow, ChangeRow, CommitRow, RefRow, ReflogRow};
+        let batch = match &gp.node {
+            GitNode::Commits => {
+                let rows =
+                    relational::commits(repo, r, GIT_READ_CAP).map_err(|e| invalid(e.code()))?;
+                dto_batch(CommitRow::schema(), &rows, CommitRow::to_row)
+            }
+            GitNode::Changes => {
+                let rows =
+                    relational::changes(repo, r, GIT_READ_CAP).map_err(|e| invalid(e.code()))?;
+                dto_batch(ChangeRow::schema(), &rows, ChangeRow::to_row)
+            }
+            GitNode::Refs => {
+                let rows = relational::refs(repo);
+                dto_batch(RefRow::schema(), &rows, RefRow::to_row)
+            }
+            GitNode::Tags => {
+                let rows = relational::tags(repo);
+                dto_batch(RefRow::schema(), &rows, RefRow::to_row)
+            }
+            GitNode::Reflog => {
+                let rows = relational::reflog(repo, r);
+                dto_batch(ReflogRow::schema(), &rows, ReflogRow::to_row)
+            }
+            GitNode::Blame { file } => {
+                let rows =
+                    blobfs::blame(repo, r, file, GIT_READ_CAP).map_err(|e| invalid(e.code()))?;
+                dto_batch(BlameRow::schema(), &rows, BlameRow::to_row)
+            }
+            GitNode::Blob { path } => blobfs::ls(repo, r, path).map_err(|e| invalid(e.code()))?,
+            GitNode::Root => blobfs::ls(repo, r, "").map_err(|e| invalid(e.code()))?,
+            // GitNode is #[non_exhaustive]: a future node kind has no read wiring yet.
+            _ => return Err(invalid("unsupported_git_node")),
+        };
+        Ok(batch)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Hermetic adapter tests — no socket, no real credential. The happy path drives the adapter
@@ -241,6 +324,66 @@ mod tests {
         let filtered = read.scan(&scan).await.unwrap();
         assert_eq!(filtered.rows.len(), 2, "WHERE total>100 keeps bob + carol");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn git_adapter_reads_commits_refs_and_tree_hermetically() {
+        // An in-memory committed fixture (no git CLI, no network): one commit of one file, mirroring
+        // the driver-git fixture's object construction. Proves the facet's per-node dispatch +
+        // schema for commits / refs / tree listings.
+        use qfs_driver_git::{
+            serialize_tree, GitApplier, GitDriver, LooseObjectDb, ObjectDb, Repo, RepoResolver,
+            Tree, TreeEntry,
+        };
+        use qfs_driver_git::{ObjectKind, Oid};
+        let mut db = LooseObjectDb::new();
+        let blob = db.insert_object(ObjectKind::Blob, b"hello\n");
+        let tree = Tree {
+            entries: vec![TreeEntry {
+                mode: "100644".to_string(),
+                name: "a.txt".to_string(),
+                oid: blob,
+            }],
+        };
+        let tree_oid = db.insert_object(ObjectKind::Tree, &serialize_tree(&tree));
+        let commit_payload = format!(
+            "tree {}\nauthor T <t@t> 1700000000 +0000\ncommitter T <t@t> 1700000000 +0000\n\nfirst\n",
+            tree_oid.as_str()
+        );
+        let commit = db.insert_object(ObjectKind::Commit, commit_payload.as_bytes());
+        let _ = Oid::parse(commit.as_str()); // commit oid is a valid sha (sanity)
+        let mut repo = Repo::new(Arc::new(db) as Arc<dyn ObjectDb>);
+        repo.set_ref("refs/heads/main", commit.clone());
+        repo.set_ref("main", commit.clone());
+        repo.set_ref("HEAD", commit);
+        let resolver = RepoResolver::new().with_repo("r", repo);
+        let driver = GitDriver::new(resolver, GitApplier::new());
+        let read = GitReadDriver::new(Arc::new(driver));
+
+        let commits = read.scan(&scan_for("/git/r/commits")).await.unwrap();
+        assert_eq!(commits.rows.len(), 1, "one commit on HEAD");
+        assert!(commits
+            .schema
+            .columns
+            .iter()
+            .any(|c| c.name.as_str() == "message"));
+
+        let refs = read.scan(&scan_for("/git/r/refs")).await.unwrap();
+        assert!(
+            refs.rows
+                .iter()
+                .any(|row| matches!(&row.values[0], Value::Text(s) if s.contains("main"))),
+            "refs lists the main branch"
+        );
+
+        let tree_listing = read.scan(&scan_for("/git/r/")).await.unwrap();
+        assert!(
+            tree_listing
+                .rows
+                .iter()
+                .any(|row| matches!(&row.values[0], Value::Text(s) if s == "a.txt")),
+            "the HEAD tree lists a.txt"
+        );
     }
 
     #[tokio::test]
