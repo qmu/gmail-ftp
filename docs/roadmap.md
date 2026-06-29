@@ -158,3 +158,8 @@ guides; each either fails safely or returns a clear error today.
   Google sign-in; GitHub/Slack use tokens; S3/R2 use keys; SQL and git just point at a location).
   That deserves its own short "Get started" page with the exact steps per source, linked from
   everywhere — instead of one generic connections page.
+- **"Get started" should be a practical, end-to-end guide.** Today it's a short first-queries page.
+  It should grow into the overall on-ramp that walks a new user all the way to the *full* feature set
+  — run a local query, convert a file, connect a service, query a database, join across sources, and
+  preview/commit a change — each step runnable, building on the last. (The conceptual "How qfs works"
+  has moved out of *Get started* into *Using qfs*, so the on-ramp can stay hands-on.)

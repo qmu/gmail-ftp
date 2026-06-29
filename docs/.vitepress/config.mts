@@ -47,7 +47,6 @@ export default defineConfig({
         items: [
           { text: 'Installation', link: '/guide/installation' },
           { text: 'Your first queries', link: '/guide/getting-started' },
-          { text: 'How qfs works', link: '/guide/concepts' },
         ],
       },
       {
@@ -67,14 +66,12 @@ export default defineConfig({
       {
         text: 'Using qfs',
         items: [
+          { text: 'How qfs works', link: '/guide/concepts' },
           { text: 'CLI reference', link: '/guide/cli' },
           { text: 'Interactive shell', link: '/guide/shell' },
           { text: 'Connections & credentials', link: '/guide/connections' },
+          { text: 'Where qfs is going (roadmap)', link: '/roadmap' },
         ],
-      },
-      {
-        text: 'Where qfs is going',
-        items: [{ text: 'Roadmap (proposed)', link: '/roadmap' }],
       },
       {
         text: 'Reference (generated)',
