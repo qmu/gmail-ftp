@@ -329,11 +329,11 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
             Arc::new(crate::read_facets::ConnectAccountReadDriver::new(reason)),
         );
     }
-    // Gmail real read (t7): when a Google account is configured AND the t54 cloud bind gate passes,
-    // register the live Gmail read facet OVER the connect-account fallback, so `FROM /mail/<label>`
-    // returns real messages for a connected operator. Drive (/drive) and Analytics (/ga) reads need
-    // path→id resolution / a query→report mapping respectively and remain the honest connect-account
-    // facet (documented follow-ups). Fail closed: an unconfigured/ungated operator keeps the t5 nudge.
+    // Gmail + Drive real reads (t7): when a Google account is configured AND the t54 cloud bind gate
+    // passes, register the live read facet OVER the connect-account fallback, so `FROM /mail/<label>`
+    // returns real messages and `FROM /drive/...` lists a folder's children for a connected operator.
+    // Analytics (/ga) reads still need a query→report mapping and remain the honest connect-account
+    // facet (documented follow-up). Fail closed: an unconfigured/ungated operator keeps the t5 nudge.
     if let Some(stack) = crate::google::live_google_stack() {
         let gmail_conn =
             crate::connection::active_connection("gmail").unwrap_or_else(|| "default".to_string());
@@ -344,6 +344,17 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
             reads = reads.with(
                 DriverId::new("mail"),
                 Arc::new(crate::read_facets::GmailReadDriver::new(client)),
+            );
+        }
+        let drive_conn =
+            crate::connection::active_connection("gdrive").unwrap_or_else(|| "default".to_string());
+        if crate::commit::cloud_bind_allowed("gdrive", &drive_conn) {
+            let client: Arc<dyn qfs_driver_gdrive::GDriveClient> = Arc::new(
+                qfs_driver_gdrive::GoogleApiDriveClient::new(stack.api.clone()),
+            );
+            reads = reads.with(
+                DriverId::new("drive"),
+                Arc::new(crate::read_facets::DriveReadDriver::new(client)),
             );
         }
     }

@@ -25,6 +25,7 @@
 use std::sync::Arc;
 
 use qfs_core::{CfsError, Driver, Path, Row, RowBatch, Schema};
+use qfs_driver_gdrive::GDriveClient;
 use qfs_driver_git::{blobfs, relational, GitDriver, GitNode, GitPath};
 use qfs_driver_github::GitHubClient;
 use qfs_driver_gmail::GmailClient;
@@ -237,6 +238,37 @@ impl ReadDriver for GmailReadDriver {
         .map_err(|e| CfsError::InvalidPath {
             path: scan.path.clone(),
             reason: e.code(),
+        })
+    }
+}
+
+/// The Google Drive read facet: adapts [`qfs_driver_gdrive::read_rows`] (parse the `/drive/...` path
+/// → walk folder names to Drive file ids → list the resolved folder's children into `FileMeta`
+/// rows) to the async [`ReadDriver`] seam — the structural twin of [`GmailReadDriver`] over the
+/// credentialed [`GDriveClient`]. Hermetically proven by driver-gdrive's mock-client walk test; a
+/// real read needs a live OAuth account (registered over the connect-account fallback only when the
+/// operator is connected and the bind gate passes).
+pub struct DriveReadDriver {
+    client: Arc<dyn GDriveClient>,
+}
+
+impl DriveReadDriver {
+    /// Build the read adapter over an injected credentialed [`GDriveClient`].
+    #[must_use]
+    pub fn new(client: Arc<dyn GDriveClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait]
+impl ReadDriver for DriveReadDriver {
+    async fn scan(&self, scan: &ScanNode) -> Result<RowBatch, CfsError> {
+        let predicate = scan.pushed.filter.as_ref();
+        qfs_driver_gdrive::read_rows(self.client.as_ref(), &scan.path, predicate).map_err(|e| {
+            CfsError::InvalidPath {
+                path: scan.path.clone(),
+                reason: e.code(),
+            }
         })
     }
 }

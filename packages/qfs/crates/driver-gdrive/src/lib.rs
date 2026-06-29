@@ -91,7 +91,7 @@ pub use effect::{
 pub use error::DriveError;
 pub use export::{default_export_target, ExportTarget};
 pub use path::{DrivePath, MOUNT, MY_SEGMENT, SHARED_SEGMENT};
-pub use read::{decode_body, plan_read, ReadPlan};
+pub use read::{decode_body, plan_read, read_rows, ReadPlan};
 pub use schema::{FileMeta, Revision, SharedDrive, FOLDER_MIME, GOOGLE_NATIVE_PREFIX};
 
 /// The least-privilege Drive scope — read/write file content + metadata the driver creates and
