@@ -114,50 +114,32 @@ one-command migration that prints the equivalent `CREATE CONNECTION` lines for y
 
 ## Near-term backlog 🧭 — known gaps to close
 
-These are honest gaps the documentation cycle uncovered. None of them is claimed to work in the
-guides; each either fails safely or returns a clear error today.
+A batch of these just shipped (see *Just shipped from this backlog* below); what still remains:
 
-- **Read Google Drive and Google Analytics for real.** Connecting the account already works, but the
-  *read* isn't wired: Google Drive needs to translate a folder *path* into Drive's internal folder
-  IDs, and Google Analytics needs to turn a query into one of its report requests (analytics returns
-  pre-aggregated metrics, not a plain table). Until then both return the "connect your account" error
-  even when connected. *(Also: `/ga` is a cryptic name — it should be spelled out, or renamed to
-  `/analytics`.)*
-- **Read a git repo as it was in the past.** Reading a repository's history and its *latest* file
-  tree works; reading the tree (or a single file's contents) **as of an older commit or tag**
-  (`/git/app@v1.2/…`) does not yet — it currently shows the latest version. Time-travel reads are a
-  follow-up.
-- **Markdown as a file format.** The format converters cover JSON, JSONL, YAML, TOML, and CSV;
-  Markdown-with-front-matter exists in the code but isn't wired into that set yet, so `… encode md`
-  errors.
 - **Two drivers aren't mounted.** A Cloudflare driver and a generic HTTP/REST driver exist in the
-  code but aren't reachable from the CLI as paths.
-- **Push more work into the source.** Sources do *some* of the query themselves for speed: a SQL
-  database runs the `WHERE`, git uses the commit you named. The rest (column selection, sorting,
-  limits, Gmail's search filters) is still done by qfs after fetching everything — fine for
-  correctness, slower than letting the source do it. Worth deepening over time.
+  code but aren't reachable from the CLI as paths. Both need a per-connection config + credential
+  surface, so they're best landed **on top of the `CREATE CONNECTION` model** above rather than a
+  throwaway config of their own.
+- **Spell out `/ga`.** Reading `/ga/<property>` works now, but `/ga` is a cryptic mount name — it
+  should be spelled out or aliased to `/analytics`, as a deliberate, deprecation-guarded change to
+  the (versioned) path surface.
+- **Push even more into the source.** A SQL backend now runs the `WHERE`/`ORDER BY`/`LIMIT`, Gmail
+  runs its `q=` search, and Google Analytics runs the whole `runReport`. Still done locally: SQL/GA
+  **column projection** (it changes the row shape vs. the described schema and can strip a column a
+  residual still needs), plus cross-source aggregates and joins. Worth deepening over time.
 
-### Onboarding & polish 🧭
+### Just shipped from this backlog ✅
 
-- **Plain-language onboarding.** The first-run and credential text is too jargon-heavy for a normal
-  user — e.g. `QFS_PASSPHRASE` is described as "the master passphrase that unlocks your local
-  credential vault (argon2id KDF; NOT a service credential)." Rewrite it as plain English — *a
-  password you choose that encrypts the service logins you save on this machine* — and leave the
-  cryptography detail to a "how it's stored" section for those who want it.
-- **Color in the terminal.** Command output is all one color and hard to scan. Add color to table
-  headers, previews, the irreversible-action marker, and errors — only when writing to a terminal,
-  and honoring the standard `NO_COLOR` / a `--no-color` flag.
-- **Let the first step succeed.** The "next steps" after install push the reader toward a *cloud*
-  command (`qfs describe /mail/drafts`, or connecting an account with the passphrase setup) before
-  they've done anything that works. A new user with no account hits a wall and leaves. The first step
-  should be a **local** command that returns real output (list a folder, or convert a file) — the
-  win comes first; connecting an account comes after.
-- **A "connect each service" guide.** Each source needs slightly different setup (Gmail and Drive use
-  Google sign-in; GitHub/Slack use tokens; S3/R2 use keys; SQL and git just point at a location).
-  That deserves its own short "Get started" page with the exact steps per source, linked from
-  everywhere — instead of one generic connections page.
-- **"Get started" should be a practical, end-to-end guide.** Today it's a short first-queries page.
-  It should grow into the overall on-ramp that walks a new user all the way to the *full* feature set
-  — run a local query, convert a file, connect a service, query a database, join across sources, and
-  preview/commit a change — each step runnable, building on the last. (The conceptual "How qfs works"
-  has moved out of *Get started* into *Using qfs*, so the on-ramp can stay hands-on.)
+- **Read Google Drive and Google Analytics for real.** `/drive/...` lists a folder's children
+  (resolving each path name to its Drive folder id), and `/ga/<property> |> select … |> where date …`
+  runs a real GA4 report — both for a connected account.
+- **Read a git repo as it was in the past.** `/git/app@v1.2/…` reads the tree at that commit/tag
+  instead of the latest.
+- **Markdown as a file format.** `… encode md` / `decode md` now resolves to the front-matter codec.
+- **Write local files.** `upsert into /local/<file>` persists on `--commit`, including a positional
+  `values ('hi')` payload.
+- **Faster source-side queries.** Gmail's search filters, and SQL's `ORDER BY`/`LIMIT`, now run in
+  the source instead of in qfs after fetching.
+- **Onboarding & polish.** Plain-language passphrase text; a local-first first command after install;
+  a per-source [Connect a service](/guide/connect) guide; an end-to-end [Get started](/guide/getting-started)
+  on-ramp; and TTY-aware terminal color (honoring `NO_COLOR` / `--no-color`).
