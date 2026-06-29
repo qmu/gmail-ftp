@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: enhancement
 layer: [Infrastructure]
 effort:
-commit_hash:
+commit_hash: 7e3ecbd
 category: Added
 depends_on: [20260629140040-wire-cloud-read-facets-connect-account-error.md]
 ---

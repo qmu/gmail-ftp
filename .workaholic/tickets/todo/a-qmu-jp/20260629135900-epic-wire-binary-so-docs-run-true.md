@@ -79,6 +79,16 @@ now-wired binary; the table below maps each doc ticket to the wiring it waits on
 | `111020` shell | — (already a real shell; fix to reality now) | independent |
 | (no fix) threat-model, connections | — | verified clean |
 
+## Open follow-ups (documented, not lost — no separate queue ticket yet)
+
+- **`/drive` (gdrive) real read** — a Drive listing needs path→folder-id resolution (Drive is
+  id-addressed); T7 wired gmail but left `/drive` on the honest connect-account facet. Scope: a
+  `read_rows` that walks the path to a folder id, then `list_files`.
+- **`/ga` (Analytics) real read** — needs a query→`runReport` request mapping (dimensions/metrics),
+  a distinct model from a list scan; left on connect-account (the T7 ticket marked GA deferrable).
+- **Gmail `q=` WHERE pushdown** — T7 pushes only the label scope; `from:`/`subject:`/`is:unread`
+  pushdown into the Gmail query is a later optimization (WHERE is a local residual today).
+
 ## Considerations
 
 - **Anti-drift:** `docs/{language,drivers,server}.md` are generated — never hand-edited; regenerate via
