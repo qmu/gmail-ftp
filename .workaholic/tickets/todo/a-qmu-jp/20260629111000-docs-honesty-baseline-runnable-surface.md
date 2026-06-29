@@ -11,6 +11,14 @@ depends_on: []
 
 # Docs honesty baseline: establish the actually-runnable surface (and flag the binary bugs the docs trip over)
 
+> **DECISION RECORDED (2026-06-29): seam #1 resolved to (b) WIRE THE BINARY FIRST**, not docs-only.
+> The plan lives in EPIC `20260629135900-epic-wire-binary-so-docs-run-true`. The three binary-bug
+> "code tickets" this ticket asked to *file* are now real: codec no-op → **T2** (`140010`), WARN noise
+> → **T8** (`140110`), describe verb-map → **T9** (`140120`). The per-page doc tickets become **Phase 5**
+> — re-pointed to depend on the wiring ticket that makes each page true, with framing flipped from
+> "remove/seam-mark" to "verify it now runs; mark only still-unwired parts as connect-account/coming-soon."
+> The GROUND TRUTH table below is still the source of record for "what runs today" and grows green per phase.
+
 ## Overview
 
 A page-by-page audit ran **every doc example against the real `qfs 0.0.10` binary as a fresh user**

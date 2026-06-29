@@ -6,7 +6,7 @@ layer: [UX]
 effort: 1h
 commit_hash:
 category: Changed
-depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md]
+depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md, 20260629140000-wire-local-single-file-content-read.md, 20260629140010-wire-codec-execution-decode-encode.md, 20260629140040-wire-cloud-read-facets-connect-account-error.md]
 ---
 
 # Fix the SKILL.md files — the embedded one steers an AI agent into unknown_source errors

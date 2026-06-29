@@ -6,7 +6,7 @@ layer: [UX]
 effort: 1h
 commit_hash:
 category: Changed
-depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md]
+depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md, 20260629140000-wire-local-single-file-content-read.md, 20260629140010-wire-codec-execution-decode-encode.md, 20260629140020-wire-git-read-facet-local-repo.md, 20260629140030-wire-sql-read-facet-sqlite.md]
 ---
 
 # Fix docs/guide/concepts.md — the headline pipe-SQL example and codec one-liner don't run

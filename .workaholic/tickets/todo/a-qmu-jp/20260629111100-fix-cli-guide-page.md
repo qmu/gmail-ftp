@@ -6,7 +6,7 @@ layer: [UX]
 effort: 0.5h
 commit_hash:
 category: Changed
-depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md]
+depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md, 20260629140120-fix-describe-verb-map-append-logs.md]
 ---
 
 # Fix docs/guide/cli.md — one broken example + small accuracy gaps vs the binary

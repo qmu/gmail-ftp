@@ -6,7 +6,7 @@ layer: [UX]
 effort: 2h
 commit_hash:
 category: Changed
-depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md]
+depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md, 20260629140000-wire-local-single-file-content-read.md, 20260629140010-wire-codec-execution-decode-encode.md, 20260629140020-wire-git-read-facet-local-repo.md, 20260629140030-wire-sql-read-facet-sqlite.md, 20260629140040-wire-cloud-read-facets-connect-account-error.md, 20260629140050-wire-github-slack-reads-end-to-end.md, 20260629140100-wire-gmail-gdrive-ga-read-rows.md]
 ---
 
 # Fix the cookbook (docs/cookbook/*) — nearly every recipe errors for a fresh user

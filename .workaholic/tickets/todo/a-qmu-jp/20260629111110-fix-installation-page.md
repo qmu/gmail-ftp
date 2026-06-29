@@ -6,7 +6,7 @@ layer: [UX]
 effort: 0.1h
 commit_hash:
 category: Changed
-depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md]
+depends_on: [20260629111000-docs-honesty-baseline-runnable-surface.md, 20260629140110-fix-warn-noise-unrelated-cloud-drivers.md]
 ---
 
 # Fix docs/guide/installation.md — note the harmless WARN noise on the first-check preview
