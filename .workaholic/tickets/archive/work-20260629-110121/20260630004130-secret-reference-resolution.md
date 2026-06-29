@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: enhancement
 layer: [Infrastructure, Config]
 effort: 4h
-commit_hash:
+commit_hash: c892417
 category: Added
 depends_on: [20260630004110-design-connection-declaration-grammar.md]
 ---

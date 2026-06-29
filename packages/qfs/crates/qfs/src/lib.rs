@@ -42,6 +42,7 @@ pub mod mcp;
 pub mod oauth;
 pub mod objstore;
 pub mod read_facets;
+pub mod secret_ref;
 pub mod secret_store;
 pub mod serve;
 pub mod serve_builtins;
