@@ -22,20 +22,30 @@ Two things some services need first:
 
 Local databases and git need **neither** — they store no secret.
 
-## Local databases & git — point at a location
+## Local databases & git — declare a connection
 
-A SQLite file or a git repo *is* its location, so the "connection" is just an environment variable.
-The name (lower-cased) becomes the path segment:
+A SQLite file or a git repo *is* its location, so it needs no secret — you just **declare** it. Put
+a `CREATE CONNECTION` statement in a `connections.qfs` file; the name you give it is the `<conn>`
+path segment:
 
-```sh
-export QFS_SQL_ORDERS=/data/orders.db          # → /sql/orders/<table>
-export QFS_SQL_ANALYTICS=postgres://db/analytics
-export QFS_GIT_APP=/srv/repos/app.git          # → /git/app/commits, /git/app@<ref>/…
+```text
+CREATE CONNECTION orders DRIVER sqlite AT '/data/orders.db';    -- → /sql/orders/<table>
+CREATE CONNECTION app    DRIVER git    AT '/srv/repos/app.git'; -- → /git/app/commits, /git/app@<ref>/…
 ```
 
-A `/sql/orders/…` or `/git/app/…` query works as soon as the variable is set — no passphrase, no
-`connection add`. (Reading the database's `WHERE` is pushed into the backend; git uses the commit you
-name.)
+Point qfs at the file with `QFS_CONNECTIONS=/path/to/connections.qfs`, or drop it at the default
+`~/.config/qfs/connections.qfs`. A `/sql/orders/…` or `/git/app/…` query then works — no passphrase,
+no `connection add`. The declaration is the **source of truth**: something you can read, review, and
+commit to a repo, not a setting hidden in an env var's name. (Reading the database's `WHERE` is
+pushed into the backend; git uses the commit you name.)
+
+::: warning The `QFS_SQL_*` / `QFS_GIT_*` env vars are deprecated
+The old `export QFS_SQL_ORDERS=/data/orders.db` / `export QFS_GIT_APP=…` convention still works as a
+temporary fallback — but it warns once and is being retired, because the connection lived only in the
+*name* of an environment variable, with nothing to read or review. Run **`qfs connection import-env`**
+to print the `CREATE CONNECTION` lines equivalent to your current env vars, then paste them into a
+`connections.qfs`.
+:::
 
 ## Gmail, Google Drive & Google Analytics — Google sign-in
 

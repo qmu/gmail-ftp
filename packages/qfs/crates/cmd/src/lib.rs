@@ -126,6 +126,9 @@ pub enum ConnectionAction {
     /// `connection rekey` — re-wrap the store's data-key under a new passphrase (t79). The new
     /// passphrase is NEVER carried here; the launcher reads it from stdin (old = `QFS_PASSPHRASE`).
     Rekey,
+    /// `connection import-env` — print the `CREATE CONNECTION` declarations equivalent to the
+    /// current `QFS_SQL_*` / `QFS_GIT_*` env vars (the migration off the deprecated convention).
+    ImportEnv,
 }
 
 /// The injected **connection launcher**: the binary supplies the credential-store I/O (it depends on
@@ -426,6 +429,11 @@ enum ConnectionVerb {
     /// from stdin; the current `QFS_PASSPHRASE` is the old one. Existing secrets stay decryptable; the
     /// old passphrase stops unlocking. One re-wrap, never an N-way re-encryption of every secret.
     Rekey,
+    /// Print the `CREATE CONNECTION` declarations equivalent to the current `QFS_SQL_*` / `QFS_GIT_*`
+    /// env vars — the one-command migration off the deprecated env-var alias convention. Reads no
+    /// secret; writes the declarations to stdout for you to paste into a `connections.qfs`.
+    #[command(name = "import-env")]
+    ImportEnv,
 }
 
 /// `qfs identity <verb>` — the local-identity verbs (t45). Maps onto the injected
@@ -862,6 +870,7 @@ fn connection_action(verb: &ConnectionVerb) -> ConnectionAction {
             connection: connection.clone(),
         },
         ConnectionVerb::Rekey => ConnectionAction::Rekey,
+        ConnectionVerb::ImportEnv => ConnectionAction::ImportEnv,
     }
 }
 

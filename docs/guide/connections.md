@@ -21,25 +21,30 @@ How you define a connection depends on whether the source needs a **secret**:
 
 | Source | Defined by | Needs a secret? |
 | --- | --- | --- |
-| **Local databases & repos** — `/sql` (SQLite), `/git` | an **environment variable** | no |
+| **Local databases & repos** — `/sql` (SQLite), `/git` | a **`CREATE CONNECTION` declaration** | no |
 | **Credentialed services** — `/mail`, `/drive`, `/github`, `/slack`, `/s3`, `/r2` | `qfs connection add` (encrypted store) | yes |
 
-### Local databases & git — an environment variable
+### Local databases & git — declare a connection
 
 A SQLite database or a git repository is just a local path (or URL), so the connection *is* that
-location — no stored secret, no passphrase. You define one by exporting an env var; the suffix
-(lower‑cased) becomes the connection segment in the path:
+location — no stored secret, no passphrase. You **declare** it with a `CREATE CONNECTION` statement
+in a `connections.qfs` file; the name you give it is the `<conn>` path segment:
 
-```sh
-export QFS_SQL_ORDERS=/data/orders.db        # → read it at  /sql/orders/<table>
-export QFS_SQL_ANALYTICS=postgres://…         # the same name pattern, a different connection
-export QFS_GIT_APP=/srv/repos/app.git         # → read it at  /git/app/commits, /git/app@<ref>/…
+```text
+CREATE CONNECTION orders DRIVER sqlite AT '/data/orders.db';    -- → /sql/orders/<table>
+CREATE CONNECTION app    DRIVER git    AT '/srv/repos/app.git'; -- → /git/app/commits, /git/app@<ref>/…
 ```
 
-So `QFS_SQL_<NAME>=<value>` *is* the whole connection: `<NAME>` (lower‑cased) is the `<conn>` you
-write in the path, and `<value>` is where the database lives. Nothing else to run — a `/sql/orders/…`
-query works as soon as `QFS_SQL_ORDERS` is set, and fails closed (`unknown source 'sql'`) when it
-isn't.
+Point qfs at the file with `QFS_CONNECTIONS=/path/to/connections.qfs` (or the default
+`~/.config/qfs/connections.qfs`); a `/sql/orders/…` query then works, and fails closed
+(`unknown source 'sql'`) when no connection of that name is declared. The declaration is the source
+of truth — reviewable and committable — instead of a setting hidden in an env var's name.
+
+::: warning The `QFS_SQL_*` / `QFS_GIT_*` env vars are deprecated
+`export QFS_SQL_ORDERS=/data/orders.db` still works as a temporary fallback (it warns once and, on a
+name clash, overrides the declaration), but it is being retired. Run **`qfs connection import-env`**
+to print the equivalent `CREATE CONNECTION` lines and move them into a `connections.qfs`.
+:::
 
 ### Credentialed services — the credential store
 

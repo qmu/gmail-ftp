@@ -219,6 +219,7 @@ pub fn conn_registry() -> ConnRegistry {
         }
         let conn = conn.to_ascii_lowercase();
         if let Some(handle) = open_sqlite_handle(&path) {
+            crate::connections_config::warn_env_var_deprecation_once();
             reg = reg.with(conn, handle);
         }
     }

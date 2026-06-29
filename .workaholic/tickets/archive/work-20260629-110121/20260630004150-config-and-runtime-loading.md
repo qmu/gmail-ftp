@@ -4,8 +4,8 @@ author: a@qmu.jp
 type: enhancement
 layer: [Config, UX]
 effort:
-commit_hash:
-category: Added
+commit_hash: 0f7bf06
+category: Changed
 depends_on: [20260630004140-connection-registry-from-declarations.md]
 ---
 

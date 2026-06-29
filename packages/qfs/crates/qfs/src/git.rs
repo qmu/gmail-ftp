@@ -172,6 +172,7 @@ pub fn git_driver() -> GitDriver {
         }
         let repo = repo.to_ascii_lowercase();
         let p = Path::new(&path);
+        crate::connections_config::warn_env_var_deprecation_once();
         resolver = resolver.with_repo(repo.clone(), planning_repo(p));
         applier = applier.with_store(repo, RepoStore::at_path(p));
     }

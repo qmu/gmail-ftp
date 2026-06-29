@@ -290,19 +290,56 @@ fn run_inner(action: &ConnectionAction) -> Result<String, String> {
             Ok(format!("stored credential for {driver}/{connection}"))
         }
         ConnectionAction::List { driver } => {
-            let store = open_store()?;
-            let filter = driver.as_ref().map(|d| DriverId(d.clone()));
-            let recs = store
-                .list(filter.as_ref())
-                .map_err(|e| format!("listing connections: {e}"))?;
-            if recs.is_empty() {
+            // Declared (non-secret) connections from the connections.qfs — these are plain config,
+            // so they list WITHOUT a passphrase. Selectors + the secret REFERENCE only, never a value.
+            let declared: Vec<_> = crate::connections_config::declared_connections()
+                .into_iter()
+                .filter(|c| driver.as_deref().is_none_or(|d| c.driver == d))
+                .collect();
+            for c in &declared {
+                let secret = c
+                    .secret_ref
+                    .as_deref()
+                    .map_or(String::new(), |r| format!("\tsecret {r}"));
+                println!("{}/{}\t(declared){secret}", c.driver, c.name);
+            }
+            // Stored credentials — the encrypted vault behind `vault:` references. Needs the
+            // passphrase; when it can't open we still show the declared connections (the vault is
+            // just locked) unless there is nothing else to show, in which case surface the error.
+            let stored = match open_store() {
+                Ok(store) => {
+                    let filter = driver.as_ref().map(|d| DriverId(d.clone()));
+                    let recs = store
+                        .list(filter.as_ref())
+                        .map_err(|e| format!("listing connections: {e}"))?;
+                    // Selectors + metadata only — never a credential.
+                    for r in &recs {
+                        println!("{}/{}\t{}", r.driver.0, r.connection, r.created_at);
+                    }
+                    recs.len()
+                }
+                Err(e) if declared.is_empty() => return Err(e),
+                Err(_) => 0,
+            };
+            if declared.is_empty() && stored == 0 {
                 return Ok("no connections configured".into());
             }
-            // Selectors + metadata only — never a credential.
-            for r in &recs {
-                println!("{}/{}\t{}", r.driver.0, r.connection, r.created_at);
+            Ok(format!(
+                "{} declared + {} stored connection(s)",
+                declared.len(),
+                stored
+            ))
+        }
+        ConnectionAction::ImportEnv => {
+            // Print the CREATE CONNECTION declarations equivalent to the current QFS_SQL_*/QFS_GIT_*
+            // env vars — the one-command migration off the deprecated convention. No secret is read
+            // (SQLite/git connections carry none); the output is paste-ready for a connections.qfs.
+            let decls = crate::connections_config::import_env_declarations();
+            if decls.is_empty() {
+                return Ok("no QFS_SQL_* / QFS_GIT_* env vars to import".into());
             }
-            Ok(format!("{} connection(s)", recs.len()))
+            println!("{decls}");
+            Ok("printed the equivalent CREATE CONNECTION declarations".into())
         }
         ConnectionAction::Remove { driver, connection } => {
             let store = open_store()?;
