@@ -4,8 +4,8 @@ author: a@qmu.jp
 type: enhancement
 layer: [Domain, UX]
 effort: 4h
-commit_hash:
-category: Added
+commit_hash: f43c675
+category: Changed
 depends_on: [20260630004100-epic-in-language-connection-declaration.md]
 ---
 
