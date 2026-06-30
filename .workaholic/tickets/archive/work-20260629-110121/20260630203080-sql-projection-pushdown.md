@@ -3,8 +3,8 @@ created_at: 2026-06-30T20:31:20+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [Domain]
-effort: 4h
-commit_hash:
+effort: 2h
+commit_hash: 8268a35
 category: Changed
 depends_on: []
 ---
@@ -45,3 +45,29 @@ could). Keep each behind a flipped flag + correctness tests.
 
 - Same correctness discipline as the LIMIT guard (commit `aebf67c`): never return wrong rows; the
   engine re-applies the residual, so a pushed optimization must not strip a column the residual reads.
+
+## Final Report
+
+Development completed as planned — all three steps, plus the trap fully closed. Column projection now
+pushes into the native SELECT, but `compile` EXPANDS the SELECT to keep every column the residual
+predicate reads (`projected ⊇ residual columns`, via a new `residual_columns` collector with an
+*exhaustive* match so a new `Predicate` variant can't silently drop a needed column), `execute_query`
+returns the effective output `Schema`, and the facet narrows to the requested projection LAST —
+after the residual re-filter has used the extra columns. `project: true` flipped in the
+`PushdownProfile`; the self-doc test renamed/updated and the skill golden corpus realigned.
+
+### Discovered Insights
+
+- **Insight**: There are TWO residual layers, and only the COMPILE-level one (LIKE/regex/OR) can drop
+  a projected column — and it is unknown at planning time. So the planner pushes projection
+  optimistically (no local Project op), and the facet MUST deliver exactly the projection; the
+  compile/facet split (over-select in compile, narrow in facet) is the only correct architecture
+  because the planner cannot gate on a residual it hasn't computed.
+  **Context**: `crates/qfs/src/read_facets.rs::SqlReadDriver::scan` must narrow to `scan.pushed.project`
+  whenever it is `Some`, regardless of residual — a pushed projection leaves nothing else to do it.
+- **Insight**: The direct `execute_query` unit tests bypass the planner and pass a projection inline,
+  so they always exercised projection in the SELECT; production never did (the planner left
+  `project:false` → `SELECT *`). Flipping the flag is what connects the planner to the long-present
+  compile-side projection — the wiring gap was the planner→facet path, not the compiler.
+  **Context**: When auditing pushdown, distinguish "compiler supports X" from "planner pushes X" —
+  they were independently true/false here.

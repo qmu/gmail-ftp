@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use qfs_core::{CfsError, Driver, Path, Row, RowBatch, Schema};
+use qfs_core::{CfsError, Name, Path, Row, RowBatch, Schema, Value};
 use qfs_driver_ga::{GaDriver, QuerySpec as GaQuerySpec};
 use qfs_driver_gdrive::GDriveClient;
 use qfs_driver_git::{blobfs, relational, GitDriver, GitNode, GitPath};
@@ -135,24 +135,58 @@ fn query_spec_from_pushed(pushed: &PushedQuery) -> QuerySpec {
     spec
 }
 
+/// Narrow `batch` to exactly the columns in `cols` (the pushed projection), in that order — the
+/// facet's job once a projection was pushed (no local Project op remains to do it). Columns absent
+/// from the batch are skipped (the SELECT is the source of truth; a missing column never panics).
+fn project_batch(batch: &RowBatch, cols: &[Name]) -> RowBatch {
+    let picks: Vec<usize> = cols
+        .iter()
+        .filter_map(|name| {
+            batch
+                .schema
+                .columns
+                .iter()
+                .position(|c| c.name.as_str() == name.as_str())
+        })
+        .collect();
+    let schema = Schema::new(
+        picks
+            .iter()
+            .map(|i| batch.schema.columns[*i].clone())
+            .collect(),
+    );
+    let rows = batch
+        .rows
+        .iter()
+        .map(|r| {
+            Row::new(
+                picks
+                    .iter()
+                    .map(|i| r.values.get(*i).cloned().unwrap_or(Value::Null))
+                    .collect(),
+            )
+        })
+        .collect();
+    RowBatch::new(schema, rows)
+}
+
 #[async_trait::async_trait]
 impl ReadDriver for SqlReadDriver {
     async fn scan(&self, scan: &ScanNode) -> Result<RowBatch, CfsError> {
         let spec = query_spec_from_pushed(&scan.pushed);
         let path = Path::new(&scan.path);
-        // The rows execute_query returns carry the table's full column set (WHERE/ORDER BY/LIMIT are
-        // pushed, but projection is not); the typed schema comes from the driver's pure catalog
-        // `describe`, not the planner's post-pushdown `scan.schema` (the engine's residual projection
-        // narrows columns afterwards).
-        let schema = self.driver.describe(&path)?.schema;
-        let (rows, residual) =
+        // `execute_query` returns the rows, the truthful residual, AND the schema the SELECT actually
+        // produced: the (residual-expanded) projection when a projection pushed, else the full catalog
+        // schema. The driver KEEPS every column the residual reads, so the residual re-filter below is
+        // always sound; the projection narrow (last) drops the extra columns again.
+        let (rows, residual, out_schema) =
             self.driver
                 .execute_query(&path, &spec)
                 .map_err(|e| CfsError::InvalidPath {
                     path: scan.path.clone(),
                     reason: e.code(),
                 })?;
-        let batch = RowBatch::new(schema, rows);
+        let batch = RowBatch::new(out_schema, rows);
         // The driver applied the faithfully-renderable part natively; re-filter the residual locally
         // so the rows are exactly the pushed query's result (over-returning on the pushed predicate
         // is NOT corrected by the engine — the pushed work is the driver's responsibility).
@@ -168,6 +202,12 @@ impl ReadDriver for SqlReadDriver {
             batch
                 .rows
                 .truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        }
+        // A pushed PROJECTION leaves NO local Project op in the plan, so the facet must deliver
+        // exactly the requested columns. The SELECT may have over-fetched residual columns (above), so
+        // narrow to the requested projection LAST — after the residual re-filter has used them.
+        if let Some(project) = &scan.pushed.project {
+            batch = project_batch(&batch, project);
         }
         Ok(batch)
     }

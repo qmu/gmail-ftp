@@ -129,10 +129,32 @@ pub fn compile(
         Some(p) => lower_predicate(p, table, &mut params, &mut residual),
     };
 
+    // A pushed projection (`SELECT <cols>`) narrows the row shape, but the engine still RE-APPLIES
+    // the residual predicate over the fetched rows — so the SELECT must keep every column the
+    // residual reads (`projected ⊇ residual columns`), or those rows would be missing the columns to
+    // re-filter on. Expand the projection to include any residual top-level column not already in it;
+    // the caller (facet) narrows back to the requested projection AFTER the residual re-filter. A
+    // `SELECT *` (empty projection) already carries every column, so it is left untouched.
+    let projection = if spec.projection.is_empty() {
+        Vec::new()
+    } else {
+        let mut projection = spec.projection.clone();
+        if let Some(res) = &residual {
+            let mut needed = Vec::new();
+            residual_columns(res, &mut needed);
+            for col in needed {
+                if !projection.contains(&col) {
+                    projection.push(col);
+                }
+            }
+        }
+        projection
+    };
+
     let plan = SelectPlan {
         schema: schema.to_string(),
         table: table.name.clone(),
-        projection: spec.projection.clone(),
+        projection,
         where_,
         order_by,
         // Push `LIMIT` into the SQL **only** when the whole `WHERE` pushed down (no residual). With
@@ -291,5 +313,31 @@ fn bare_col(col: &ColRef) -> Option<&str> {
     match col.path.as_slice() {
         [one] => Some(one.as_str()),
         _ => None,
+    }
+}
+
+/// Collect the **top-level** SQL column names a residual predicate reads (deduped, in encounter
+/// order), so a pushed projection can keep them in the SELECT. For a dotted path (`a.b`) the
+/// top-level column `a` is the SQL column the residual indexes into locally. The match is
+/// exhaustive on purpose: a new [`Predicate`] variant must update this, or the projection could
+/// silently drop a column the residual needs (wrong rows).
+fn residual_columns(p: &Predicate, out: &mut Vec<String>) {
+    match p {
+        Predicate::Cmp(col, _, _)
+        | Predicate::In(col, _)
+        | Predicate::Between(col, _, _)
+        | Predicate::Like(col, _) => {
+            if let Some(top) = col.path.first() {
+                let name = top.as_str().to_string();
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+        }
+        Predicate::And(a, b) | Predicate::Or(a, b) => {
+            residual_columns(a, out);
+            residual_columns(b, out);
+        }
+        Predicate::Not(inner) => residual_columns(inner, out),
     }
 }

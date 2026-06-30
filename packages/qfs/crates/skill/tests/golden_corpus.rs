@@ -246,11 +246,12 @@ mod sql_fixture {
             report.pushdown.where_,
             "sql pushes WHERE down into the database"
         );
-        // Projection / ORDER / LIMIT are not yet threaded through the read seam's QuerySpec, so they
-        // stay in the engine's local residual (the t4 read-wiring scope: WHERE pushdown first).
+        // Column PROJECTION is now pushed into the native SELECT too (it keeps every residual column
+        // and the facet narrows after the local re-filter — never wrong rows). Aggregate / group_by /
+        // distinct / JOIN remain local residuals until each is threaded through the QuerySpec.
         assert!(
-            !report.pushdown.project,
-            "projection stays a local residual for now"
+            report.pushdown.project,
+            "sql pushes column projection into the SELECT"
         );
         assert!(report.verbs.select);
         // No credential shape in the report (secrets never appear).
