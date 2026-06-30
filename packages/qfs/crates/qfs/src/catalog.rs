@@ -74,7 +74,7 @@ fn representative_path(mount: &str) -> String {
         "/drive" => "/drive/my/Reports/report.pdf".to_string(),
         "/github" => "/github/o/r/pulls".to_string(),
         "/slack" => "/slack/ws/#general/messages".to_string(),
-        "/ga" => "/ga/123456789".to_string(),
+        "/google-analytics" => "/google-analytics/123456789".to_string(),
         "/s3" => "/s3/bucket/key".to_string(),
         "/r2" => "/r2/bucket/key".to_string(),
         // t53 administration: a representative admin relation. `/sys/users` describes cred-free

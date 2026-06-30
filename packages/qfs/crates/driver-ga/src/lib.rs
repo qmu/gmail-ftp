@@ -100,7 +100,7 @@ pub use compile::{
     RunReportRequest, StringMatch, DATE_COL,
 };
 pub use error::GaError;
-pub use path::{GaPath, MOUNT, REALTIME_SEGMENT};
+pub use path::{GaPath, DEPRECATED_MOUNT, MOUNT, REALTIME_SEGMENT};
 pub use report::{response_to_rows, ReportResponse, ReportRow};
 
 /// The least-privilege GA scope — **read-only** analytics. NOT a write/admin scope (GA has no
@@ -245,6 +245,15 @@ impl GaDriver {
 impl Driver for GaDriver {
     fn mount(&self) -> &str {
         MOUNT
+    }
+
+    /// The internal **plan/connection identity** stays `ga` even though the mount was renamed to
+    /// `/google-analytics` (owner item #8). The default `id()` would derive `google-analytics` from
+    /// the mount, but the runtime driver id keys the read-facet registry, the consent-scope map, and
+    /// the stored connection selector (`qfs connection add ga`) — renaming it would orphan existing
+    /// GA connections. Keeping `ga` confines the rename to the user-facing PATH surface.
+    fn id(&self) -> qfs_types::DriverId {
+        qfs_types::DriverId::new("ga")
     }
 
     fn describe(&self, path: &Path) -> Result<NodeDesc, qfs_driver::CfsError> {

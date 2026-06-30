@@ -3,8 +3,8 @@ created_at: 2026-06-30T20:31:50+09:00
 author: a@qmu.jp
 type: enhancement
 layer: [Domain, UX]
-effort: 4h
-commit_hash:
+effort: 2h
+commit_hash: 1eb1ca3
 category: Changed
 depends_on: []
 ---
@@ -44,3 +44,31 @@ so a user can define a short alias like `/ga`.
   hard-break. The grammar addition must stay additive (no new frozen keyword — contextual idents).
 - Decide alias scope: connection-name aliasing already exists; this is mount-level. Keep it general
   (`CREATE ALIAS gh FOR /github`, etc.), not GA-specific.
+
+## Final Report
+
+**Scoped to Part 1 (the rename) by owner decision** — the ticket bundled two large features and the
+general `CREATE ALIAS` grammar touches the versioned/freeze-sensitive grammar surface, so it was
+**split into its own ticket** (`20260630204000-create-alias-grammar.md`) for focused design care.
+This ticket delivered the mount rename + the built-in deprecated `/ga` shim.
+
+Done here: the GA mount is now `/google-analytics` (the real full name); `/ga` is kept working for
+one release as a built-in deprecated alias that parses + routes identically (no hard-break). Docs
+regenerated. The internal driver id stays `ga` (see insight) so existing GA connections, the consent
+map, and `qfs connection add ga` are untouched — the rename is confined to the user-facing PATH.
+
+### Discovered Insights
+
+- **Insight**: `Driver::id()` DEFAULTS to deriving the runtime driver id from the mount
+  (`mount().strip_prefix('/')`). So renaming the mount silently renames the driver id too — which
+  keys the read-facet registry, the consent-scope map, and the stored connection selector. Renaming
+  it would orphan existing GA connections. The fix is to OVERRIDE `id()` to keep `ga`, confining the
+  rename to the path surface.
+  **Context**: Any future mount rename of an already-shipped cloud driver must override `id()` (or
+  accept a connection migration). The mount (path) and the driver id are only coincidentally equal.
+- **Insight**: The docs catalog (`crate::catalog::driver_catalog`) walks `describe_registry()` and
+  folds `driver.mount()` + a `representative_path(mount)` map. A renamed mount with no matching
+  representative-path arm falls to the mount root, which for GA is the non-describable virtual Root →
+  the driver would silently DROP from `docs/drivers.md`. The representative-path map must gain the new
+  mount arm. The deprecation alias is registered ONLY in the runtime planning mounts, NOT in
+  `describe_registry` — else `driver_catalog` would emit a duplicate GA entry.

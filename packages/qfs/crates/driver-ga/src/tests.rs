@@ -56,25 +56,43 @@ fn date_between(start: &str, end: &str) -> Predicate {
 
 #[test]
 fn path_parses_root_property_and_realtime() {
-    assert_eq!(GaPath::parse_str("/ga").unwrap(), GaPath::Root);
     assert_eq!(
-        GaPath::parse_str("/ga/123456789").unwrap(),
+        GaPath::parse_str("/google-analytics").unwrap(),
+        GaPath::Root
+    );
+    assert_eq!(
+        GaPath::parse_str("/google-analytics/123456789").unwrap(),
         GaPath::Property {
             property_id: "123456789".to_string()
         }
     );
     assert_eq!(
-        GaPath::parse_str("/ga/123456789/realtime").unwrap(),
+        GaPath::parse_str("/google-analytics/123456789/realtime").unwrap(),
         GaPath::Realtime {
             property_id: "123456789".to_string()
         }
     );
     // Property id surfaces for credential/property selection.
     assert_eq!(
-        GaPath::parse_str("/ga/123456789/realtime")
+        GaPath::parse_str("/google-analytics/123456789/realtime")
             .unwrap()
             .property_id(),
         Some("123456789")
+    );
+}
+
+#[test]
+fn deprecated_ga_alias_parses_identically_to_the_canonical_mount() {
+    // The `/ga` short mount is kept working for one release (owner item #8): every `/ga` path parses
+    // to the SAME GaPath as its `/google-analytics` equivalent, so nothing hard-breaks.
+    assert_eq!(GaPath::parse_str("/ga").unwrap(), GaPath::Root);
+    assert_eq!(
+        GaPath::parse_str("/ga/123456789").unwrap(),
+        GaPath::parse_str("/google-analytics/123456789").unwrap()
+    );
+    assert_eq!(
+        GaPath::parse_str("/ga/123456789/realtime").unwrap(),
+        GaPath::parse_str("/google-analytics/123456789/realtime").unwrap()
     );
 }
 
@@ -635,7 +653,9 @@ fn execute_query_on_the_ga_root_is_a_structured_error_not_a_report() {
 #[test]
 fn driver_declares_relational_pushdown_and_read_only_surface() {
     let driver = GaDriver::new(Arc::new(MockGaClient::new()));
-    assert_eq!(driver.mount(), "/ga");
+    // The mount is the real full name now (owner item #8); the internal driver id stays `ga` (the
+    // rename is confined to the user-facing PATH so existing GA connections keep resolving).
+    assert_eq!(driver.mount(), "/google-analytics");
     assert_eq!(driver.id(), DriverId::new("ga"));
     // Read-only: no mutating procedures declared.
     assert!(driver.procedures().is_empty());

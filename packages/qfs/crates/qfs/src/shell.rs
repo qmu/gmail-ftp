@@ -161,11 +161,16 @@ fn register_google_planning_mounts(engine: &mut Engine) {
         .register(Arc::new(qfs_driver_gdrive::GDriveDriver::new(Arc::new(
             qfs_driver_gdrive::MockDriveClient::default(),
         ))));
+    let ga = Arc::new(qfs_driver_ga::GaDriver::new(Arc::new(
+        qfs_driver_ga::MockGaClient::default(),
+    )));
+    let _ = engine.mounts.register(ga.clone());
+    // Keep the DEPRECATED `/ga` path routing here for one release (owner item #8): the same driver
+    // answers both `/google-analytics` (canonical) and `/ga`, so existing `/ga/...` statements still
+    // plan + run. Docs/introspection show only the canonical mount (this alias is routing-only).
     let _ = engine
         .mounts
-        .register(Arc::new(qfs_driver_ga::GaDriver::new(Arc::new(
-            qfs_driver_ga::MockGaClient::default(),
-        ))));
+        .register_alias(qfs_driver_ga::DEPRECATED_MOUNT, ga);
 }
 
 #[must_use]

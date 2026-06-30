@@ -367,6 +367,35 @@ impl MountRegistry {
         Ok(())
     }
 
+    /// Register `driver` under an EXPLICIT `alias` mount, in ADDITION to its declared `mount()`.
+    /// Used for a **deprecated path alias** kept working for one release (e.g. `/ga` →
+    /// `/google-analytics`): the same driver answers both prefixes, so an old path still routes while
+    /// the canonical mount (what `mount()` returns, and what the docs render) is the new name. The
+    /// alias is a runtime-routing entry only — it is NOT a second `mount()`, so introspection/docs
+    /// keep showing the canonical name. (The general user-facing `CREATE ALIAS` mechanism is separate
+    /// future work; this is the built-in deprecation shim.)
+    ///
+    /// # Errors
+    /// [`CfsError::ReservedRealmMount`] if `alias`'s leading segment shadows a non-driver-backed
+    /// realm; [`CfsError::DuplicateRegistration`] if `alias` is already taken.
+    pub fn register_alias(&mut self, alias: &str, driver: Arc<dyn Driver>) -> Result<(), CfsError> {
+        let key = alias.to_string();
+        let leading = key.trim_start_matches('/').split('/').next().unwrap_or("");
+        if let Some(realm) = Realm::from_segment(leading) {
+            if !realm.is_driver_backed() {
+                return Err(CfsError::ReservedRealmMount {
+                    mount: key,
+                    realm: realm.as_str(),
+                });
+            }
+        }
+        if self.mounts.contains_key(&key) {
+            return Err(CfsError::DuplicateRegistration(key));
+        }
+        self.mounts.insert(key, driver);
+        Ok(())
+    }
+
     /// Resolve a mount to its driver.
     ///
     /// # Errors

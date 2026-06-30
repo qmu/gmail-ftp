@@ -88,31 +88,6 @@ Prelude aliases: _none_
 
 Pushdown: where=false project=true limit=false order=false join=false aggregate=false distinct=false group_by=false
 
-### `/ga` — RelationalTable
-
-- example node: `/ga/123456789`
-- native verbs: SELECT
-
-Universal verbs (✓ supported / ✗ rejected at parse time):
-
-| verb | supported |
-|------|-----------|
-| `select` | ✓ |
-| `insert` | ✗ |
-| `upsert` | ✗ |
-| `update` | ✗ |
-| `remove` | ✗ |
-| `ls` | ✗ |
-| `cp` | ✗ |
-| `mv` | ✗ |
-| `rm` | ✗ |
-
-Procedures: _none_
-
-Prelude aliases: _none_
-
-Pushdown: where=true project=true limit=true order=true join=false aggregate=true distinct=false group_by=true
-
 ### `/github` — ObjectGraphWorkflow
 
 - example node: `/github/o/r/pulls`
@@ -143,6 +118,31 @@ Procedures (`call github.action(..)`):
 Prelude aliases: _none_
 
 Pushdown: where=true project=false limit=true order=false join=false aggregate=false distinct=false group_by=false
+
+### `/google-analytics` — RelationalTable
+
+- example node: `/google-analytics/123456789`
+- native verbs: SELECT
+
+Universal verbs (✓ supported / ✗ rejected at parse time):
+
+| verb | supported |
+|------|-----------|
+| `select` | ✓ |
+| `insert` | ✗ |
+| `upsert` | ✗ |
+| `update` | ✗ |
+| `remove` | ✗ |
+| `ls` | ✗ |
+| `cp` | ✗ |
+| `mv` | ✗ |
+| `rm` | ✗ |
+
+Procedures: _none_
+
+Prelude aliases: _none_
+
+Pushdown: where=true project=true limit=true order=true join=false aggregate=true distinct=false group_by=true
 
 ### `/local` — BlobNamespace
 
