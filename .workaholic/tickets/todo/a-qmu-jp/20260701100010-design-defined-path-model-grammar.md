@@ -72,3 +72,52 @@ beyond a throwaway spike if needed to validate a decision.
 - `design/rest-api-design` (deprecate-not-break, surface versioning), `implementation/type-driven-design`
   (additive expression, value-object paths), `design/modeless-design` (namespace reachability),
   `planning/terminology` (alias→defined path), `design/access-control` (the binding is an authz rule).
+
+## Design Resolution — PROPOSED (night run 2026-07-01; ONE owner decision outstanding)
+
+Drafted autonomously during a `night /drive` for morning review. Five of the six decisions have a
+clear recommendation grounded in discovery; **decision #2 (grammar syntax) is genuinely the owner's
+call** and is why this ticket stays in `todo` (NOT archived) pending sign-off.
+
+1. **Terminology — DECIDED.** `defined path` (owner's term) for a `{user path → driver + credential}`
+   binding. The pipeline-verb `alias` (`SEND`/`MERGE`) keeps its name (different layer). Retire
+   "alias" only for the mount sense: rename `MountRegistry::register_alias` → `register_defined_path`,
+   update error messages + docs, in the same change (`planning/terminology`).
+
+2. **Grammar syntax — OPEN, OWNER DECISION.** Two viable shapes, both freeze-safe (contextual idents,
+   no new keyword):
+   - **(A) One declaration — extend `CREATE CONNECTION` with a path clause** (recommended). Best fits
+     the owner's "define the path AND the credential at the same time": one statement carries
+     `{name, driver, secret, PATH '<…>'}`. The path clause needs a NEW contextual ident (`AT` is
+     taken by the locator + the policy path clause) — proposed word: `PATH` (or `MOUNT`/`AS PATH`).
+   - **(B) A sibling `CREATE PATH '<…>' FOR <connection>`** — separates path-binding from credential
+     config; closer to the abandoned `CREATE ALIAS` shape but renamed.
+   Recommendation: **(A)** + the contextual ident word `PATH`. *Owner: confirm A vs B, and the word.*
+
+3. **`id()` stays canonical — DECIDED (recommended).** Keep each driver's `id()` canonical so the
+   `/<driver.id()>/<sub>` reconstruction (`resolve.rs:622`, `eval.rs`, `plan.rs`) keeps per-driver
+   `path.rs` parsers untouched. The binding table maps `user-path → (canonical driver id, connection)`;
+   the credential stays keyed by the canonical driver id (no connection migration). Proven in
+   production by the `/ga` alias (canonical id `ga`, non-canonical mount).
+
+4. **Minimal system set — DECIDED (recommended), minor confirm.** System-defined first-paths =
+   `RESERVED_REALMS` (`members/projects/hosts/directories/me/sys`) + the driver-backed `/sys`, plus
+   keep `/local` (and `/git`?) as built-in system mounts (local-first). Everything else is a user
+   defined-path. Governance rule unchanged: a defined-path may NEVER shadow a realm (`register()`
+   guard, `registry.rs:355`). *Owner: confirm `/local` + `/git` stay built-in.*
+
+5. **Recursive nesting — DECIDED (recommended), VALIDATED.** A defined path is a **multi-segment
+   mount** for v1 (`/<folder>/<folder>/<resource>`); folders-as-grouping-nodes-over-multiple-paths is
+   a future extension. **De-risk spike landed:** `registry.rs::resolve_path_routes_a_multi_segment_user_mount`
+   proves multi-segment mounts route through the existing longest-prefix router with NO change.
+   Precedence: user defined-paths slot at the existing **Mount** tier (`resolve_name`,
+   `registry.rs:195`: `Reserved > Lexical > Mount > Connection > Unbound`).
+
+6. **Deprecate-not-break — DECIDED.** Old per-driver mounts (`/github`, `/mail`, …) become built-in
+   **deprecated** defined-paths for one release (warning + a `connection`/`path` migration command),
+   then removed — mirroring `/ga`→`/google-analytics` (ticket `203110`, `register_alias`).
+   (`design/rest-api-design`.)
+
+**Implementation children are UNBLOCKED once the owner signs off #2 (+ the #4 confirm).** With those
+settled, `100020` builds the chosen grammar, `100030` wires resolution (the multi-segment premise is
+already validated), `100040` does the registration redesign + deprecation.
