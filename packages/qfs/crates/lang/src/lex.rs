@@ -221,9 +221,11 @@ impl Lexer {
         self.bump(); // consume '@'
         let mut ver = String::new();
         while let Some(ch) = self.peek() {
-            // The ref runs until the next path separator or a delimiter. Dots are
-            // allowed (e.g. `@v1.2`); the raw ref text is preserved verbatim.
-            if ch.c == '/' || is_path_delimiter(ch.c) {
+            // The ref runs until the next path separator or a delimiter. Dots are allowed
+            // (`@v1.2`), and so is `~` — a git relative-ref char (`@HEAD~1`, `@main~2`) that is
+            // otherwise the `~` match operator; inside a path-version run it is part of the ref, not
+            // an operator. (`^`, `{`, `}` are already non-delimiters, so `@HEAD^`, `@v1.2^{}` lex.)
+            if ch.c == '/' || (is_path_delimiter(ch.c) && ch.c != '~') {
                 break;
             }
             ver.push(ch.c);
