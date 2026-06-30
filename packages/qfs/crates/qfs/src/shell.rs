@@ -395,6 +395,21 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
             );
         }
     }
+    // S3 / R2 live READ facets (t-203070): register the SigV4 object-storage reader when the routing
+    // config + secret access key resolve (fail closed otherwise, exactly like the apply path). Built
+    // from the SAME live registry the commit path uses, so `/s3/<bucket>` lists and `/s3/<bucket>/<key>`
+    // downloads against a real (or MinIO) S3 endpoint.
+    for scheme in [
+        qfs_driver_objstore::Scheme::S3,
+        qfs_driver_objstore::Scheme::R2,
+    ] {
+        if let Some(driver) = crate::commit::live_obj_read_driver(scheme) {
+            reads = reads.with(
+                DriverId::new(scheme.mount().trim_start_matches('/')),
+                Arc::new(crate::read_facets::ObjReadDriver::new(Arc::new(driver))),
+            );
+        }
+    }
     (engine, reads, safety_mode)
 }
 

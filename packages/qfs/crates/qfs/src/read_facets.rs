@@ -24,12 +24,13 @@
 
 use std::sync::Arc;
 
-use qfs_core::{CfsError, Name, Path, Row, RowBatch, Schema, Value};
+use qfs_core::{CfsError, Column, ColumnType, Name, Path, Row, RowBatch, Schema, Value};
 use qfs_driver_ga::{GaDriver, QuerySpec as GaQuerySpec};
 use qfs_driver_gdrive::GDriveClient;
 use qfs_driver_git::{blobfs, relational, GitDriver, GitNode, GitPath};
 use qfs_driver_github::GitHubClient;
 use qfs_driver_gmail::GmailClient;
+use qfs_driver_objstore::{object_listing_schema, ObjDriver, ObjNode};
 use qfs_driver_slack::SlackClient;
 use qfs_driver_sql::{QuerySpec, SqlDriver};
 use qfs_exec::ReadDriver;
@@ -168,6 +169,109 @@ fn project_batch(batch: &RowBatch, cols: &[Name]) -> RowBatch {
         })
         .collect();
     RowBatch::new(schema, rows)
+}
+
+/// The object-storage read facet (t-203070): adapts the in-house [`ObjDriver`]'s `ls` (native S3
+/// `list_objects_v2` with prefix/delimiter pushdown) and `get` (streaming download) to qfs-exec's
+/// async [`ReadDriver`] seam. A `/<scheme>/<bucket>` (or prefix) node LISTS its objects into the
+/// canonical [`object_listing_schema`]; a concrete `/<scheme>/<bucket>/<key>` node DOWNLOADS that
+/// object's bytes into a one-row `content` batch (mirroring the local/git/drive content reads, so
+/// `… |> decode <fmt>` works). The live SigV4 backend is injected (built by `crate::commit`); no
+/// credential or vendor type crosses this seam.
+pub struct ObjReadDriver {
+    driver: Arc<ObjDriver>,
+}
+
+impl ObjReadDriver {
+    /// Build the read adapter over a live [`ObjDriver`] (its [`qfs_driver_objstore::ObjRegistry`]
+    /// carries the SigV4 [`qfs_driver_objstore::HttpBackend`] for the configured bucket).
+    #[must_use]
+    pub fn new(driver: Arc<ObjDriver>) -> Self {
+        Self { driver }
+    }
+}
+
+/// The single-row object-content batch: `key` + the raw bytes under the well-known `content` column
+/// (the name the engine's `DECODE` reads, matching the local/git/drive content reads).
+fn object_content_batch(key: &str, bytes: Vec<u8>) -> RowBatch {
+    let schema = Schema::new(vec![
+        Column::new("key", ColumnType::Text, false),
+        Column::new("content", ColumnType::Bytes, true),
+    ]);
+    let row = Row::new(vec![Value::Text(key.to_string()), Value::Bytes(bytes)]);
+    RowBatch::new(schema, vec![row])
+}
+
+/// The blocking object-storage read: parse the node, then LIST (bucket) or DOWNLOAD (object). The
+/// SigV4 backend's reqwest transport drives its own runtime via `block_on`, so the caller runs this
+/// off the async executor's thread (see [`ObjReadDriver::scan`]).
+fn obj_scan(
+    driver: &ObjDriver,
+    path_str: &str,
+    filter: Option<&qfs_core::Predicate>,
+    limit: Option<u64>,
+) -> Result<RowBatch, CfsError> {
+    let invalid = |reason: &'static str| CfsError::InvalidPath {
+        path: path_str.to_string(),
+        reason,
+    };
+    let path = Path::new(path_str);
+    match ObjNode::parse(&path).map_err(|e| invalid(e.code()))? {
+        // A concrete object key downloads its content (one `content` row).
+        ObjNode::Object { key, .. } => {
+            let bytes = driver
+                .get(&path, None)
+                .map_err(|e| invalid(e.code()))?
+                .into_bytes();
+            Ok(object_content_batch(&key, bytes))
+        }
+        // A bucket/prefix lists objects (native prefix/delimiter pushdown + truthful residual).
+        ObjNode::Bucket { .. } => {
+            let pushdown = ObjDriver::plan_ls(filter, None);
+            let (page, residual) = driver
+                .ls(&path, &pushdown, None)
+                .map_err(|e| invalid(e.code()))?;
+            let batch = RowBatch::new(object_listing_schema(), page.to_rows());
+            let mut batch = match residual {
+                Some(predicate) => qfs_exec::apply_residual(batch, &predicate),
+                None => batch,
+            };
+            if let Some(limit) = limit {
+                batch
+                    .rows
+                    .truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+            }
+            Ok(batch)
+        }
+        // The mount root (no bucket) is not a readable node.
+        _ => Err(invalid("objstore_root_not_readable")),
+    }
+}
+
+#[async_trait::async_trait]
+impl ReadDriver for ObjReadDriver {
+    async fn scan(&self, scan: &ScanNode) -> Result<RowBatch, CfsError> {
+        let path_str = scan.path.clone();
+        let filter = scan.pushed.filter.clone();
+        let limit = scan.pushed.limit;
+        let err_path = scan.path.clone();
+        // The SigV4 backend's reqwest transport drives its OWN runtime via `block_on`; running it
+        // inside the async read executor would nest runtimes (a panic). Execute the blocking read on
+        // a DEDICATED OS thread that has no tokio context. (Every cloud read facet shares this
+        // transport — objstore is the first wired to run live; the others need the same when used
+        // live, relevant to the EPIC `20260630203030` live verification.)
+        let joined = std::thread::scope(|s| {
+            s.spawn(|| obj_scan(&self.driver, &path_str, filter.as_ref(), limit))
+                .join()
+        });
+        match joined {
+            Ok(result) => result,
+            Err(_) => Err(CfsError::InvalidPath {
+                path: err_path,
+                reason: "objstore_read_panicked",
+            }),
+        }
+    }
 }
 
 #[async_trait::async_trait]

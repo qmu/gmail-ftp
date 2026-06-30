@@ -29,6 +29,21 @@ CREATE CONNECTION pg DRIVER postgres AT 'postgres://qfs@db.internal:5432/app' SE
 > comment-free until that lands (see ticket `20260630203060`'s Final Report). All guidance lives
 > here in the README instead.
 
+## Object storage (MinIO / `/s3`)
+
+The stack also runs MinIO (S3-compatible) and seeds a `qfs-dev` bucket with two objects. The live
+`/s3` reads are configured via env vars (the connection-model alignment is a follow-up):
+
+```sh
+export QFS_S3_REGION=us-east-1 QFS_S3_ACCESS_KEY_ID=qfs QFS_S3_BUCKET=qfs-dev \
+       QFS_S3_ENDPOINT=http://localhost:9000 QFS_SECRET_S3_DEFAULT=qfs12345
+qfs run "/s3/qfs-dev"                          # list objects
+qfs run "/s3/qfs-dev/greeting.txt"             # download an object's content
+qfs run "/s3/qfs-dev/data.csv |> decode csv"   # object -> content -> codec
+```
+
+MinIO uses path-style addressing, which qfs's SigV4 signer already emits. MinIO console: http://localhost:9001.
+
 ## Notes
 
 - Passwords in this stack (`qfs`/`root`) are **dev-only**.
