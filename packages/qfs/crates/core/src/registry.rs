@@ -704,6 +704,38 @@ mod tests {
     }
 
     #[test]
+    fn resolve_path_routes_a_multi_segment_user_mount() {
+        // DESIGN SPIKE — EPIC 20260701100000 (defined paths), keystone 20260701100010, decision #5.
+        // A user "defined path" is a MULTI-SEGMENT mount; resolve_path must route it by the same
+        // boundary-aware longest-prefix rule WITHOUT any router change — de-risking the premise that
+        // recursive `/<folder>/<folder>/<resource>` paths route through the existing registry. (The
+        // sibling premise — a driver keeping a CANONICAL id() ≠ its user mount so per-driver parsers
+        // see `/<id>/<sub>` unchanged — is already proven in production by the `/ga` alias.)
+        let mut reg = MountRegistry::new();
+        reg.register(Arc::new(FakeDriver::at("/work/reports")))
+            .unwrap();
+        // A nested resource under the multi-segment mount routes, stripping the WHOLE mount.
+        let (_d, sub) = reg.resolve_path("/work/reports/2026/q3.csv").unwrap();
+        assert_eq!(sub, "2026/q3.csv");
+        // The exact multi-segment mount resolves with an empty sub-path.
+        assert_eq!(reg.resolve_path("/work/reports").unwrap().1, "");
+        // Boundary rule holds for multi-segment mounts: a sibling sharing only a textual prefix of
+        // the LAST segment is not captured.
+        assert!(reg.resolve_path("/work/reportskeeping/x").is_none());
+        // A shorter overlapping mount loses to the longer multi-segment one (longest-prefix).
+        reg.register(Arc::new(FakeDriver::at("/work"))).unwrap();
+        let (d2, sub2) = reg.resolve_path("/work/reports/x").unwrap();
+        assert_eq!(
+            d2.mount(),
+            "/work/reports",
+            "longest multi-segment mount wins"
+        );
+        assert_eq!(sub2, "x");
+        // …while a different child of the shorter mount still routes to it.
+        assert_eq!(reg.resolve_path("/work/budget").unwrap().0.mount(), "/work");
+    }
+
+    #[test]
     fn proc_registry_empty_then_roundtrip_then_duplicate_then_absent() {
         let mut reg = ProcRegistry::new();
         assert!(reg.is_empty());
