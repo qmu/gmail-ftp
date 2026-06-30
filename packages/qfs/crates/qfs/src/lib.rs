@@ -51,6 +51,7 @@ pub mod session;
 pub mod shared_connection;
 pub mod shell;
 pub mod sql;
+pub mod sql_backends;
 pub mod store;
 pub mod sys;
 pub mod telemetry;

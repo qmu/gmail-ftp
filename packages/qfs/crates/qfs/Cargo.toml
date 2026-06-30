@@ -168,6 +168,16 @@ qfs-driver-claude = { path = "../driver-claude" }
 # libsqlite3 from source (no system-lib dependency) — the same dep+feature qfs-driver-sql uses for
 # its in-memory test backend, so the artifact already builds in this workspace.
 rusqlite = { version = "0.40", features = ["bundled"] }
+# t-203060 Postgres / MySQL production `/sql` backends — the SAME pattern as rusqlite above: the
+# vendor-free `SqlBackend` trait lives in qfs-driver-sql, but the real engine clients dead-end HERE
+# in the terminal binary (qfs-cmd/qfs-exec stay off them). Both are PURE-Rust clients (no system
+# libpq/libmysqlclient), so the artifact builds with no system dependency. Sync APIs match the sync
+# `SqlBackend` trait; NoTls for the local dev compose stack. No vendor type crosses the boundary.
+postgres = "0.19"
+# `bytes::BytesMut` is the buffer type in `postgres`'s `ToSql` signature — named by the `PgBind`
+# parameter adapter (src/sql_backends.rs). Already in the tree via `postgres`.
+bytes = "1"
+mysql = { version = "25", default-features = false, features = ["minimal"] }
 # t42 persistence foundation: the binary is the ONE place that opens a real DB path (decision F +
 # the dep-direction guard — qfs-store is a sync leaf; nothing in the spine names a file). The binary
 # resolves the System DB path (`src/store.rs`) and runs the embedded migrations on start. qfs-store
