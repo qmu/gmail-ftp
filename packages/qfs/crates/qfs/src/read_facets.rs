@@ -406,7 +406,10 @@ impl ReadDriver for GitReadDriver {
                     blobfs::blame(repo, r, file, GIT_READ_CAP).map_err(|e| invalid(e.code()))?;
                 dto_batch(BlameRow::schema(), &rows, BlameRow::to_row)
             }
-            GitNode::Blob { path } => blobfs::ls(repo, r, path).map_err(|e| invalid(e.code()))?,
+            // A blob PATH addresses either a file (→ a `content` row) or a directory (→ the tree
+            // listing); `blobfs::read` dispatches on which at read time (a file path resolved to a
+            // blob node that `ls` alone rejected with `invalid_path`).
+            GitNode::Blob { path } => blobfs::read(repo, r, path).map_err(|e| invalid(e.code()))?,
             GitNode::Root => blobfs::ls(repo, r, "").map_err(|e| invalid(e.code()))?,
             // GitNode is #[non_exhaustive]: a future node kind has no read wiring yet.
             _ => return Err(invalid("unsupported_git_node")),
@@ -576,6 +579,47 @@ mod tests {
                 .iter()
                 .any(|row| matches!(&row.values[0], Value::Text(s) if s == "a.txt")),
             "the HEAD tree lists a.txt"
+        );
+
+        // t20260630203100: a blob FILE path reads its CONTENT (one row + a `content` column) rather
+        // than erroring `invalid_path` like the listing-only `ls` did — mirroring a `/local/<file>`
+        // read so `/git/r/a.txt |> decode <fmt>` has bytes to decode.
+        let blob_content_col = |batch: &RowBatch| -> Vec<u8> {
+            assert_eq!(
+                batch.rows.len(),
+                1,
+                "a single blob reads as one content row"
+            );
+            let idx = batch
+                .schema
+                .columns
+                .iter()
+                .position(|c| c.name.as_str() == "content")
+                .expect("a blob FILE read carries a `content` column");
+            match &batch.rows[0].values[idx] {
+                Value::Bytes(b) => b.clone(),
+                other => panic!("the `content` column must be bytes, got {other:?}"),
+            }
+        };
+        let file = read.scan(&scan_for("/git/r/a.txt")).await.unwrap();
+        assert_eq!(
+            blob_content_col(&file),
+            b"hello\n",
+            "the content column holds the blob's exact bytes"
+        );
+        // Combined with an explicit `@<ref>` coordinate (`/git/<repo>@<ref>/<file>`).
+        let at_ref = read.scan(&scan_for("/git/r@main/a.txt")).await.unwrap();
+        assert_eq!(
+            blob_content_col(&at_ref),
+            b"hello\n",
+            "the same blob reads at an explicit @<ref>"
+        );
+
+        // A non-existent file path still fails closed with a structured invalid_path (not content).
+        let missing = read.scan(&scan_for("/git/r/nope.txt")).await;
+        assert!(
+            matches!(missing, Err(CfsError::InvalidPath { .. })),
+            "a missing blob path is a structured invalid_path, got {missing:?}"
         );
     }
 
