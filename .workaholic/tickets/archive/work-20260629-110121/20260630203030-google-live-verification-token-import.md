@@ -4,8 +4,8 @@ author: a@qmu.jp
 type: enhancement
 layer: [Infrastructure, UX]
 effort: 4h
-commit_hash:
-category: Added
+commit_hash: 997b27a
+category: Changed
 depends_on: [20260630203000-epic-replace-gmail-ftp-gdrive-ftp.md]
 ---
 
