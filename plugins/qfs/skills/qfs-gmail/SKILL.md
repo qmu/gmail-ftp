@@ -3,50 +3,78 @@ name: qfs-gmail
 description: Use when a task needs to read or triage Gmail through qfs — search, read, summarize, draft, send, relabel, or trash mail via the /mail path and its pipe-SQL queries. Covers connecting a Google account and the label, message, thread, attachment, and draft surface.
 ---
 
-# Cookbook: Gmail
+# Gmail
 
-qfs pre-mounts **nothing** for third-party services — Gmail is unreachable until you `CONNECT` it to
-a path of your choosing (see [Setup](#setup)).
+Your whole mailbox becomes a set of queryable paths. Labels are directories, messages are files, and
+one pipe-SQL language searches, triages, drafts, sends, relabels, and cleans up — the same verbs you
+already use on a database, a git repo, or a folder of files.
 
-::: info The mount path is yours
-This cookbook mounts Gmail at `/mail` (`qfs connect /mail --driver gmail`), but the path is yours —
-`/work/gmail` works just as well, and every `/mail/…` recipe below simply becomes `/work/gmail/…`.
+## See it work first
+
+**Show me the mail that actually needs me** — unread, this quarter, from a real human (not a
+`noreply` robot), newest first:
+
+```qfs
+/mail/unread
+|> where date > '2026-04-01'
+     AND NOT from LIKE '%noreply%'
+|> select date, from, subject
+|> order by date DESC
+|> limit 20
+```
+
+```text
+date        from                    subject
+2026-06-30  jordan@northwind.com    Re: Q3 renewal — a couple of questions
+2026-06-29  taylor@acme.io          Contract redlines attached
+2026-06-27  priya@boldpeak.dev      Can we move the review to Thursday?
+… 20 rows
+```
+
+That read runs the instant you connect an account. Now the **smart** part — one statement stars and
+marks-read everything from your boss, and previews before it touches anything:
+
+```qfs
+update /mail/inbox
+  set add_labels = 'STARRED', remove_labels = 'UNREAD'
+  where from == 'boss@example.com'
+```
+
+```text
+PREVIEW: 1 effect(s)
+  #0 UPDATE -> mail:/mail/inbox [affected 3]
+  total affected: 3
+```
+
+::: tip Reads run now; writes preview
+Every **read** returns rows immediately. Every **write** (`update`, `insert`, `remove`, `call`)
+*previews* by default and changes nothing — add `--commit` to apply it, `--commit-irreversible` for
+the ones that can't be undone (sending, trashing). Paste any recipe below and safely watch what it
+*would* do first.
 :::
 
-Once connected, `/mail` is your Gmail account as an **append log**, mapped onto a filesystem shape:
-
-| Gmail thing | qfs path | it is a… |
-| ----------- | -------- | -------- |
-| a label | `/mail/inbox`, `/mail/sent`, `/mail/<UserLabel>` | directory of messages |
-| a message | `/mail/inbox/<msg-id>` or `id:<msg-id>` | file |
-| a thread | `id:thread:<thread-id>` | file (the whole conversation) |
-| an attachment | `/mail/inbox/<msg-id>/<att-id>` | nested entry |
-| your drafts | `/mail/drafts` | the append target you write new mail to |
-
-Message columns: `id`, `thread_id`, `date`, `from`, `subject`, `snippet`, `label_ids`,
-`attachments`. Attachment columns: `filename`, `mime`, `size`. Run `qfs describe /mail/inbox`
-(after connecting) to see the exact schema and verbs for any node.
-
-::: tip Labels are written verbatim
-A label segment is passed to Gmail **exactly as you write it** — qfs never rewrites the case. It
-reaches Gmail as a `label:` search term, which Gmail itself matches case-insensitively, so the
-ergonomic lowercase just works: `/mail/inbox` reads your inbox, and `sent`, `spam`, `trash`,
-`starred`, `important`, `unread`, the `category_*` tabs, and your own user labels all work the same
-way. `drafts` is qfs's reserved write collection (the INSERT target), not a label.
-:::
+Gmail isn't reachable until you connect a Google account to a path — about five minutes, once, in
+**[Setup](#setup)**. After that every recipe on this page works verbatim.
 
 ## Setup
 
-A complete Gmail setup has four parts: an authenticated qfs operator, your Google OAuth **app**
-credentials, your account's **refresh token**, and the **mount** (the `CONNECT` that makes the path
-exist).
+You connect Gmail once. The happy path is four commands:
+
+```sh
+printf '%s' "$YOUR_PASSWORD" | qfs identity signup you@example.com   # 1. an operator
+cat credentials.json         | qfs connection add google-app default  # 2. your OAuth app
+QFS_GOOGLE_CONSENT=1           qfs connection add gmail default        # 3. authorize (browser)
+qfs connect /mail --driver gmail                                       # 4. mount it at /mail
+```
+
+The rest of this section explains each line and the alternatives.
 
 ### 0. Prerequisites
 
 - A Google account.
 - A Google **Desktop-app** OAuth client (`client_id` + `client_secret`), downloaded from the
-  [Google Cloud console](https://console.cloud.google.com/apis/credentials) as `credentials.json`.
-  Enable the **Gmail API** for the project.
+  [Google Cloud console](https://console.cloud.google.com/apis/credentials) as `credentials.json`,
+  with the **Gmail API** enabled for the project.
 - `QFS_PASSPHRASE` exported in your shell — it unlocks qfs's encrypted credential store, where the
   refresh token is sealed at rest.
 
@@ -61,18 +89,18 @@ printf '%s' "$YOUR_PASSWORD" | qfs identity signup you@example.com
 
 ### 2. Hand qfs your OAuth app credentials
 
-Store the downloaded `credentials.json` in qfs's own encrypted store (so it no longer depends on a
-file on disk):
+Store the downloaded `credentials.json` in qfs's own encrypted store, so it no longer depends on a
+file on disk:
 
 ```sh
 cat credentials.json | qfs connection add google-app default
 ```
 
-CI/agents can instead export `QFS_GOOGLE_CLIENT_ID` and `QFS_GOOGLE_CLIENT_SECRET`.
+CI and agents can instead export `QFS_GOOGLE_CLIENT_ID` and `QFS_GOOGLE_CLIENT_SECRET`.
 
 ### 3. Authorize your account (get a refresh token)
 
-Pick **one** of the two paths.
+Pick **one** path.
 
 **A — Fresh browser consent (recommended).** One command opens a Google consent screen; approve it
 and qfs stores the refresh token under `google:<email>:refresh_token`, records your consent, and
@@ -108,6 +136,11 @@ qfs connect /mail --driver gmail
 
 `qfs connection paths` now lists it, and `qfs describe /mail` shows the schema and verbs.
 
+::: info The mount path is yours
+`/work/gmail` works just as well as `/mail` — mount with `qfs connect /work/gmail --driver gmail`
+and every `/mail/…` recipe below simply becomes `/work/gmail/…`.
+:::
+
 ### 5. Read real mail
 
 ```sh
@@ -115,19 +148,42 @@ qfs run "/mail/inbox |> select date, from, subject |> limit 5"
 ```
 
 Real messages come back. If a read reports *connect a Google account to read mail*, revisit steps
-1–3 — you are past addressing (the path resolved) but the cloud bind gate has no signed-in operator
+1–3: the path resolved (you're past addressing), but the cloud bind gate has no signed-in operator
 or recorded consent yet.
+
+## The mailbox as paths
+
+Once connected, `/mail` is your Gmail account as an **append log** mapped onto a filesystem shape:
+
+| Gmail thing | qfs path | it is a… |
+| ----------- | -------- | -------- |
+| a label | `/mail/inbox`, `/mail/sent`, `/mail/<UserLabel>` | directory of messages |
+| a message | `/mail/inbox/<msg-id>` or `id:<msg-id>` | file |
+| a thread | `id:thread:<thread-id>` | file (the whole conversation) |
+| an attachment | `/mail/inbox/<msg-id>/<att-id>` | nested entry |
+| your drafts | `/mail/drafts` | the append target you write new mail to |
+
+Message columns: `id`, `thread_id`, `date`, `from`, `subject`, `snippet`, `label_ids`,
+`attachments`. Attachment columns: `filename`, `mime`, `size`. Run `qfs describe /mail/inbox` for the
+exact schema and verbs of any node.
+
+::: tip Labels are written verbatim
+A label segment reaches Gmail **exactly as you write it** — qfs never rewrites the case. It becomes a
+`label:` search term, which Gmail matches case-insensitively, so lowercase just works: `sent`,
+`spam`, `trash`, `starred`, `important`, `unread`, the `category_*` tabs, and your own user labels
+all read the same way. `drafts` is qfs's reserved write collection (the INSERT target), not a label.
+:::
 
 ## Browse the mailbox
 
-**List your labels** (the directories under `/mail`):
+**List your labels** — the directories under `/mail`:
 
 ```qfs
 /mail |> select name
 ```
 
-**Read any label** — the system labels (`inbox`, `sent`, `starred`, `important`, `spam`, `unread`)
-and your own (e.g. `/mail/Receipts`):
+**Read any label** — the system ones (`inbox`, `sent`, `starred`, `important`, `spam`, `unread`) and
+your own (e.g. `/mail/Receipts`):
 
 ```qfs
 /mail/inbox |> select date, from, subject |> limit 20
@@ -183,7 +239,7 @@ query and re-filters locally only the parts Gmail can't express exactly.
 
 ## Read one message or attachment
 
-**A single message** as a file under its label (the message id is the last segment; a listing's
+**A single message** as a file under its label — the message id is the last segment (a listing's
 `id` and `thread_id` columns give you the ids):
 
 ```qfs
@@ -192,8 +248,7 @@ query and re-filters locally only the parts Gmail can't express exactly.
 ```
 
 **List a message's attachments**, then **download one** — the attachment node
-`/mail/<label>/<msg-id>/<att-id>` reads the `filename`, `mime`, `size`, and the decoded `content`
-bytes (gmail-ftp `get id:att:<msg>:<att>`):
+`/mail/<label>/<msg-id>/<att-id>` reads `filename`, `mime`, `size`, and the decoded `content` bytes:
 
 ```qfs
 /mail/inbox/18f1a2b3c4
@@ -217,8 +272,8 @@ bytes (gmail-ftp `get id:att:<msg>:<att>`):
 
 ## Triage — relabel, star, archive
 
-Relabeling is an `UPDATE` on a label: `set add_labels` / `remove_labels` (comma-separated label
-ids) selects what to add and remove. It previews like any effect and only applies on `--commit`.
+Relabeling is an `UPDATE` on a label: `set add_labels` / `remove_labels` (comma-separated label ids)
+picks what to add and remove. It previews like any effect and only applies on `--commit`.
 
 **Star and mark-read everything from your boss:**
 
@@ -228,8 +283,8 @@ update /mail/inbox
   where from == 'boss@example.com'
 ```
 
-**Archive newsletters** (archiving is just *removing the `INBOX` label* — the message stays in All
-Mail):
+**Archive newsletters** — archiving is just *removing the `INBOX` label*; the message stays in All
+Mail:
 
 ```qfs
 update /mail/inbox
@@ -245,9 +300,9 @@ update /mail/inbox
   where from LIKE '%@stripe.com'
 ```
 
-**Create a new label first** (gmail-ftp `mkdir`). Labels are the mailbox's directories, so making
-one is an `INSERT` into the `/mail/labels` collection — a nested `Parent/Child` name creates the
-hierarchy. It previews like any write and only applies on `--commit`:
+**Create a new label first.** Labels are the mailbox's directories, so making one is an `INSERT`
+into the `/mail/labels` collection — a nested `Parent/Child` name creates the hierarchy. It previews
+like any write and only applies on `--commit`:
 
 ```qfs
 insert into /mail/labels
@@ -256,8 +311,7 @@ insert into /mail/labels
 
 ## Write — draft and send
 
-**Draft an email** (reversible — creating a draft sends nothing). Writing a draft *previews* until
-you `--commit`:
+**Draft an email** — reversible; creating a draft sends nothing. It *previews* until you `--commit`:
 
 ```qfs
 insert into /mail/drafts
@@ -271,8 +325,8 @@ PREVIEW: 1 effect(s)
 ```
 
 **Draft with an attachment.** The `attachments` column is an **array of structs**, each
-`{ filename, mime, bytes }` — qfs's general nested-value literals. Give `bytes` a hex `X'…'` bytes
-literal (or a plain string for text), and name the columns so the array lands in `attachments`:
+`{ filename, mime, bytes }`. Give `bytes` a hex `X'…'` literal (or a plain string for text), and name
+the columns so the array lands in `attachments`:
 
 ```qfs
 insert into /mail/drafts
@@ -281,9 +335,9 @@ insert into /mail/drafts
           [ { filename: 'hello.txt', mime: 'text/plain', bytes: X'68656c6c6f' } ])
 ```
 
-The draft is built as a `multipart/mixed` message with the file attached — still a reversible
-preview until you `--commit`. Piping a **Google Drive** download straight into this column (instead
-of an inline literal) is the [cross-service attach-and-send recipe](/cookbook/cross-service).
+The draft is built as a `multipart/mixed` message with the file attached — still a reversible preview
+until you `--commit`. Piping a **Google Drive** download straight into this column (instead of an
+inline literal) is the [cross-service attach-and-send recipe](/cookbook/cross-service).
 
 **Draft, then send it.** The draft is reversible; the send is the irreversible step:
 
@@ -302,7 +356,7 @@ re-sends the **same** draft (de-duplicated by draft id), never a fresh message.
 
 ## Clean up — trash
 
-**Trash by subject** (also irreversible — the preview shows it as a gate):
+**Trash by subject** — also irreversible; the preview shows it as a gate:
 
 ```qfs
 remove /mail/inbox
