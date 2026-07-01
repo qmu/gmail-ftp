@@ -1,17 +1,18 @@
 ---
 skill_name: qfs-files
-skill_description: Use when a task needs to read, write, or convert files through qfs — local files, Google Drive, and S3/R2 object storage under /local, /drive, /s3, /r2, plus codec format conversion (CSV, JSON, and more).
+skill_description: Use when a task needs to read, write, or convert local files and S3/R2 object storage through qfs — list/inspect, read bytes, UPSERT/REMOVE blobs under /local, /s3, /r2, plus codec format conversion (CSV, JSON, YAML, TOML). For Google Drive use the Google Drive cookbook.
 ---
 
-# Cookbook: Files & storage
+# Cookbook: Files & object storage
 
-Local files (`/local/...`), cloud Drive (`/drive/...`), and object storage (`/s3/...`, `/r2/...`)
-are all **blob namespaces** — folders of files. They share one set of verbs: `SELECT` to list/read,
-`UPSERT` to write, `REMOVE` to delete. (In the [interactive shell](/guide/shell) you can also use
-the familiar `ls`/`cp`/`mv`/`rm` — those are just shorthand for these same verbs.)
+Local files (`/local/...`) and object storage (`/s3/...`, `/r2/...`) are **blob namespaces** —
+folders of files. They share one set of verbs: `SELECT` to list/read, `UPSERT` to write, `REMOVE` to
+delete. (In the [interactive shell](/guide/shell) you can also use the familiar `ls`/`cp`/`mv`/`rm` —
+those are just shorthand for these same verbs.)
 
-`/local` reads run today against your own disk; use an **absolute host path** after `/local`. The
-cloud stores need a connected account (see the notes below).
+`/local` reads and writes run today against your own disk; use an **absolute host path** after
+`/local`. The object stores need a connected account (see the notes below). Google Drive is its own
+service — see the [Google Drive cookbook](/cookbook/gdrive).
 
 ## List & inspect
 
@@ -127,28 +128,25 @@ is coming soon.
 ## Write & copy
 
 Writing a blob is an `UPSERT` (retry-safe — re-running converges instead of duplicating). Because
-every store is the same kind of path, copying *between* clouds is the same statement. Writes
-**preview** by default; they change nothing until you `--commit`.
+every store is the same kind of path, the same statement shape works across them. Writes **preview**
+by default; they change nothing until you `--commit`.
 
-**Upload a report to Drive** (previews the plan):
+**Write a local file** (previews the plan):
 
 ```qfs
-upsert into /drive/my/Reports/q3.pdf
-  values ('…bytes…')
+upsert into /local/home/you/docs/out.json
+  values ('{"ok":true}')
 ```
 
 ```text
 PREVIEW: 1 effect(s)
-  #0 UPSERT -> drive:/drive/my/Reports/q3.pdf [affected 1]
+  #0 UPSERT -> local:/local/home/you/docs/out.json [affected 1]
   total affected: 1
 ```
 
-::: warning Cloud stores need a connection
-A `/drive`, `/s3`, or `/r2` **read** needs credentials — e.g. an `/s3` list returns *connect AWS
-credentials to read S3 — run `qfs connection add s3`*. `/drive` reads **and** writes are wired and
-live-verified: the path→id walk, byte download, and Google-native export on the read side, and
-`upsert` / `update` / `remove` on the write side (previewed by default, applied with `--commit`).
-`/s3` and `/r2` **writes** are not implemented yet: `upsert into /s3/…` / `remove /s3/…` return
-`unsupported_verb` (`supported: []`). Use `/local` for a runnable end-to-end blob recipe with no
-cloud connection.
+::: warning Object stores need a connection, and their writes are not wired yet
+An `/s3` or `/r2` **read** needs credentials — an `/s3` list returns *connect AWS credentials to read
+S3 — run `qfs connection add s3`*. `/s3` and `/r2` **writes** are not implemented yet: `upsert into
+/s3/…` / `remove /s3/…` return `unsupported_verb` (`supported: []`). `/local` reads **and** writes are
+wired and run against your disk with no connection — use it for a runnable end-to-end blob recipe.
 :::

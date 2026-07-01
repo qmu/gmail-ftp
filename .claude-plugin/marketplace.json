@@ -21,10 +21,13 @@
         "./skills/qfs",
         "./skills/qfs-cookbook",
         "./skills/qfs-gmail",
+        "./skills/qfs-gdrive",
         "./skills/qfs-databases",
+        "./skills/qfs-git",
+        "./skills/qfs-github",
+        "./skills/qfs-slack",
         "./skills/qfs-files",
         "./skills/qfs-cross-service",
-        "./skills/qfs-code",
         "./skills/qfs-automation"
       ]
     }

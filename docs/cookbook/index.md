@@ -1,6 +1,6 @@
 ---
 skill_name: qfs-cookbook
-skill_description: Use for an overview of what qfs can do and which qfs cookbook skill fits a task — reading, searching, transforming, or writing across mail, databases, files, code, and automation with one pipe-SQL language. Routes to the per-topic skills.
+skill_description: Use for an overview of what qfs can do and which qfs cookbook skill fits a task — reading, searching, transforming, or writing across Gmail, Google Drive, databases, files, git, GitHub, Slack, and automation with one pipe-SQL language. Routes to the per-service skills.
 ---
 
 # Cookbook
@@ -35,13 +35,20 @@ that can't be undone, like sending mail or merging a PR. So paste any recipe and
 
 ## The chapters
 
+One cookbook per service — each opens with how to connect it, then the recipes.
+
 - **[Gmail](/cookbook/gmail)** — connect a Google account, then search, triage, draft, send, label,
   clean up.
+- **[Google Drive](/cookbook/gdrive)** — browse My Drive and Shared Drives, download, upload, create
+  folders, trash.
 - **[Databases](/cookbook/databases)** — filter, aggregate, update, set operations.
-- **[Files & storage](/cookbook/files)** — local, Drive, S3/R2, and format conversion with codecs.
+- **[git](/cookbook/git)** — versioned file tree and history; read the tree at a ref; record a commit.
+- **[GitHub](/cookbook/github)** — list and filter pull requests and issues; merge a PR.
+- **[Slack](/cookbook/slack)** — read a channel's latest messages; post a message.
+- **[Files & object storage](/cookbook/files)** — local files and S3/R2, plus format conversion with
+  codecs.
 - **[Cross-service](/cookbook/cross-service)** — join a database to GitHub, a file to a table, one
   query spanning several services.
-- **[Code: git, GitHub, Slack](/cookbook/code)** — versioned reads, pull requests, chat.
 - **[Automation (server)](/cookbook/automation)** — turn any query into a trigger, a scheduled job,
   an HTTP endpoint, or a cached view.
 

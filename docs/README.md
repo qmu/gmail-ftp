@@ -12,10 +12,11 @@ Welcome to the qfs docs. Here's the map.
 
 ## The Cookbook
 
-- **[Cookbook](/cookbook/)** — real problems and the single statement that solves each:
-  [gmail](/cookbook/gmail), [databases](/cookbook/databases),
-  [files & storage](/cookbook/files), [cross-service joins](/cookbook/cross-service),
-  [code](/cookbook/code), and [automation](/cookbook/automation).
+- **[Cookbook](/cookbook/)** — real problems and the single statement that solves each, one per
+  service: [Gmail](/cookbook/gmail), [Google Drive](/cookbook/gdrive),
+  [databases](/cookbook/databases), [git](/cookbook/git), [GitHub](/cookbook/github),
+  [Slack](/cookbook/slack), [files & object storage](/cookbook/files),
+  [cross-service joins](/cookbook/cross-service), and [automation](/cookbook/automation).
 
 ## Use it
 

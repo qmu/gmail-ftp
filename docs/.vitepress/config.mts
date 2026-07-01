@@ -48,7 +48,6 @@ export default defineConfig({
           { text: 'Installation', link: '/guide/installation' },
           { text: 'Get started', link: '/guide/getting-started' },
           { text: 'Connect a service', link: '/guide/connect' },
-          { text: 'Replace gmail-ftp / gdrive-ftp', link: '/guide/replace-gmail-gdrive-ftp' },
         ],
       },
       {
@@ -57,10 +56,13 @@ export default defineConfig({
         items: [
           { text: 'Overview', link: '/cookbook/' },
           { text: 'Gmail', link: '/cookbook/gmail' },
+          { text: 'Google Drive', link: '/cookbook/gdrive' },
           { text: 'Databases', link: '/cookbook/databases' },
-          { text: 'Files & storage', link: '/cookbook/files' },
+          { text: 'git', link: '/cookbook/git' },
+          { text: 'GitHub', link: '/cookbook/github' },
+          { text: 'Slack', link: '/cookbook/slack' },
+          { text: 'Files & object storage', link: '/cookbook/files' },
           { text: 'Cross-service', link: '/cookbook/cross-service' },
-          { text: 'Code: git, GitHub, Slack', link: '/cookbook/code' },
           { text: 'Automation (server)', link: '/cookbook/automation' },
           { text: 'Query cookbook (catalogue)', link: '/query-cookbook' },
         ],

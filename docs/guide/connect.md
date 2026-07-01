@@ -68,9 +68,9 @@ refresh token is stored encrypted and never printed. To provision a refresh toke
 instead of the browser flow, pipe it on stdin — the full walkthrough (and a token-import shortcut)
 is in the [Gmail cookbook Setup](/cookbook/gmail#setup).
 
-Once connected, **`/mail` and `/drive` reads return your real messages and files.** Coming from
-`gmail-ftp` / `gdrive-ftp`? The [migration guide](/guide/replace-gmail-gdrive-ftp) maps every FTP
-command (`ls`/`get`/`put`/`send`/`rm`/…) to its qfs form.
+Once connected, **`/mail` and `/drive` reads return your real messages and files.** See the
+[Gmail cookbook](/cookbook/gmail) and the [Google Drive cookbook](/cookbook/gdrive) for the full set
+of read/search/write recipes over each.
 
 ## GitHub & Slack — a token
 

@@ -32,7 +32,7 @@ Test <t@e.com> | platform | initial commit
 ```
 
 (`/sql/<conn>` is registered with `QFS_SQL_<CONN>`, `/git/<repo>` with `QFS_GIT_<REPO>` — see the
-[Databases](/cookbook/databases) and [Code](/cookbook/code) chapters.)
+[Databases](/cookbook/databases) and [git](/cookbook/git) chapters.)
 
 ## Join a database to GitHub
 
@@ -93,7 +93,7 @@ content
 
 …then write those bytes to a store with an `UPSERT INTO`. (Today these are two steps; the point is
 they speak the same language end to end. `UPSERT` into `/local` runs now; `/s3`/`/r2` writes are
-not yet implemented — see [Files & storage](/cookbook/files).)
+not yet implemented — see [Files & object storage](/cookbook/files).)
 
 ::: tip How to know what joins
 `qfs describe <path>` reports a node's verbs and its **pushdown** line — which filters run inside
