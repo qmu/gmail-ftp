@@ -6,9 +6,13 @@ skill_description: Use when a task needs to read, write, or organize Google Driv
 # Cookbook: Google Drive
 
 qfs pre-mounts **nothing** for third-party services — Google Drive is unreachable until you `CONNECT`
-it to a path of your choosing (see [Setup](#setup)). This cookbook mounts it at `/drive`
-(`qfs connect /drive --driver gdrive`), but the path is yours — `/work/drive` works just as well, and
-every `/drive/…` recipe below simply becomes `/work/drive/…`.
+it to a path of your choosing (see [Setup](#setup)).
+
+::: info The mount path is yours
+This cookbook mounts Drive at `/drive` (`qfs connect /drive --driver gdrive`), but the path is
+yours — `/work/drive` works just as well, and every `/drive/…` recipe below simply becomes
+`/work/drive/…`.
+:::
 
 Once connected, `/drive` is your Google Drive as a **blob namespace** mapped onto a filesystem shape:
 

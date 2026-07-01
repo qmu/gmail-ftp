@@ -6,9 +6,12 @@ description: Use when a task needs to read or triage Gmail through qfs — searc
 # Cookbook: Gmail
 
 qfs pre-mounts **nothing** for third-party services — Gmail is unreachable until you `CONNECT` it to
-a path of your choosing (see [Setup](#setup)). This cookbook mounts it at `/mail`
-(`qfs connect /mail --driver gmail`), but the path is yours — `/work/gmail` works just as well, and
-every `/mail/…` recipe below simply becomes `/work/gmail/…`.
+a path of your choosing (see [Setup](#setup)).
+
+::: info The mount path is yours
+This cookbook mounts Gmail at `/mail` (`qfs connect /mail --driver gmail`), but the path is yours —
+`/work/gmail` works just as well, and every `/mail/…` recipe below simply becomes `/work/gmail/…`.
+:::
 
 Once connected, `/mail` is your Gmail account as an **append log**, mapped onto a filesystem shape:
 
