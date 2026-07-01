@@ -31,6 +31,7 @@
           }
         }
       },
+      "connection": null,
       "do_plan": null,
       "every": null,
       "kind": "Endpoint",

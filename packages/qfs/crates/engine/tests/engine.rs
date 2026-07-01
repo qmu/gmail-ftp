@@ -11,7 +11,7 @@ use qfs_driver::PushdownProfile;
 use qfs_engine::{CombineEngine, MiniEvaluator, ScanResults};
 use qfs_pushdown::{
     partition_by_source, Aggregate, Aggregator, JoinKind, JoinOn, LogicalPlan, PhysicalPlan,
-    SetKind, SourceId, SourceRegistry,
+    ScalarExpr, SetKind, SourceId, SourceRegistry,
 };
 use qfs_types::{
     CmpOp, ColRef, Column, ColumnType, Fields, Literal, Predicate, Row, RowBatch, Schema, Value,
@@ -394,4 +394,115 @@ fn missing_scan_result_is_a_structured_error() {
         .execute(&phys, ScanResults::new(vec![]))
         .unwrap_err();
     assert_eq!(err.code(), "missing_scan_result");
+}
+
+// ---- Cross-service pack: ProjectExpr + ARRAY_AGG + Extend (t92, ticket 192440) ----
+
+fn drive_files_schema() -> Schema {
+    Schema::new(vec![
+        Column::new("name", ColumnType::Text, true),
+        Column::new("mime_type", ColumnType::Text, true),
+        Column::new("content", ColumnType::Bytes, true),
+    ])
+}
+
+fn drive_files_batch() -> RowBatch {
+    RowBatch::new(
+        drive_files_schema(),
+        vec![
+            Row::new(vec![
+                Value::Text("a.txt".into()),
+                Value::Text("text/plain".into()),
+                Value::Bytes(b"aaa".to_vec()),
+            ]),
+            Row::new(vec![
+                Value::Text("b.pdf".into()),
+                Value::Text("application/pdf".into()),
+                Value::Bytes(b"bbb".to_vec()),
+            ]),
+        ],
+    )
+}
+
+#[test]
+fn cross_service_pack_attachments_project_expr_array_agg_extend() {
+    // The 192440 composable recipe's read half, executed over an in-memory Drive scan:
+    //   |> select {filename: name, mime: mime_type, bytes: content} as att   (ProjectExpr)
+    //   |> aggregate array_agg(att) as attachments                           (ARRAY_AGG)
+    //   |> extend to = 'a@x.y', subject = 'Q3', body = 'See attached'        (Extend)
+    // Expect ONE row whose `attachments` is an Array of two Structs carrying each file's
+    // bytes/filename/mime, plus the three extended draft columns.
+    let att = ScalarExpr::Struct(vec![
+        ("filename".into(), ScalarExpr::Col(ColRef::col("name"))),
+        ("mime".into(), ScalarExpr::Col(ColRef::col("mime_type"))),
+        ("bytes".into(), ScalarExpr::Col(ColRef::col("content"))),
+    ]);
+    let plan = LogicalPlan::Extend {
+        input: Box::new(LogicalPlan::Aggregate {
+            input: Box::new(LogicalPlan::ProjectExpr {
+                input: Box::new(LogicalPlan::scan_at(
+                    SourceId::new("drive"),
+                    "/drive/my",
+                    drive_files_schema(),
+                )),
+                projections: vec![("att".into(), att)],
+            }),
+            group_by: vec![],
+            aggregates: vec![Aggregate {
+                func: Aggregator::ArrayAgg,
+                column: "att".into(),
+                output: "attachments".into(),
+            }],
+        }),
+        assignments: vec![
+            ("to".into(), ScalarExpr::Lit(Value::Text("a@x.y".into()))),
+            ("subject".into(), ScalarExpr::Lit(Value::Text("Q3".into()))),
+            (
+                "body".into(),
+                ScalarExpr::Lit(Value::Text("See attached".into())),
+            ),
+        ],
+    };
+
+    let reg = SourceRegistry::new().with(SourceId::new("drive"), none());
+    let phys = partition_by_source(&plan, &reg).unwrap();
+    let out = MiniEvaluator::new()
+        .execute(&phys, ScanResults::new(vec![drive_files_batch()]))
+        .unwrap();
+
+    assert_eq!(
+        out.rows.len(),
+        1,
+        "array_agg collapses the two files into one row"
+    );
+    let row = &out.rows[0];
+    let col = |name: &str| {
+        out.schema
+            .columns
+            .iter()
+            .position(|c| c.name == name)
+            .unwrap()
+    };
+
+    let Value::Array(items) = &row.values[col("attachments")] else {
+        panic!(
+            "attachments must be an Array, got {:?}",
+            row.values[col("attachments")]
+        );
+    };
+    assert_eq!(items.len(), 2);
+    let Value::Struct(f0) = &items[0] else {
+        panic!("attachment 0 must be a Struct");
+    };
+    assert_eq!(f0.get("filename"), Some(&Value::Text("a.txt".into())));
+    assert_eq!(f0.get("mime"), Some(&Value::Text("text/plain".into())));
+    assert_eq!(f0.get("bytes"), Some(&Value::Bytes(b"aaa".to_vec())));
+    let Value::Struct(f1) = &items[1] else {
+        panic!("attachment 1 must be a Struct");
+    };
+    assert_eq!(f1.get("bytes"), Some(&Value::Bytes(b"bbb".to_vec())));
+
+    assert_eq!(row.values[col("to")], Value::Text("a@x.y".into()));
+    assert_eq!(row.values[col("subject")], Value::Text("Q3".into()));
+    assert_eq!(row.values[col("body")], Value::Text("See attached".into()));
 }

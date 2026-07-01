@@ -412,6 +412,19 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
         name: "project_broker_connection",
         sql: include_str!("schema/project_broker_connections.sql"),
     },
+    // EPIC 20260701100000 / t100020 (the `CONNECT` defined-path model): the DEFINED-PATH binding
+    // registry (`path_binding`) — a user-chosen PATH bound to a driver + credential reference (a
+    // "defined path" that MOUNTS a connection), or an ALIAS row reusing another path's connection.
+    // The project DB is the SINGLE SOURCE OF TRUTH (no `connections.qfs` file). Selectors + metadata
+    // only; the secret is a REFERENCE resolved at use time (env / vault → `secret_store`, migration
+    // #2), never a value. Appended as a NEW version (#8) — migrations #1–#7 stay frozen (the checksum
+    // guard forbids editing a shipped migration). The passphrase-free read/write that fills these
+    // columns lives in the binary (`crates/qfs/src/path_binding.rs`); this declares the shape.
+    Migration {
+        version: 8,
+        name: "project_path_binding",
+        sql: include_str!("schema/project_path_bindings.sql"),
+    },
 ];
 
 /// Structured, secret-free persistence errors (AI-consumable; a DB path is infra, not a secret, but
@@ -547,6 +560,98 @@ mod tests {
     }
 
     #[test]
+    fn superseded_body_is_healed_forward_not_rejected() {
+        // Reproduce the botched-but-released in-place edit of Project migration v2 (ticket
+        // 20260630203120): v0.0.9's `f95d20c` renamed the credential column `account`->`connection`
+        // by editing v2's body, so a pre-v0.0.9 DB records the OLD checksum (1be5979f…) with an
+        // `account` column. A trivial v1 skeleton + the EXACT original v2 body (a committed fixture,
+        // so it hashes to the real 1be5979f… that `SUPERSEDED_BODIES` keys on).
+        let v1 = Migration {
+            version: 1,
+            name: "skeleton",
+            sql: "CREATE TABLE marker (id INTEGER);",
+        };
+        let old_v2_body = include_str!("migrate_fixtures/project_secrets_v2_original.sql");
+        let mut db = Db::open(&MemorySource).unwrap();
+        migrate(
+            &mut db,
+            &[
+                v1,
+                Migration {
+                    version: 2,
+                    name: "project_secret_store",
+                    sql: old_v2_body,
+                },
+            ],
+        )
+        .unwrap();
+        // Lineage X: the OLD `account` column exists, and a stored credential lives in it.
+        assert!(column_exists(&db, "secret_store", "account"));
+        assert!(!column_exists(&db, "secret_store", "connection"));
+        db.conn()
+            .execute(
+                "INSERT INTO secret_store (driver, account, nonce, ciphertext) \
+                 VALUES ('gmail', 'me@example.com', x'00', x'01')",
+                [],
+            )
+            .unwrap();
+
+        // Now open with the CURRENT v2 body (the real schema file, hash 97466be6…). The runner must
+        // HEAL forward — rename the column, re-stamp the checksum — rather than ChecksumMismatch.
+        let cur_v2_body = include_str!("schema/project_secrets.sql");
+        migrate(
+            &mut db,
+            &[
+                v1,
+                Migration {
+                    version: 2,
+                    name: "project_secret_store",
+                    sql: cur_v2_body,
+                },
+            ],
+        )
+        .expect("a registered superseded body heals forward, never errors");
+
+        // Lineage X is now schema-identical to a fresh v0.0.9 DB: `connection`, not `account`…
+        assert!(column_exists(&db, "secret_store", "connection"));
+        assert!(!column_exists(&db, "secret_store", "account"));
+        // …the owner's stored credential survived the heal (NO data wipe — addressable by the new
+        // column name)…
+        let driver: String = db
+            .conn()
+            .query_row(
+                "SELECT driver FROM secret_store WHERE connection = 'me@example.com'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(driver, "gmail");
+        // …and the recorded checksum is re-stamped to the current body, so a relaunch is a no-op.
+        let v2 = applied_migrations(&db)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.version == 2)
+            .unwrap();
+        assert_eq!(
+            v2.checksum,
+            qfs_crypto_core::sha256_hex(cur_v2_body.as_bytes())
+        );
+        let again = migrate(
+            &mut db,
+            &[
+                v1,
+                Migration {
+                    version: 2,
+                    name: "project_secret_store",
+                    sql: cur_v2_body,
+                },
+            ],
+        )
+        .unwrap();
+        assert!(again.is_empty(), "post-heal relaunch re-applies nothing");
+    }
+
+    #[test]
     fn partial_migration_rolls_back_on_failure() {
         let mut db = Db::open(&MemorySource).unwrap();
         // Second statement is invalid SQL; the whole migration must roll back, leaving the first
@@ -621,8 +726,40 @@ mod tests {
         assert!(table_exists(proj.db(), "e2e_secret"));
         // t66 migration #7: the brokered team-connection registry (M9).
         assert!(table_exists(proj.db(), "broker_connection"));
-        // All seven project migrations are recorded.
-        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 7);
+        // t100020 migration #8: the defined-path binding registry (the CONNECT model).
+        assert!(table_exists(proj.db(), "path_binding"));
+        // All eight project migrations are recorded.
+        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn project_path_binding_migration_v8_applies_idempotently() {
+        // t100020 (the CONNECT defined-path model): migration #8 is idempotent — applying the
+        // Project set twice creates the `path_binding` table once and re-verifies it (checksum) the
+        // second time. The table is metadata-only: it carries NO secret/token/ciphertext/nonce
+        // column (the secret is a REFERENCE resolved at use time, never a value).
+        let mut db = Db::open(&MemorySource).unwrap();
+        let applied = migrate(&mut db, PROJECT_MIGRATIONS).unwrap();
+        assert!(applied.contains(&8), "v8 applied on the first migrate");
+        // A relaunch re-applies nothing (the v8 body is re-verified by checksum, not re-run).
+        assert!(migrate(&mut db, PROJECT_MIGRATIONS).unwrap().is_empty());
+        assert!(table_exists(&db, "path_binding"));
+        let cols: Vec<String> = {
+            let mut stmt = db
+                .conn()
+                .prepare("SELECT name FROM pragma_table_info('path_binding')")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(
+            !cols.iter().any(|c| c.contains("secret_value")
+                || c.contains("ciphertext")
+                || c.contains("nonce")),
+            "the binding registry must carry no secret VALUE column, got {cols:?}"
+        );
     }
 
     #[test]

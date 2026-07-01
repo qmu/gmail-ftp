@@ -1,9 +1,12 @@
 # qfs
 
 **One small grammar for every external service.** `qfs` is a single Rust binary that exposes
-every backend — mail, drive, object storage, GitHub, Slack, SQL, git, Google Analytics — through
-**one uniform, filesystem-shaped, pipe-SQL DSL**. It runs as a **CLI** locally, as a **daemon** on
-EC2, or (target) compiled to `wasm32` for Cloudflare Workers (RFD-0001 §1, §9).
+every backend — the local filesystem, mail, drive, object storage, GitHub, Slack, SQL, git, Google
+Analytics, Claude, an HTTP fetcher, a directory, and `/sys` administration — through **one uniform, filesystem-shaped,
+pipe-SQL DSL**. The same engine presents **three faces**: a **CLI** (and an FTP-like interactive
+shell), an **MCP endpoint** for AI agents, and an **embedded web dashboard** with approval cards.
+It runs locally or as a self-hosted server (RFD-0001 §1, §9). The Cloudflare Workers `wasm32`
+target is parked while the worker crate is offline ([ADR-0005](docs/adr/0005-deployment-hosts.md)).
 
 > qfs generalizes the FTP-shell idea per
 > [RFD-0001](.workaholic/RFDs/0001-qfs-architecture.md): instead of one FTP-style client for one
@@ -42,14 +45,50 @@ operating procedure ships embedded in the binary — run `qfs skill` (and `qfs s
   `SEND(d)` does not send mail — it desugars to a `CALL mail.send` node in a `Plan`. Nothing
   happens until `COMMIT`. See [`docs/language.md`](docs/language.md).
 - **Least privilege** (RFD §10). Credentials are stored per driver/connection (`qfs connection add`),
-  never inline in a config, a log, or a doc. They are **envelope-encrypted at rest** in the
-  SQLite Project DB: a random data-key encrypts each secret value, and that data-key is itself
-  wrapped under a key derived from `QFS_PASSPHRASE` (argon2id) — so export `QFS_PASSPHRASE` before
-  `qfs connection add`/`list`/`remove`, and pipe the credential value in via stdin (never argv). See
+  never inline in a config, a log, or a doc. `QFS_PASSPHRASE` is a password you choose that encrypts
+  the service logins you save on this machine (not any service's own password). Under the hood they
+  are **envelope-encrypted at rest** in the SQLite Project DB: a random data-key encrypts each secret
+  value, and that data-key is itself wrapped under a key derived from `QFS_PASSPHRASE` (argon2id) — so
+  export `QFS_PASSPHRASE` before `qfs connection add`/`list`/`remove`, and pipe the credential value
+  in via stdin (never argv). See [Connect a service](docs/guide/connect.md) for the per-source steps,
+  and
   [Connections & credentials](docs/guide/connections.md) for the full flow. (This SQLite store
   replaces the old encrypted file vault; there is no migration — re-run `qfs connection add` once
   for any existing connections.) `CREATE POLICY` gates writes by verb / path / irreversibility. See
   [`docs/server.md`](docs/server.md).
+
+## The shipped surface (three faces, one engine)
+
+The same engine answers on three faces, and the safety model (PREVIEW → COMMIT, the irreversible
+gate, the policy gate) is identical on all of them:
+
+- **CLI** — one-shot `qfs run` / `qfs describe`, plus the FTP-like interactive shell (no
+  subcommand). See [`docs/guide/cli.md`](docs/guide/cli.md).
+- **MCP endpoint** — the server exposes the same DESCRIBE → PREVIEW → COMMIT loop as MCP tools so an
+  AI agent drives every service through one contract.
+- **Web dashboard** — an embedded SPA served by `qfs serve` with **approval cards**: a human
+  reviews and approves a pending irreversible commit in the browser.
+
+Beyond reads/writes, v0.0.9 ships the operator surface:
+
+- **Identity** — local sign-up + lookup: `qfs identity signup <email>` / `qfs identity whoami`
+  (authentication only; identity is not authorization).
+- **Teams & invites** — `qfs invite create` mints a one-time, expiring token; `qfs invite redeem`
+  creates the local user + membership; `qfs invite revoke` cancels a pending invite.
+- **Jobs** — a saved `CREATE JOB … EVERY … DO …` plan run by an **external** scheduler:
+  `qfs job run <config> <name> --commit` and `qfs job cron <config> <name>` (qfs is not a scheduler).
+- **`/sys/*` administration** — the deployment's own state surfaced as ordinary paths you query:
+  `/sys/{users,projects,audit,connections,policies,metrics,settings,billing}`. The selectable AI
+  **safety mode** lives in `/sys/settings`; the hash-chained WORM audit tail is `/sys/audit`; the
+  per-team billing tier is recorded as data in `/sys/billing` (never a payment secret).
+- **OAuth Authorization Server** — qfs is its own OAuth AS (Dynamic Client Registration + PKCE) for
+  the agent/dashboard auth handshake. The credential store supports rotation / revocation / rekey
+  (`qfs connection rotate|revoke|rekey`).
+
+Honestly **not yet wired** (kept out of the capability claims): live OAuth *browser* consent, the
+MCP cloud-tunnel dial, an LDAP/AD/Entra/Workspace directory backend, the qfs Cloud broker endpoint,
+a payment provider, Postgres/MySQL SQL backends (SQLite ships), live gmail/gdrive/ga/objstore
+*reads* (github/slack reads ship), and the Cloudflare Workers wasm artifact (parked, ADR-0005).
 
 ## Install
 
@@ -76,18 +115,39 @@ update, and where to read more). The [Quickstart](#quickstart-the-loop) below is
 ## Quickstart (the loop)
 
 ```sh
-# 1. DESCRIBE a node — pure, no creds, offline:
-qfs describe /mail/drafts
+# 1. DESCRIBE a node — pure, no creds, no network (the contract you read first):
+#    Start local: this returns a real schema with no account and no setup.
+qfs describe /local/etc
 
-# 2. write + 3. PREVIEW (default — shows the plan, touches nothing):
-qfs run "/mail/inbox |> WHERE subject LIKE '%invoice%' |> SELECT subject, from"
+# 2. READ that returns rows right now — list any local directory
+#    (`/local` + an ABSOLUTE host path):
+qfs run "/local/etc |> select name, size, is_dir |> limit 5"
 
-# create a draft (PREVIEW first, then COMMIT to apply):
-qfs run "INSERT INTO /mail/drafts VALUES (...)"            # PREVIEW
-qfs run "INSERT INTO /mail/drafts VALUES (...) COMMIT"     # apply
+# …or run a pure codec pipeline — decode one format, encode another:
+echo '{"k":1,"name":"alpha"}' > /tmp/d.json
+qfs run "/local/tmp/d.json |> decode json |> encode yaml"
+# -> {"rows":[{"content":"- k: 1\n  name: alpha\n"}]}
 
-# 4. COMMIT an irreversible effect requires an explicit ack in one-shot:
-qfs run "id:draft-1 |> CALL mail.send COMMIT" --commit-irreversible
+# …or query SQLite / git with the WHERE pushed into the backend — needs a
+#    connection: export QFS_SQL_<conn>=<file.sqlite> / QFS_GIT_<repo>=<path> first.
+qfs run "/sql/orders/orders |> where total > 100 |> select customer, total |> order by total desc"
+qfs run "/git/myrepo/commits |> select sha, message |> limit 10"
+
+# 3. PREVIEW a write — the default; it builds the effect-plan and touches nothing:
+qfs run "insert into /mail/drafts values ('a@b.com','Hi','Body')"
+# -> {"preview":{"rows":[{"verb":"INSERT","target":{"driver":"mail","path":"/mail/drafts"},
+#     "affected":{"exact":1},"irreversible":false}],...},"committed":false}
+
+# 4. COMMIT applies the plan — `--commit` (writes need a CONNECTED account; below).
+qfs run "insert into /mail/drafts values ('a@b.com','Hi','Body')" --commit
+
+# A mail READ, or an irreversible CALL, needs a connected Google account today:
+qfs run "/mail/inbox |> where subject LIKE '%invoice%' |> select subject, from"
+# -> capability error (exit 3): "connect a Google account to read mail — run
+#    `qfs identity signup <email>`, then `qfs connection add gmail`"
+qfs run "/mail/drafts |> where id == 'draft-1' |> call mail.send" --commit --commit-irreversible
+# (same connect-account error until gmail is connected; `mail.send` is irreversible,
+#  so a one-shot COMMIT also needs the explicit `--commit-irreversible` ack)
 ```
 
 The interactive shell (no subcommand) gives the same loop with an FTP-like prompt:
@@ -103,11 +163,15 @@ for (RFD §9):
 
 ```
 $ qfs --version
-qfs 0.0.4
+qfs 0.0.10
 commit:  <git-sha>
-target:  x86_64-unknown-linux-gnu
+target:  x86_64-unknown-linux-musl
 wasm32:  false
 ```
+
+`target` is the triple the binary was built for — a shipped release is always one of the four
+static-musl Linux / macOS triples (`{x86_64,aarch64}-unknown-linux-musl`, `{x86_64,aarch64}-apple-darwin`),
+never a dynamic `-gnu` build.
 
 ## Documentation
 

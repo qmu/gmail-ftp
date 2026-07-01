@@ -93,6 +93,20 @@ fn describe_emits_append_archetype_and_message_schema() {
     );
 }
 
+#[test]
+fn describe_root_reports_the_label_listing_schema() {
+    // The mailbox ROOT lists labels (`ls /mail`), so its DESCRIBE reports the `name` label schema —
+    // not the message schema — keeping introspection honest about what a root read returns.
+    let (d, _) = driver_with_mock();
+    let desc = d.describe(&Path::new("/mail")).unwrap();
+    assert_eq!(desc.archetype, Archetype::AppendLog);
+    assert_eq!(desc.schema.columns.len(), 1);
+    assert!(
+        desc.schema.column("name").is_some(),
+        "root lists labels by name"
+    );
+}
+
 // ---- capability golden (path-keyed gate) -------------------------------------------------
 
 #[test]
@@ -118,6 +132,26 @@ fn capabilities_are_path_keyed() {
     assert!(check_capability(&d, &msg, Verb::Select).is_ok());
     assert!(check_capability(&d, &msg, Verb::Remove).is_ok());
     assert!(check_capability(&d, &msg, Verb::Insert).is_err());
+}
+
+#[test]
+fn a_label_segment_is_passed_through_verbatim() {
+    use crate::path::MailPath;
+    // qfs does NOT normalize the label case — the segment is the label name verbatim (`inbox` stays
+    // `inbox`). It reaches Gmail as a `label:<name>` SEARCH term, which Gmail matches
+    // case-insensitively, so `/mail/inbox` reads the inbox without any qfs-side canonicalization.
+    assert_eq!(
+        MailPath::parse_str("/mail/inbox").unwrap(),
+        MailPath::Label {
+            name: "inbox".to_string()
+        }
+    );
+    assert_eq!(
+        MailPath::parse_str("/mail/Receipts").unwrap(),
+        MailPath::Label {
+            name: "Receipts".to_string()
+        }
+    );
 }
 
 #[test]
@@ -357,6 +391,63 @@ fn insert_into_drafts_decodes_to_create_draft() {
         }
         other => panic!("expected CreateDraft, got {other:?}"),
     }
+}
+
+#[test]
+fn insert_into_drafts_decodes_an_attachments_array_struct_column() {
+    // The `attachments` column is the `Array(Struct{filename, mime, bytes})` shape a t92
+    // `[ { filename: '…', mime: '…', bytes: X'…' } ]` literal lowers to; the effect decoder must
+    // surface it as a `MailDraft` attachment carrying the raw bytes (here `X'68656c6c6f'` = "hello").
+    let attachment = Value::Struct(qfs_types::Fields::new(vec![
+        ("filename".to_string(), Value::Text("note.txt".into())),
+        ("mime".to_string(), Value::Text("text/plain".into())),
+        ("bytes".to_string(), Value::Bytes(b"hello".to_vec())),
+    ]));
+    let node = EffectNode::new(NodeId(0), EffectKind::Insert, target("/mail/drafts")).with_args(
+        draft_args(&[
+            (TO_COL, Value::Text("bob@example.com".into())),
+            (SUBJECT_COL, Value::Text("hi".into())),
+            (BODY_COL, Value::Text("body".into())),
+            ("attachments", Value::Array(vec![attachment])),
+        ]),
+    );
+    match GmailEffect::from_node(&node).unwrap() {
+        GmailEffect::CreateDraft { draft } => {
+            assert_eq!(draft.attachments.len(), 1);
+            assert_eq!(draft.attachments[0].filename, "note.txt");
+            assert_eq!(draft.attachments[0].mime, "text/plain");
+            assert_eq!(draft.attachments[0].bytes, b"hello");
+        }
+        other => panic!("expected CreateDraft, got {other:?}"),
+    }
+}
+
+#[test]
+fn insert_into_labels_decodes_to_create_label() {
+    // gmail-ftp `mkdir Work/Receipts` → INSERT INTO /mail/labels VALUES ('Work/Receipts'). The
+    // positional `name` column is named by the label collection's describe schema.
+    let node = EffectNode::new(NodeId(0), EffectKind::Insert, target("/mail/labels")).with_args(
+        draft_args(&[(NAME_COL, Value::Text("Work/Receipts".into()))]),
+    );
+    match GmailEffect::from_node(&node).unwrap() {
+        GmailEffect::CreateLabel { name } => assert_eq!(name, "Work/Receipts"),
+        other => panic!("expected CreateLabel, got {other:?}"),
+    }
+}
+
+#[test]
+fn insert_into_labels_with_no_name_is_malformed() {
+    let node = EffectNode::new(NodeId(0), EffectKind::Insert, target("/mail/labels"))
+        .with_args(draft_args(&[("other", Value::Text("x".into()))]));
+    assert!(GmailEffect::from_node(&node).is_err());
+}
+
+#[test]
+fn label_create_capability_is_insert_only() {
+    let (d, _) = driver_with_mock();
+    let labels = Path::new("/mail/labels");
+    assert!(check_capability(&d, &labels, Verb::Insert).is_ok());
+    assert!(check_capability(&d, &labels, Verb::Select).is_err());
 }
 
 #[test]

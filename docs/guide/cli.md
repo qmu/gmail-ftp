@@ -7,12 +7,15 @@
 qfs [OPTIONS] [COMMAND]
 
 Commands:
-  run       Run one statement and exit (preview by default)
-  describe  Describe a path: archetype, columns, verbs, procedures, pushdown
-  connection  Manage stored credentials per service/connection
-  skill     Print the embedded AI operating procedure
-  serve     Start the server from a .qfs config file
-  help      Print help for any command
+  run        Run one statement and exit (preview by default)
+  describe   Describe a path: archetype, columns, verbs, procedures, pushdown
+  skill      Print the embedded AI operating procedure
+  serve      Start the server (CLI + MCP endpoint + web dashboard) from a .qfs config
+  connection Manage stored credentials per service/connection
+  identity   Local identity: sign up, look yourself up
+  invite     Team invites & membership: create, redeem, revoke
+  job        Run / schedule a saved JOB (an external scheduler drives it)
+  help       Print help for any command
 
 Global options:
   --json        Machine-readable JSON instead of the human table
@@ -40,11 +43,12 @@ echo "<statement>" | qfs run -   # read from stdin
 
 ```sh
 # Preview, then commit:
-qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')"
-qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')" --commit
+qfs run "insert into /mail/drafts values ('alice@example.com','Hi','Body')"
+qfs run "insert into /mail/drafts values ('alice@example.com','Hi','Body')" --commit
 
-# Irreversible needs the extra ack:
-qfs run "/mail/drafts |> CALL mail.send" --commit --commit-irreversible
+# Irreversible needs the extra ack (this CALL needs a connected mail account first —
+# see `qfs connection`; without one it returns a capability error):
+qfs run "/mail/drafts |> call mail.send" --commit --commit-irreversible
 ```
 
 ## `qfs describe` — inspect a path
@@ -75,6 +79,47 @@ qfs connection use <service> <name>     # set the active connection (no passphra
 qfs connection remove <service> <name>  # delete (idempotent)
 ```
 
+For offboarding and key hygiene, a connection can be **rotated**, **revoked**, or the whole store
+**rekeyed** (the new secret / passphrase is read from stdin, never argv):
+
+```sh
+printf %s "$NEW" | qfs connection rotate <service> <name>  # re-mint the secret, clear any revoke
+qfs connection revoke <service> <name>                     # mark unresolvable (fails closed at bind)
+printf %s "$NEWPASS" | qfs connection rekey                # re-wrap the store under a new passphrase
+```
+
+## `qfs identity` — local sign-up
+
+Authentication only — a signed-up user is an identity, not an authorization (that's policies and
+the ACL). The password is read from **stdin**, never argv; the password hash is never printed.
+
+```sh
+printf %s "$PW" | qfs identity signup a@b.com   # create a local user + password account
+qfs identity whoami [a@b.com]                    # print a user's email + id (never the hash)
+```
+
+## `qfs invite` — teams & membership
+
+An operator mints a one-time, expiring invite; the invitee redeems it to create their local
+identity and join. The token is shown **once** at create (store it then); redeem is single-use.
+
+```sh
+qfs invite create --scope host --role member --ttl 86400   # prints the one-time URL/token once
+printf %s "$PW" | qfs invite redeem <token> a@b.com         # create the user + membership
+qfs invite revoke <id>                                      # cancel a still-pending invite
+```
+
+## `qfs job` — run a saved JOB
+
+**qfs is not a scheduler.** A `CREATE JOB … EVERY … DO …` row is a *saved named plan plus its
+intended cadence*; an external scheduler (OS `cron` / Cloudflare Cron Triggers) owns the *when*.
+`run` previews by default and applies through the same policy + irreversible gates as `qfs run`:
+
+```sh
+qfs job run app.qfs nightly --commit      # invoke the saved plan once (the scheduler's entrypoint)
+qfs job cron app.qfs nightly              # emit the crontab line for the host crontab
+```
+
 ## `qfs skill` — the embedded AI procedure
 
 Prints the operating procedure an AI agent follows, straight from the binary:
@@ -87,7 +132,9 @@ qfs skill --examples     # plus one worked example per service
 ## `qfs serve` — run the server
 
 Starts the server from a `.qfs` config file containing `CREATE …` bindings (triggers, jobs,
-endpoints, views, policies):
+endpoints, views, policies). The one process presents the same engine as **three faces**: the HTTP
+API, the **MCP endpoint** an AI agent connects to, and the **embedded web dashboard** whose approval
+cards let a human review and approve a pending irreversible commit.
 
 ```sh
 qfs serve ./myserver.qfs
@@ -101,7 +148,8 @@ The long form prints the version, the exact build commit, and the target it was 
 when reporting an issue:
 
 ```text
-qfs 0.0.4
+qfs 0.0.10
 commit:  <git-sha>
 target:  x86_64-unknown-linux-gnu
+wasm32:  false
 ```

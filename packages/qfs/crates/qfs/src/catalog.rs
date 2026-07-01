@@ -33,9 +33,9 @@ pub struct DriverDoc {
     pub example_path: String,
     /// How a representative node maps onto qfs's uniform model (the archetype, RFD §5).
     pub archetype: Archetype,
-    /// The FS/SQL-shaped native-verb hint for the archetype (the agent's one-line "what does
-    /// writing here look like").
-    pub native_verbs: &'static str,
+    /// The FS/SQL-shaped native-verb hint for the representative node (the agent's one-line "what
+    /// does writing here look like"), derived from its actual capabilities.
+    pub native_verbs: String,
     /// Which universal verbs a representative node supports — rendered **explicitly**, including
     /// the unsupported ones (RFD §5: never document a capability by omission).
     pub capabilities: Capabilities,
@@ -74,7 +74,7 @@ fn representative_path(mount: &str) -> String {
         "/drive" => "/drive/my/Reports/report.pdf".to_string(),
         "/github" => "/github/o/r/pulls".to_string(),
         "/slack" => "/slack/ws/#general/messages".to_string(),
-        "/ga" => "/ga/123456789".to_string(),
+        "/google-analytics" => "/google-analytics/123456789".to_string(),
         "/s3" => "/s3/bucket/key".to_string(),
         "/r2" => "/r2/bucket/key".to_string(),
         // t53 administration: a representative admin relation. `/sys/users` describes cred-free
@@ -147,8 +147,8 @@ mod tests {
     #[test]
     fn catalog_covers_the_describe_registry_drivers() {
         let cat = driver_catalog();
-        // The describe registry registers 9 cred-free drivers (local/fs/mail/drive/github/slack/
-        // ga/s3/r2); every one whose representative node resolves appears in the catalog.
+        // The describe registry registers the cred-free drivers (local/fs/mail/drive/github/slack/
+        // ga/s3/r2/rest/…); every one whose representative node resolves appears in the catalog.
         assert!(
             cat.drivers.len() >= 7,
             "catalog should fold most describe-registered drivers, got {}",

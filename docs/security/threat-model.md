@@ -177,3 +177,23 @@ GOAL: make a plan touch more than the request intended
 - **t38+**: extend the `LogScrubber` shape set as new credential carriers appear (e.g. a new
   signed-URL scheme), and consider promoting the no-plaintext-token-String gate to also scan the
   driver crates once they declare credential structs.
+
+## 9. Post-v0.0.9 security surfaces (M1–M+)
+
+The controls in §5–§6 are the foundation trip's defense-in-depth and remain in force. v0.0.9 then
+shipped the identity, auth, teams, and administration surfaces; their controls:
+
+| Surface | Control (shipped) | Honesty note |
+|---------|-------------------|--------------|
+| **Identity** | Local sign-up stores an argon2id password **hash** only; the hash is never printed or serialized. Identity is authentication, **not** authorization — a signed-up user holds no capability until a policy/ACL grants one. | — |
+| **OAuth Authorization Server** | qfs is its own OAuth AS with **Dynamic Client Registration + PKCE**; the agent/dashboard handshake mints short-lived **bearer** access tokens plus a **refresh** token, and the **MCP endpoint** authenticates every call against them. Tokens are `Secret`-wrapped (never logged/serialized). | The live OAuth **browser consent** UX is an open product decision and is **not yet wired** — say so plainly rather than implying a hosted consent screen. |
+| **Sessions** | A session is a bearer credential with an expiry, resolved server-side; the dashboard's approval cards act under the approving human's session. | — |
+| **Teams & invites** | Invite tokens are minted by a CSPRNG, returned **once**, stored only as a **hash**, single-use, and expiring; redeem burns the token. Membership is not a capability grant (§4.1) — the **extended ACL** is what authorizes a member, default-deny like the policy gate. | — |
+| **Audit** | `/sys/audit` is the **append-only, hash-chained (WORM)** tail: every `/sys` mutation appends a metadata-only row (actor/connection/verb/path/committed/ts), so tampering breaks the chain and administration observes itself. Never a secret or a row payload. | — |
+| **Per-recipient secret sharing** | A connection secret shared across a team is wrapped as a **per-recipient DEK** (each member's copy is wrapped to their own key), so revoking one member does not re-key the rest. | — |
+| **Credential lifecycle** | `connection rotate` (re-mint in place), `revoke` (mark unresolvable, fail-closed at bind), and `rekey` (re-wrap the store data-key under a new passphrase) — the offboarding + key-hygiene answers. | — |
+| **Billing** | `/sys/billing` records the per-team tier as **data** (team/tier/status/period); there is structurally no column a payment secret could ride in. | The **payment provider** integration and the qfs **Cloud broker** endpoint are **not yet wired**. |
+
+**Still-unwired seams (NOT claimed as controls):** live OAuth browser consent, the MCP cloud-tunnel
+dial, an LDAP/AD/Entra/Workspace directory backend, the qfs Cloud broker, and a payment provider.
+The Cloudflare Workers wasm artifact is parked (ADR-0005).

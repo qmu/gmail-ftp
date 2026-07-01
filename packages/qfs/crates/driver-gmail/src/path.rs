@@ -25,6 +25,10 @@ pub const MOUNT: &str = "/mail";
 /// The reserved label segment naming the drafts collection (the INSERT/UPSERT target).
 pub const DRAFTS_SEGMENT: &str = "drafts";
 
+/// The reserved label segment naming the label-management collection (the label-create INSERT
+/// target, gmail-ftp `mkdir`).
+pub const LABELS_SEGMENT: &str = "labels";
+
 /// A parsed Gmail address — what a `/mail/...` path or an `id:` selector resolves to.
 /// Owned, vendor-free. The applier and the introspective methods branch on this.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +43,9 @@ pub enum MailPath {
     },
     /// `/mail/drafts` — the drafts collection.
     Drafts,
+    /// `/mail/labels` — the label-management collection (`INSERT` creates a new label; gmail-ftp
+    /// `mkdir`). Reserved, so a Gmail label literally named `labels` is not addressable here.
+    Labels,
     /// A single message addressed by `id:<msg>` or `/mail/<label>/<msg>`.
     Message {
         /// The Gmail message id.
@@ -94,7 +101,11 @@ impl MailPath {
         match segments.as_slice() {
             [] => Ok(MailPath::Root),
             [one] if *one == DRAFTS_SEGMENT => Ok(MailPath::Drafts),
+            [one] if *one == LABELS_SEGMENT => Ok(MailPath::Labels),
             [label] => Ok(MailPath::Label {
+                // The segment is the label name VERBATIM — no case normalization. It reaches Gmail
+                // as a `label:<name>` SEARCH term (see `query::build_query`), and Gmail matches that
+                // case-insensitively, so `/mail/inbox` reads the inbox exactly as written.
                 name: (*label).to_string(),
             }),
             // `/mail/<label>/<msg>` — a message under a label.

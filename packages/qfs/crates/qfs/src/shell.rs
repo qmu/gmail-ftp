@@ -142,73 +142,19 @@ fn local_engine_and_reads(root: PathBuf) -> (Engine, ReadRegistry) {
 /// active selectable **safety mode** (t59) that governs the one-shot commit gate. qfs-cmd stays
 /// off qfs-driver-local; the binary (the leaf) owns this adapter, like the shell + commit
 /// composition. Other drivers join here as their read facets land.
-/// Register the cred-free **planning** facets for the three Google drivers (`/mail`, `/drive`,
-/// `/ga`) into `engine`'s mounts, so statements over those paths RESOLVE + PLAN end to end. The
-/// planner is pure — it reads only the introspective describe/capabilities/pushdown half, never a
-/// client and never a token — so a mock client suffices here (exactly as `qfs describe` does). The
-/// real OAuth-authenticated clients that APPLY a commit leg live in the apply registry
-/// (`commit.rs`), keyed by the SAME runtime driver ids (`mail`/`drive`/`ga`) the planner stamps; the
-/// mock clients registered here are never called (no read facet is wired for them, and planning
-/// never touches an applier). Factored out so the planning wiring is unit-tested hermetically.
-fn register_google_planning_mounts(engine: &mut Engine) {
-    let _ = engine
-        .mounts
-        .register(Arc::new(qfs_driver_gmail::GmailDriver::new(Arc::new(
-            qfs_driver_gmail::MockGmailClient::new(),
-        ))));
-    let _ = engine
-        .mounts
-        .register(Arc::new(qfs_driver_gdrive::GDriveDriver::new(Arc::new(
-            qfs_driver_gdrive::MockDriveClient::default(),
-        ))));
-    let _ = engine
-        .mounts
-        .register(Arc::new(qfs_driver_ga::GaDriver::new(Arc::new(
-            qfs_driver_ga::MockGaClient::default(),
-        ))));
-}
-
 #[must_use]
 pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
     // The active safety mode (t59): the persisted /sys/settings choice, else the env config, else
     // the safe default — resolved once for this run-context.
     let safety_mode = crate::sys::resolve_active_safety_mode();
     let (mut engine, reads) = local_engine_and_reads(PathBuf::from("/"));
-    // Register the networked drivers' **cred-free** facets as mounts so `/github` and `/slack`
-    // statements PLAN (the planner is pure — it reads only describe/capabilities/pushdown, never
-    // a client; DESCRIBE is cred-free). The real credentialed clients that actually APPLY a commit
-    // leg live in the apply registry (`commit.rs`), keyed by the same driver id the planner stamps.
-    // The cred-free mock clients here are never called (no read facet is registered for them, and
-    // planning never touches `Driver::applier`).
-    let _ = engine
-        .mounts
-        .register(Arc::new(qfs_driver_github::GitHubDriver::new(Arc::new(
-            qfs_driver_github::MockGitHubClient::default(),
-        ))));
-    let _ = engine
-        .mounts
-        .register(Arc::new(qfs_driver_slack::SlackDriver::new(Arc::new(
-            qfs_driver_slack::MockSlackClient::default(),
-        ))));
-    // Google (gmail / gdrive / ga): register the cred-free mock-client facets as mounts so `/mail`,
-    // `/drive`, and `/ga` statements PLAN (see `register_google_planning_mounts`).
-    register_google_planning_mounts(&mut engine);
-    // S3 / R2 (objstore): register the cred-free planning facets as mounts so `/s3/<bucket>/<key>`
-    // and `/r2/...` statements PLAN. Each carries a representative `bucket` (the describe convention)
-    // plus the operator-configured live bucket name when present, so the parse-time per-node
-    // capability gate (which keys off a *registered* bucket) resolves. The MockObjectBackend behind
-    // each bucket is never applied — planning reads only the pure introspective half; the real SigV4
-    // backend that APPLIES lives in the apply registry (`commit.rs`), keyed by the same driver id.
-    let _ = engine
-        .mounts
-        .register(Arc::new(qfs_driver_objstore::S3Driver::new(
-            crate::objstore::planning_registry(qfs_driver_objstore::Scheme::S3),
-        )));
-    let _ = engine
-        .mounts
-        .register(Arc::new(qfs_driver_objstore::R2Driver::new(
-            crate::objstore::planning_registry(qfs_driver_objstore::Scheme::R2),
-        )));
+    // t100040 (the CONNECT model): NOTHING third-party is pre-mounted. Only the minimal system set
+    // (`/local`, wired by `local_engine_and_reads`, plus `/sys` below) is always present; every
+    // third-party driver (gmail/gdrive/ga/github/slack/s3/r2/cf/rest/fs/claude) is reachable ONLY
+    // after a `CONNECT`, mounted at its user path from the project DB `path_binding` registry. The
+    // read + apply facets stay keyed by canonical driver id (`commit.rs`, the reads below), so THIS
+    // path-keyed planning registry is the gate: an un-CONNECTed path simply does not resolve.
+    crate::describe::register_defined_paths(&mut engine.mounts);
     // SQL: register the live SQLite-backed mount when configured, so `/sql/<conn>/<table>`
     // statements PLAN against the real introspected catalog (the same registry the commit apply
     // driver uses). Skipped when no `QFS_SQL_*` connection is configured.
@@ -228,15 +174,6 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
     let _ = engine
         .mounts
         .register(Arc::new(qfs_driver_sys::SysDriver::new()));
-    // Claude (t64): register the `/claude/...` AI-sessions mount (its PURE describe/capabilities/
-    // pushdown facet, so `/claude/sessions |> WHERE status='running'` and `INSERT INTO
-    // /claude/sessions/<id>/instructions …` resolve + plan + gate). The live read facet is wired
-    // only when a session source is configured (QFS_CLAUDE_SESSIONS, opt-in / fail-closed); with
-    // none, the mount still plans (describe is cred-free) but a `/claude` scan returns no source.
-    // Decision K: a path façade over session metadata + an append-log, never an LLM call.
-    let _ = engine
-        .mounts
-        .register(Arc::new(qfs_driver_claude::ClaudeDriver::new()));
     let mut reads = reads;
     if let Some(backend) = crate::sys::SystemDbBackend::open_default() {
         reads = reads.with(
@@ -260,17 +197,129 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
     // the read facet UNREGISTERED so the `FROM` then fails honestly ("no source") rather than
     // reading without authorization. A registered facet whose credential cannot be resolved at
     // request time surfaces a clear auth error (see `crate::read_facets`), never empty rows.
-    if let Some(client) = crate::clients::live_github_client() {
-        reads = reads.with(
+    // GitHub / Slack: register the real networked read facet behind the credentialed client (t6); on
+    // a fresh, unconfigured operator the client builder returns None, so fall back to the honest
+    // connect-account facet (t5) — a `FROM /github/...` then gets an ACTIONABLE error, never the raw
+    // unknown_source. The authenticated path returns real rows (issues/pulls/messages).
+    reads = match crate::clients::live_github_client() {
+        Some(client) => reads.with(
             DriverId::new("github"),
             Arc::new(crate::read_facets::GitHubReadDriver::new(client)),
-        );
-    }
-    if let Some(client) = crate::clients::live_slack_client() {
-        reads = reads.with(
+        ),
+        None => reads.with(
+            DriverId::new("github"),
+            Arc::new(crate::read_facets::ConnectAccountReadDriver::new(
+                "connect a GitHub account to read it — run `qfs identity signup <email>`, then `qfs connection add github` (GitHub reads need an authenticated token)",
+            )),
+        ),
+    };
+    reads = match crate::clients::live_slack_client() {
+        Some(client) => reads.with(
             DriverId::new("slack"),
             Arc::new(crate::read_facets::SlackReadDriver::new(client)),
+        ),
+        None => reads.with(
+            DriverId::new("slack"),
+            Arc::new(crate::read_facets::ConnectAccountReadDriver::new(
+                "connect a Slack workspace to read it — run `qfs identity signup <email>`, then `qfs connection add slack`",
+            )),
+        ),
+    };
+    // SQL (hermetic, no network): register the live SQLite-backed read facet when a connection is
+    // configured, so `FROM /sql/<conn>/<table> |> WHERE … |> SELECT …` executes — the native SELECT
+    // pushes the WHERE/ORDER/LIMIT into the database and the residual is re-filtered locally. Skipped
+    // (leaving the source unresolvable) when no `QFS_SQL_*` connection resolves, so it fails closed.
+    if crate::sql::has_connections() {
+        reads = reads.with(
+            DriverId::new("sql"),
+            Arc::new(crate::read_facets::SqlReadDriver::new(Arc::new(
+                crate::sql::sql_driver(),
+            ))),
         );
+    }
+    // Git (hermetic, no network): register the in-house object-reader read facet when a repo is
+    // configured, so `FROM /git/<repo>@<ref>/commits` (and refs/tags/reflog/changes/blame + tree
+    // listings) executes against the local `.git`. Skipped (source unresolvable) when no `QFS_GIT_*`
+    // repo resolves, so it fails closed.
+    if crate::git::has_connections() {
+        reads = reads.with(
+            DriverId::new("git"),
+            Arc::new(crate::read_facets::GitReadDriver::new(Arc::new(
+                crate::git::git_driver(),
+            ))),
+        );
+    }
+    // Cloud sources whose reads fundamentally need a live OAuth/credentialed account (mail, drive,
+    // analytics, object stores) have no offline read. Register an honest "connect your account" read
+    // facet for each so a fresh-user `FROM /mail/...` gets an ACTIONABLE error instead of the
+    // internal-sounding `unknown_source` (t5). The real networked read (t6/t7) registers over this
+    // for a credentialed operator. Each reason is a stable, secret-free `&'static str`.
+    for (source, reason) in [
+        ("mail", "connect a Google account to read mail — run `qfs identity signup <email>`, then `qfs connection add gmail` (gmail reads are not available without an authenticated account)"),
+        ("drive", "connect a Google account to read Drive — run `qfs identity signup <email>`, then `qfs connection add gdrive`"),
+        ("ga", "connect a Google Analytics account to read it — run `qfs identity signup <email>`, then `qfs connection add ga`"),
+        ("s3", "connect AWS credentials to read S3 — run `qfs connection add s3` (S3 reads need a credentialed bucket)"),
+        ("r2", "connect Cloudflare R2 credentials to read it — run `qfs connection add r2`"),
+    ] {
+        reads = reads.with(
+            DriverId::new(source),
+            Arc::new(crate::read_facets::ConnectAccountReadDriver::new(reason)),
+        );
+    }
+    // Gmail + Drive + Analytics real reads (t7): when a Google account is configured AND the t54
+    // cloud bind gate passes, register the live read facet OVER the connect-account fallback, so
+    // `FROM /mail/<label>` returns messages, `FROM /drive/...` lists a folder's children, and
+    // `FROM /ga/<property> |> select ...` runs a GA4 report for a connected operator. Fail closed:
+    // an unconfigured/ungated operator keeps the t5 connect-account nudge.
+    if let Some(stack) = crate::google::live_google_stack() {
+        let gmail_conn =
+            crate::connection::active_connection("gmail").unwrap_or_else(|| "default".to_string());
+        if crate::commit::cloud_bind_allowed("gmail", &gmail_conn) {
+            let client: Arc<dyn qfs_driver_gmail::GmailClient> = Arc::new(
+                qfs_driver_gmail::GoogleApiGmailClient::new(stack.api.clone()),
+            );
+            reads = reads.with(
+                DriverId::new("mail"),
+                Arc::new(crate::read_facets::GmailReadDriver::new(client)),
+            );
+        }
+        let drive_conn =
+            crate::connection::active_connection("gdrive").unwrap_or_else(|| "default".to_string());
+        if crate::commit::cloud_bind_allowed("gdrive", &drive_conn) {
+            let client: Arc<dyn qfs_driver_gdrive::GDriveClient> = Arc::new(
+                qfs_driver_gdrive::GoogleApiDriveClient::new(stack.api.clone()),
+            );
+            reads = reads.with(
+                DriverId::new("drive"),
+                Arc::new(crate::read_facets::DriveReadDriver::new(client)),
+            );
+        }
+        let ga_conn =
+            crate::connection::active_connection("ga").unwrap_or_else(|| "default".to_string());
+        if crate::commit::cloud_bind_allowed("ga", &ga_conn) {
+            let client: Arc<dyn qfs_driver_ga::GaClient> =
+                Arc::new(qfs_driver_ga::GoogleApiGaClient::new(stack.api.clone()));
+            let driver = Arc::new(qfs_driver_ga::GaDriver::new(client));
+            reads = reads.with(
+                DriverId::new("ga"),
+                Arc::new(crate::read_facets::GaReadDriver::new(driver)),
+            );
+        }
+    }
+    // S3 / R2 live READ facets (t-203070): register the SigV4 object-storage reader when the routing
+    // config + secret access key resolve (fail closed otherwise, exactly like the apply path). Built
+    // from the SAME live registry the commit path uses, so `/s3/<bucket>` lists and `/s3/<bucket>/<key>`
+    // downloads against a real (or MinIO) S3 endpoint.
+    for scheme in [
+        qfs_driver_objstore::Scheme::S3,
+        qfs_driver_objstore::Scheme::R2,
+    ] {
+        if let Some(driver) = crate::commit::live_obj_read_driver(scheme) {
+            reads = reads.with(
+                DriverId::new(scheme.mount().trim_start_matches('/')),
+                Arc::new(crate::read_facets::ObjReadDriver::new(Arc::new(driver))),
+            );
+        }
     }
     (engine, reads, safety_mode)
 }
@@ -558,49 +607,67 @@ mod tests {
     }
 
     #[test]
-    fn mail_statement_plans_through_the_registered_google_mount() {
-        // The cred-free Google planning mounts let a `/mail` write RESOLVE + PLAN end to end with no
-        // client, no token, and no network — the same describe-only path `qfs describe` uses. A real
-        // OAuth client only matters at COMMIT (commit.rs). This drives the SAME wiring the one-shot
-        // path uses (`register_google_planning_mounts`) over a hermetic temp-dir local engine.
+    fn a_connected_mail_path_plans_end_to_end() {
+        // t100040: nothing is pre-mounted — a gmail driver is reachable only after a CONNECT, mounted
+        // at its USER path. Here we simulate the binding by mounting the cred-free gmail driver at a
+        // user path (`/work/mail`) via `register_alias` (what `register_defined_paths` does per DB
+        // row), then a write RESOLVES + PLANS end to end (canonical `/mail/drafts` reconstruction,
+        // t100030) with no client, no token, no network. A real OAuth client only matters at COMMIT.
         let (_d, mut engine, reads) = fixture();
-        register_google_planning_mounts(&mut engine);
+        let gmail = crate::describe::cred_free_driver("gmail").expect("gmail cred-free driver");
+        engine
+            .mounts
+            .register_alias("/work/mail", gmail)
+            .expect("mount the connected path");
         let t = run_script(
             &engine,
             &reads,
-            "INSERT INTO /mail/drafts VALUES ('alice@example.com', 'Hi', 'Body text')\n",
+            "INSERT INTO /work/mail/drafts VALUES ('alice@example.com', 'Hi', 'Body text')\n",
         );
-        // It previews a plan (the safety gate), not an unresolved-mount / unknown-driver error.
-        assert!(t.contains("PREVIEW"), "/mail must plan/preview:\n{t}");
+        assert!(
+            t.contains("PREVIEW"),
+            "connected /work/mail must plan:\n{t}"
+        );
         assert!(
             t.contains("type COMMIT to apply"),
-            "/mail plan reaches the COMMIT gate:\n{t}"
+            "the plan reaches the COMMIT gate:\n{t}"
         );
     }
 
     #[test]
-    fn s3_upsert_plans_through_the_registered_objstore_mount() {
-        // The cred-free objstore planning mount lets a `/s3/<bucket>/<key>` UPSERT RESOLVE + PLAN end
-        // to end with no SigV4 backend, no credential, and no network — the same describe-only path
-        // `qfs describe /s3/bucket/key` uses (the per-node capability gate keys off the *registered*
-        // representative `bucket`). The real SigV4 backend only matters at COMMIT (commit.rs). This
-        // drives the SAME `planning_registry` wiring the one-shot path registers.
+    fn an_unconnected_third_party_path_does_not_resolve() {
+        // t100040: the CONNECT model's floor — with no binding, a third-party path is NOT mounted, so
+        // a statement over it fails to resolve rather than silently planning against a pre-mounted
+        // driver. (Only `/local` — and `/sys` on the one-shot path — are always present.)
+        let (_d, engine, reads) = fixture();
+        let t = run_script(&engine, &reads, "/mail/drafts |> SELECT subject\n");
+        assert!(
+            !t.contains("PREVIEW") && !t.contains("subject"),
+            "an un-CONNECTed /mail must not resolve:\n{t}"
+        );
+    }
+
+    #[test]
+    fn a_connected_s3_path_plans_end_to_end() {
+        // t100040: the objstore driver, likewise, is reachable only after a CONNECT. Mount the
+        // cred-free s3 driver at a user path and an UPSERT plans end to end (the per-node capability
+        // gate keys off the driver's representative `bucket`; canonical `/s3/bucket/key`
+        // reconstruction). The real SigV4 backend only matters at COMMIT.
         let (_d, mut engine, reads) = fixture();
-        let _ = engine
+        let s3 = crate::describe::cred_free_driver("s3").expect("s3 cred-free driver");
+        engine
             .mounts
-            .register(Arc::new(qfs_driver_objstore::S3Driver::new(
-                crate::objstore::planning_registry(qfs_driver_objstore::Scheme::S3),
-            )));
+            .register_alias("/files", s3)
+            .expect("mount the connected path");
         let t = run_script(
             &engine,
             &reads,
-            "UPSERT INTO /s3/bucket/key VALUES ('blob')\n",
+            "UPSERT INTO /files/bucket/key VALUES ('blob')\n",
         );
-        // It previews a plan (the safety gate), not an unresolved-mount / unknown-driver error.
-        assert!(t.contains("PREVIEW"), "/s3 UPSERT must plan/preview:\n{t}");
+        assert!(t.contains("PREVIEW"), "connected /files must plan:\n{t}");
         assert!(
             t.contains("type COMMIT to apply"),
-            "/s3 plan reaches the COMMIT gate:\n{t}"
+            "the plan reaches the COMMIT gate:\n{t}"
         );
     }
 

@@ -38,6 +38,17 @@ impl LocalRow {
         ])
     }
 
+    /// The single-file **content** schema: the listing columns plus a nullable `content`
+    /// ([`ColumnType::Bytes`]) column carrying the file's raw bytes. A single-file `/local/<file>`
+    /// read returns this so a downstream codec (`DECODE`/`ENCODE`, ticket T2) can transform the
+    /// bytes; directory and glob listings keep the narrower [`LocalRow::schema`] (no content).
+    #[must_use]
+    pub fn content_schema() -> Schema {
+        let mut cols = Self::schema().columns;
+        cols.push(Column::new("content", ColumnType::Bytes, true));
+        Schema::new(cols)
+    }
+
     /// Project this row onto the canonical [`LocalRow::schema`] column order as a typed
     /// [`Row`] — the form that flows through a pipeline / `INSERT … FROM` listing.
     #[must_use]

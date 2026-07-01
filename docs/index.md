@@ -22,12 +22,43 @@ features:
   - title: Preview before you commit
     details: Every command shows exactly what it will do first. Nothing touches the real world until you add --commit. Irreversible actions (sending mail, merging a PR) need an explicit extra OK.
   - title: Safe for AI agents
-    details: One small grammar instead of a hundred vendor SDKs. An agent learns it once and drives every service — with previews and least-privilege policies as guardrails.
+    details: One small grammar instead of a hundred vendor SDKs. An agent learns it once and drives every service over the same loop — on the CLI, through the MCP endpoint, or via the web dashboard's approval cards — with previews and least-privilege policies as guardrails.
 ---
 
 ## See it
 
-Find unread invoices in your inbox:
+Some of these run today against local files and a SQLite database — no account, no setup
+beyond a path. The rest show what the same grammar does the moment a service is connected.
+
+**Turn a JSON file into YAML** — the codec stages genuinely transcode:
+
+```qfs
+/local/config.json
+|> decode json
+|> encode yaml
+```
+
+Given a `config.json` of `{"k":1,"name":"alpha"}`, qfs emits the YAML:
+
+```yaml
+- k: 1
+  name: alpha
+```
+
+**Query a database — and the filter runs *inside* it.** `WHERE` is pushed down to SQL;
+ordering and projection ride the pipe:
+
+```qfs
+/sql/sales/orders
+|> where total > 100
+|> select customer, total
+|> order by total DESC
+```
+
+Then the breadth — the same small grammar reaching across services. These need a connected
+account, but they are the whole point of qfs.
+
+**Find unread invoices in your inbox:**
 
 ```qfs
 /mail/inbox
@@ -36,23 +67,17 @@ Find unread invoices in your inbox:
 |> order by date DESC
 ```
 
-Join a database table to your GitHub issues — across two completely different services:
+**Join a database table to your GitHub issues — across two completely different services:**
 
 ```qfs
-/sql/pg/orders
+/sql/sales/orders
 |> join /github/acme/web/issues on id == issue_id
 |> select id, title
 ```
 
-Turn a JSON file into a YAML file:
+The `/sql` leg reads today; the GitHub leg needs a connected account — `qfs connection add github`.
 
-```qfs
-/local/config.json
-|> decode json
-|> encode yaml
-```
-
-Automate it — every time mail lands, post to Slack:
+**Automate it — every time mail lands, post to Slack:**
 
 ```qfs
 create trigger notify
@@ -60,7 +85,15 @@ create trigger notify
   do insert into /slack/acme/general/messages values (NEW.subject)
 ```
 
-You **preview** each one to see precisely what would happen, then add `--commit` to make it real.
+You **preview** each one to see precisely what would happen — the trigger above previews as a
+pure plan that fires nothing until you wire it up — then add `--commit` to make it real.
 
-**Next:** [Install qfs](/guide/installation) · [Your first queries](/guide/getting-started) ·
+## One engine, three faces
+
+The same engine — and the same preview-then-commit safety model — answers on three faces: the
+**CLI** (and an FTP-like interactive shell), an **MCP endpoint** that exposes the describe → preview
+→ commit loop as tools for an AI agent, and an **embedded web dashboard** where a human approves a
+pending irreversible commit on an approval card. You learn the loop once and it works everywhere.
+
+**Next:** [Install qfs](/guide/installation) · [Get started](/guide/getting-started) ·
 [The Cookbook](/cookbook/)

@@ -9,7 +9,38 @@ use crate::dto::{blob_listing_schema, BlameRow};
 use crate::error::GitError;
 use crate::objectdb::{parse_tree, ObjectKind, Oid, TreeEntry};
 use crate::repo::Repo;
-use qfs_types::{Row, Value};
+use qfs_types::{Column, ColumnType, Row, Schema, Value};
+
+/// Read `ref`/`path` and dispatch on what it addresses (RFD §4 blob↔rows): a **file** (blob) yields
+/// a single-row content batch — a `path` column plus the raw bytes under the well-known `content`
+/// column, so `/git/<repo>[@<ref>]/<file> |> decode <fmt>` works exactly like a `/local/<file>` read
+/// — while a **directory** (tree, or the empty root path) yields the tree listing ([`ls`]). The path
+/// archetype ([`crate::path::GitNode::Blob`]) cannot know file-vs-dir without the object DB, so the
+/// distinction is made here at read time.
+///
+/// # Errors
+/// [`GitError`] if the ref/path resolves to neither a blob nor a tree.
+pub fn read(repo: &Repo, reference: &str, path: &str) -> Result<RowBatch, GitError> {
+    // A non-empty path naming a blob entry reads as content; `resolve_blob` matches ONLY non-tree
+    // entries, so a tree path falls through to the listing below (the root lists too).
+    if !path.is_empty() {
+        if let Ok(bytes) = cat(repo, reference, path) {
+            return Ok(content_batch(path, bytes));
+        }
+    }
+    ls(repo, reference, path)
+}
+
+/// Build the single-row content batch for a blob FILE read: `path` (Text) + `content` (Bytes). The
+/// `content` column name matches the local driver's so the engine's `DECODE` finds the bytes.
+fn content_batch(path: &str, bytes: Vec<u8>) -> RowBatch {
+    let schema = Schema::new(vec![
+        Column::new("path", ColumnType::Text, false),
+        Column::new("content", ColumnType::Bytes, true),
+    ]);
+    let row = Row::new(vec![Value::Text(path.to_string()), Value::Bytes(bytes)]);
+    RowBatch::new(schema, vec![row])
+}
 
 /// `ls` the tree at `ref`/`path`: resolve the ref to a commit, walk to the tree at `path`, and
 /// list its entries as `(name, mode, oid, kind)` rows. An empty `path` lists the root tree.

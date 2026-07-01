@@ -38,12 +38,12 @@
 //! `qfs-driver-http` — this crate rides the t19 `HttpExchange` seam.
 //!
 //! ## Deferred for t20 (named parks)
-//! - **Attachment bytes fetch — parked.** A listing row carries attachment *metadata* only
-//!   ([`AttachmentMeta`]); the on-demand bytes fetch is **not implemented** in this crate. The
-//!   [`GmailClient`] trait has **no** `get_attachment` method and the
-//!   [`MailPath::Attachment`](path::MailPath) parse + its `Select` capability exist with no
-//!   client method behind them yet. Decoding the bytes into an [`Attachment`] (the read path) is
-//!   deferred to a follow-up; until then an attachment read has no backing call.
+//! - **Attachment bytes fetch — wired (t92).** A listing row carries attachment *metadata* only
+//!   ([`AttachmentMeta`]); the on-demand bytes fetch reads the single node
+//!   [`MailPath::Attachment`](path::MailPath) (`/mail/<label>/<msg>/<att>`, its `Select`
+//!   capability) via [`GmailClient::get_attachment`](client::GmailClient::get_attachment) —
+//!   attachments.get bytes (base64url-decoded at the client seam) paired with the message part's
+//!   `filename`/`mime`/`size` into a `content`-bearing row. gmail-ftp `get id:att:<msg>:<att>` parity.
 //! - **`historyId` / `@version` incremental sync — parked.** [`VersionSupport::None`]; deferred
 //!   to the E7 trigger sibling.
 //! - **Live create→send→trash smoke test — parked.** The suite is mock-only (no env-gated live
@@ -59,6 +59,7 @@ mod error;
 pub mod mime;
 mod path;
 pub mod query;
+pub mod read;
 mod schema;
 
 use std::sync::Arc;
@@ -74,11 +75,12 @@ use qfs_types::ColumnType;
 pub use applier::GmailApplier;
 pub use client::{GmailClient, GoogleApiGmailClient, MessageIdPage, MockGmailClient, RecordedCall};
 pub use effect::{
-    GmailEffect, ADD_LABELS_COL, BODY_COL, CC_COL, DRAFT_ID_COL, REMOVE_LABELS_COL, SUBJECT_COL,
-    TO_COL,
+    GmailEffect, ADD_LABELS_COL, BODY_COL, CC_COL, DRAFT_ID_COL, NAME_COL, REMOVE_LABELS_COL,
+    SUBJECT_COL, TO_COL,
 };
 pub use error::GmailError;
 pub use path::{MailPath, DRAFTS_SEGMENT, MOUNT};
+pub use read::read_rows;
 pub use schema::{Attachment, AttachmentMeta, MailDraft, MailMessage};
 
 /// The least-privilege **modify** scope — list/search/read, trash, and label modify. NOT the
@@ -199,6 +201,7 @@ impl GmailDriver {
             Ok(MailPath::Message { .. }) => Capabilities::from_verbs(&[Verb::Select, Verb::Remove]),
             Ok(MailPath::Thread { .. }) => Capabilities::from_verbs(&[Verb::Remove]),
             Ok(MailPath::Root) => Capabilities::from_verbs(&[Verb::Ls, Verb::Select]),
+            Ok(MailPath::Labels) => Capabilities::from_verbs(&[Verb::Insert]),
             Ok(MailPath::Attachment { .. }) => Capabilities::from_verbs(&[Verb::Select]),
             Err(_) => Capabilities::none(),
         }
@@ -210,10 +213,17 @@ impl Driver for GmailDriver {
         MOUNT
     }
 
-    fn describe(&self, _path: &Path) -> Result<NodeDesc, qfs_driver::CfsError> {
-        // Every /mail node is the Append/log archetype; its message relation is the canonical
-        // MailMessage schema. Pure: builds data, no I/O.
-        Ok(NodeDesc::new(Archetype::AppendLog, MailMessage::schema()))
+    fn describe(&self, path: &Path) -> Result<NodeDesc, qfs_driver::CfsError> {
+        // Every /mail node is the Append/log archetype. The ROOT lists labels (the directory view,
+        // `ls /mail`), so it reports the label-listing schema; every other node reads messages, so
+        // it reports the canonical MailMessage schema. Pure: builds data, no I/O.
+        let schema = match MailPath::parse(path) {
+            // The root lists labels; the label-management collection takes a `name` (its INSERT
+            // column) — both report the `name` label schema. Every other node reads messages.
+            Ok(MailPath::Root | MailPath::Labels) => schema::label_listing_schema(),
+            _ => MailMessage::schema(),
+        };
+        Ok(NodeDesc::new(Archetype::AppendLog, schema))
     }
 
     fn capabilities(&self, path: &Path) -> Capabilities {

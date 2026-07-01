@@ -140,7 +140,14 @@ impl Renderer for TableRenderer {
     }
 
     fn error(&self, err: &ExecError, w: &mut dyn Write) -> std::io::Result<()> {
-        write!(w, "error[{}]: {}", err.code, err.message)?;
+        // The `error[code]:` prefix carries the error highlight (no-op when color is disabled); the
+        // message/detail stay uncolored so the text is still greppable.
+        write!(
+            w,
+            "{} {}",
+            qfs_core::color::paint(qfs_core::color::ERROR, &format!("error[{}]:", err.code)),
+            err.message
+        )?;
         if let Some(path) = &err.path {
             write!(w, " (at {path})")?;
         }
@@ -364,19 +371,27 @@ fn render_table(
         }
     }
 
-    write_row(headers, &widths, w)?;
+    // The header row + its rule carry the header highlight (no-op when color is disabled).
+    write_row(headers, &widths, Some(qfs_core::color::HEADER), w)?;
     // The rule under the header.
     let rule: Vec<String> = widths.iter().map(|n| "-".repeat(*n)).collect();
-    write_row(&rule, &widths, w)?;
+    write_row(&rule, &widths, Some(qfs_core::color::HEADER), w)?;
     for row in rows {
-        write_row(row, &widths, w)?;
+        write_row(row, &widths, None, w)?;
     }
     Ok(())
 }
 
-/// Write one space-padded, ` | `-separated table row.
-fn write_row(cells: &[String], widths: &[usize], w: &mut dyn Write) -> std::io::Result<()> {
-    let mut line = String::new();
+/// Write one space-padded, ` | `-separated table row with a leading `| ` left border (so the table
+/// has a bounding line on the left of the first column, matching the Markdown table shape).
+fn write_row(
+    cells: &[String],
+    widths: &[usize],
+    color: Option<&str>,
+    w: &mut dyn Write,
+) -> std::io::Result<()> {
+    // The left border. Columns are then ` | `-separated, so the first cell follows this directly.
+    let mut line = String::from("| ");
     for (i, width) in widths.iter().enumerate() {
         if i > 0 {
             line.push_str(" | ");
@@ -389,5 +404,12 @@ fn write_row(cells: &[String], widths: &[usize], w: &mut dyn Write) -> std::io::
             line.push(' ');
         }
     }
-    writeln!(w, "{}", line.trim_end())
+    let line = line.trim_end();
+    // Color the whole padded line so the ANSI escapes sit OUTSIDE the width-aligned text (painting
+    // a cell before padding would corrupt the char-count alignment). `paint` is a no-op when color
+    // is disabled, so the plain layout is byte-identical to before.
+    match color {
+        Some(code) => writeln!(w, "{}", qfs_core::color::paint(code, line)),
+        None => writeln!(w, "{line}"),
+    }
 }

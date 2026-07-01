@@ -6,6 +6,9 @@ token.json
 # Build artifacts (Cargo) — match at any depth under packages/*/
 target/
 dist/
+# Scratch TMPDIR for cargo/test runs on the big disk (build logs, test tempdirs)
+.cargo-tmp/
+.tmp/
 
 # Node / VitePress docs site
 node_modules/

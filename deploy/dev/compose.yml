@@ -1,0 +1,67 @@
+# qfs dev stack (t-203060): Postgres + MySQL for developing/verifying the live `/sql` backends.
+#
+#   podman-compose -f deploy/dev/compose.yml up -d
+#   QFS_CONNECTIONS=deploy/dev/connections.qfs qfs run "/sql/pg/widgets |> where active = true |> select name"
+#   podman-compose -f deploy/dev/compose.yml down -v
+#
+# Each service seeds a `widgets` table (common column types) on first init. Passwords are dev-only.
+services:
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: qfs
+      POSTGRES_PASSWORD: qfs
+      POSTGRES_DB: qfs
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./seed/postgres.sql:/docker-entrypoint-initdb.d/seed.sql:ro,Z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qfs -d qfs"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mysql:
+    image: docker.io/library/mariadb:11
+    environment:
+      MARIADB_USER: qfs
+      MARIADB_PASSWORD: qfs
+      MARIADB_DATABASE: qfs
+      MARIADB_ROOT_PASSWORD: root
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./seed/mysql.sql:/docker-entrypoint-initdb.d/seed.sql:ro,Z
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh --connect --innodb_initialized"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # MinIO: an S3-compatible object store for the live `/s3` backend. Path-style addressing
+  # (qfs's HttpBackend signs path-style), so point QFS_S3_ENDPOINT at http://localhost:9000.
+  minio:
+    image: docker.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: qfs
+      MINIO_ROOT_PASSWORD: qfs12345
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  # One-shot: create the dev bucket + seed two objects, then exit.
+  minio-init:
+    image: docker.io/minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        until mc alias set local http://minio:9000 qfs qfs12345; do sleep 1; done;
+        mc mb --ignore-existing local/qfs-dev;
+        echo 'hello from minio' | mc pipe local/qfs-dev/greeting.txt;
+        printf 'a,b\n1,2\n' | mc pipe local/qfs-dev/data.csv;
+        echo 'seeded qfs-dev';

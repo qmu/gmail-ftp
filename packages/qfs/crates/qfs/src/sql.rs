@@ -199,6 +199,17 @@ impl SqlBackend for SqliteBackend {
 #[must_use]
 pub fn conn_registry() -> ConnRegistry {
     let mut reg = ConnRegistry::new();
+    // Declared `CREATE CONNECTION … DRIVER sqlite AT '<path>'` connections (the in-language source
+    // of truth) come FIRST; an equally-named `QFS_SQL_*` env var (the deprecated fallback below)
+    // then takes precedence on a name clash by overwriting it — keeping pre-existing setups working.
+    for decl in crate::connections_config::declared_for("sqlite") {
+        let Some(path) = decl.at_locator.as_deref() else {
+            continue;
+        };
+        if let Some(handle) = open_sqlite_handle(path) {
+            reg = reg.with(decl.name.to_ascii_lowercase(), handle);
+        }
+    }
     for (key, path) in std::env::vars() {
         let Some(conn) = key.strip_prefix(SQL_ENV_PREFIX) else {
             continue;
@@ -207,22 +218,80 @@ pub fn conn_registry() -> ConnRegistry {
             continue;
         }
         let conn = conn.to_ascii_lowercase();
-        let Ok(backend) = SqliteBackend::open(&path) else {
+        if let Some(handle) = open_sqlite_handle(&path) {
+            crate::connections_config::warn_env_var_deprecation_once();
+            reg = reg.with(conn, handle);
+        }
+    }
+    // t-203060: declared Postgres / MySQL connections (`CREATE CONNECTION … DRIVER postgres|mysql
+    // AT '<url>' SECRET '<ref>'`). The password resolves from the `env:`-scheme secret ref (the dev
+    // stack convention) or is carried in the URL; a connection that cannot connect/introspect is
+    // skipped (best-effort, never panics), so an unreachable DB fails closed rather than faking a mount.
+    for decl in crate::connections_config::declared_for("postgres") {
+        let Some(url) = decl.at_locator.as_deref() else {
             continue;
         };
-        let backend: Arc<dyn SqlBackend> = Arc::new(backend);
-        if let Ok(handle) = ConnHandle::new(backend) {
-            reg = reg.with(conn, handle);
+        let pw = resolve_db_password(decl.secret_ref.as_deref());
+        if let Some(handle) = open_pg_handle(url, pw.as_deref()) {
+            reg = reg.with(decl.name.to_ascii_lowercase(), handle);
+        }
+    }
+    for decl in crate::connections_config::declared_for("mysql") {
+        let Some(url) = decl.at_locator.as_deref() else {
+            continue;
+        };
+        let pw = resolve_db_password(decl.secret_ref.as_deref());
+        if let Some(handle) = open_mysql_handle(url, pw.as_deref()) {
+            reg = reg.with(decl.name.to_ascii_lowercase(), handle);
         }
     }
     reg
 }
 
-/// Whether any `/sql` connection is configured — the binary only registers the sql mount + apply
-/// driver when at least one resolves (so an unconfigured `/sql` commit fails closed).
+/// Resolve a connection's `SECRET '<ref>'` to a password string. `env:` refs (the dev-stack
+/// convention) resolve without the encrypted vault; a `vault:` ref needs the unlock flow (a
+/// follow-up) and best-effort resolves to `None` here, so the URL-embedded password is used instead.
+fn resolve_db_password(secret_ref: Option<&str>) -> Option<String> {
+    let reference = secret_ref?;
+    let vault = qfs_secrets::InMemoryStore::new();
+    crate::secret_ref::resolve_secret_ref(reference, &vault)
+        .ok()
+        .and_then(|s| s.expose_str().map(str::to_string))
+}
+
+/// Open one Postgres connection into a [`ConnHandle`] (connect + introspect). `None` on any failure
+/// — best-effort, never panics, so an unreachable DB leaves `/sql/<conn>` unregistered (fail closed).
+fn open_pg_handle(url: &str, password: Option<&str>) -> Option<ConnHandle> {
+    let backend: Arc<dyn SqlBackend> =
+        Arc::new(crate::sql_backends::PostgresBackend::connect(url, password).ok()?);
+    ConnHandle::new(backend).ok()
+}
+
+/// Open one MySQL connection into a [`ConnHandle`] (connect + introspect). `None` on any failure.
+fn open_mysql_handle(url: &str, password: Option<&str>) -> Option<ConnHandle> {
+    let backend: Arc<dyn SqlBackend> =
+        Arc::new(crate::sql_backends::MysqlBackend::connect(url, password).ok()?);
+    ConnHandle::new(backend).ok()
+}
+
+/// Open one SQLite file into a [`ConnHandle`] (the shared open path for an env-var or a declared
+/// connection). `None` when the file cannot be opened/introspected — best-effort, never panics.
+fn open_sqlite_handle(path: &str) -> Option<ConnHandle> {
+    let backend: Arc<dyn SqlBackend> = Arc::new(SqliteBackend::open(path).ok()?);
+    ConnHandle::new(backend).ok()
+}
+
+/// Whether any `/sql` connection is configured (a declared `DRIVER sqlite` connection OR a
+/// `QFS_SQL_*` env var) — the binary only registers the sql mount + apply driver when at least one
+/// resolves (so an unconfigured `/sql` commit fails closed).
 #[must_use]
 pub fn has_connections() -> bool {
     std::env::vars().any(|(k, v)| k.starts_with(SQL_ENV_PREFIX) && !v.is_empty())
+        || ["sqlite", "postgres", "mysql"].iter().any(|driver| {
+            crate::connections_config::declared_for(driver)
+                .iter()
+                .any(|c| c.at_locator.is_some())
+        })
 }
 
 /// A fresh [`SqlDriver`] over the live registry — the planning mount AND the source the apply
@@ -230,6 +299,26 @@ pub fn has_connections() -> bool {
 #[must_use]
 pub fn sql_driver() -> SqlDriver {
     SqlDriver::new(conn_registry())
+}
+
+/// Build a [`SqlDriver`] over a freshly-seeded temp SQLite database under connection `conn` (the
+/// `ddl` is executed before catalog introspection). Returns the temp path (so the caller deletes it)
+/// and the introspected driver — a test-only helper for the read-facet adapter tests, which need a
+/// live catalog without `QFS_SQL_*` env config.
+#[cfg(test)]
+pub(crate) fn seeded_test_driver(conn: &str, ddl: &str) -> (std::path::PathBuf, SqlDriver) {
+    let mut path = std::env::temp_dir();
+    path.push(format!("qfs-sqlread-{conn}-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let backend = SqliteBackend::open(&path).expect("open temp db");
+    {
+        let c = backend.conn.lock().expect("lock");
+        c.execute_batch(ddl).expect("seed ddl");
+    }
+    let backend: Arc<dyn SqlBackend> = Arc::new(backend);
+    let handle = ConnHandle::new(backend).expect("introspect catalog");
+    let registry = ConnRegistry::new().with(conn.to_string(), handle);
+    (path, SqlDriver::new(registry))
 }
 
 #[cfg(test)]

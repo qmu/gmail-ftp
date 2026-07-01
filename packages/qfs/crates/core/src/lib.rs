@@ -82,6 +82,9 @@ pub use qfs_plan::{
     NodeId, Plan, PlanApplier, PlanBuilder, PlanError, Preview, PreviewRow, ProcId,
     RecordingApplier, ServerNode, ServerWriteOp, Target, VfsPath,
 };
+// The process-global human-output color flag + ANSI helpers (re-exported so qfs-exec / the CLI
+// reach it through the core hub, honoring the dep-direction guard).
+pub use qfs_types::color;
 // The canonical type & schema model (t05), re-exported so consumers see one
 // `qfs_core::Schema` / `Value` / `TypeError` surface.
 pub use qfs_types::{

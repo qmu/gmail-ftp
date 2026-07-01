@@ -24,7 +24,7 @@ use qfs_driver::PushdownProfile;
 use qfs_types::{Column, ColumnType, Name, Predicate, Schema};
 
 use crate::error::PlanError;
-use crate::logical::{Aggregate, Aggregator, LogicalPlan, SourceId};
+use crate::logical::{Aggregate, Aggregator, LogicalPlan, ScalarExpr, SourceId};
 use crate::physical::{CombineOp, PhysicalPlan, PushedOrder, PushedQuery, ScanNode};
 
 /// The pushdown input for the planner: which sources exist and what each can run
@@ -125,6 +125,8 @@ fn single_source_chain(plan: &LogicalPlan) -> Option<SourceId> {
         LogicalPlan::Scan { source, .. } => Some(source.clone()),
         LogicalPlan::Filter { input, .. }
         | LogicalPlan::Project { input, .. }
+        | LogicalPlan::ProjectExpr { input, .. }
+        | LogicalPlan::Extend { input, .. }
         | LogicalPlan::Limit { input, .. }
         | LogicalPlan::Sort { input, .. }
         | LogicalPlan::Distinct { input }
@@ -162,6 +164,8 @@ fn scan_path(plan: &LogicalPlan) -> String {
         LogicalPlan::Scan { path, .. } => path.clone(),
         LogicalPlan::Filter { input, .. }
         | LogicalPlan::Project { input, .. }
+        | LogicalPlan::ProjectExpr { input, .. }
+        | LogicalPlan::Extend { input, .. }
         | LogicalPlan::Limit { input, .. }
         | LogicalPlan::Sort { input, .. }
         | LogicalPlan::Distinct { input }
@@ -244,6 +248,19 @@ fn walk_chain(plan: &LogicalPlan, acc: &mut Acc) -> Schema {
             } else {
                 acc.force_local(CombineOp::Project(columns.clone()));
             }
+            out
+        }
+        LogicalPlan::ProjectExpr { input, projections } => {
+            walk_chain(input, acc);
+            // A computed projection is never pushed (a driver cannot build a struct); always
+            // a local residual over the scan's rows.
+            acc.force_local(CombineOp::ProjectExpr(projections.clone()));
+            project_expr_schema(projections)
+        }
+        LogicalPlan::Extend { input, assignments } => {
+            let schema = walk_chain(input, acc);
+            let out = extend_schema(&schema, assignments);
+            acc.force_local(CombineOp::Extend(assignments.clone()));
             out
         }
         LogicalPlan::Limit { input, n } => {
@@ -335,6 +352,14 @@ fn federate(plan: &LogicalPlan, reg: &SourceRegistry) -> Result<PhysicalPlan, Pl
             CombineOp::Project(columns.clone()),
             partition_by_source(input, reg)?,
         )),
+        LogicalPlan::ProjectExpr { input, projections } => Ok(PhysicalPlan::combine1(
+            CombineOp::ProjectExpr(projections.clone()),
+            partition_by_source(input, reg)?,
+        )),
+        LogicalPlan::Extend { input, assignments } => Ok(PhysicalPlan::combine1(
+            CombineOp::Extend(assignments.clone()),
+            partition_by_source(input, reg)?,
+        )),
         LogicalPlan::Limit { input, n } => Ok(PhysicalPlan::combine1(
             CombineOp::Limit(*n),
             partition_by_source(input, reg)?,
@@ -415,9 +440,39 @@ fn aggregate_schema(group_by: &[Name], aggregates: &[Aggregate]) -> Schema {
     for a in aggregates {
         let ty = match a.func {
             Aggregator::Count => ColumnType::Int,
+            // `ARRAY_AGG(x)` yields an `Array` column; the element type is late-bound here
+            // (the input column type is resolved at runtime), so `Array(Unknown)`.
+            Aggregator::ArrayAgg => ColumnType::Array(Box::new(ColumnType::Unknown)),
             _ => ColumnType::Unknown,
         };
         cols.push(Column::new(a.output.clone(), ty, true));
+    }
+    Schema::new(cols)
+}
+
+/// The output schema of a computed projection (`ProjectExpr`): one column per term, named by
+/// its output alias. Values are late-bound (`Unknown`) — the per-row `ScalarExpr` types resolve
+/// at runtime (a struct constructor yields a `Struct` value, an array an `Array`).
+fn project_expr_schema(projections: &[(Name, ScalarExpr)]) -> Schema {
+    Schema::new(
+        projections
+            .iter()
+            .map(|(name, _)| Column::new(name.clone(), ColumnType::Unknown, true))
+            .collect(),
+    )
+}
+
+/// The output schema after an `EXTEND`/`SET`: the input columns, with each assignment either
+/// overwriting an existing column (kept in place, retyped late-bound) or appended as a new
+/// late-bound column.
+fn extend_schema(input: &Schema, assignments: &[(Name, ScalarExpr)]) -> Schema {
+    let mut cols = input.columns.clone();
+    for (name, _) in assignments {
+        if let Some(col) = cols.iter_mut().find(|c| &c.name == name) {
+            col.ty = ColumnType::Unknown;
+        } else {
+            cols.push(Column::new(name.clone(), ColumnType::Unknown, true));
+        }
     }
     Schema::new(cols)
 }

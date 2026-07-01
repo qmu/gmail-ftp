@@ -53,6 +53,22 @@ impl SysApplier {
             (EffectKind::Insert | EffectKind::Upsert, SysNode::Billing) => {
                 self.backend.set_billing(&node.args)
             }
+            // t100020 (the CONNECT model): bind / re-bind a defined path — `INSERT/UPSERT INTO
+            // /sys/paths` (upsert on `path`) — into the Project DB `path_binding` table.
+            (EffectKind::Insert | EffectKind::Upsert, SysNode::Paths) => {
+                self.backend.upsert_binding(&node.args)
+            }
+            // t100020: `DISCONNECT` — `REMOVE /sys/paths/<path>`. The user path rides as the path
+            // segments AFTER `paths` (a multi-segment defined path is `/sys/paths/a/b`); reconstruct
+            // it and remove the binding (its aliases cascade).
+            (EffectKind::Remove, SysNode::Paths) => {
+                let user_path =
+                    defined_path_from_target(path).ok_or_else(|| SysError::MalformedEffect {
+                        reason: "DISCONNECT needs a path, e.g. REMOVE /sys/paths/work/orders"
+                            .into(),
+                    })?;
+                self.backend.remove_binding(&user_path)
+            }
             // /sys/audit is append-only; the other admin views are read-only. Reject every other
             // write at the applier too (so even a hand-built plan that bypassed the parse-time
             // capability gate cannot mutate them).
@@ -62,6 +78,17 @@ impl SysApplier {
             }),
         }
     }
+}
+
+/// Reconstruct the user-defined path from a `REMOVE /sys/paths/<path…>` target (t100020). The
+/// defined path rides as every segment AFTER `paths`, so `/sys/paths/work/orders` → `/work/orders`.
+/// Returns `None` for a bare `/sys/paths` (no path named).
+fn defined_path_from_target(target: &str) -> Option<String> {
+    let rest = target
+        .strip_prefix("/sys/paths/")
+        .or_else(|| target.strip_prefix("sys/paths/"))?;
+    let rest = rest.trim_matches('/');
+    (!rest.is_empty()).then(|| format!("/{rest}"))
 }
 
 /// The stable `&'static str` label for an effect kind (the structured-error field is `&'static`).
@@ -113,6 +140,7 @@ mod tests {
     #[derive(Default)]
     struct FakeBackend {
         inserted: Mutex<Vec<RowBatch>>,
+        removed: Mutex<Vec<String>>,
     }
 
     impl SysBackend for FakeBackend {
@@ -129,6 +157,14 @@ mod tests {
         }
         fn set_billing(&self, row: &RowBatch) -> Result<u64, SysError> {
             self.inserted.lock().unwrap().push(row.clone());
+            Ok(1)
+        }
+        fn upsert_binding(&self, row: &RowBatch) -> Result<u64, SysError> {
+            self.inserted.lock().unwrap().push(row.clone());
+            Ok(1)
+        }
+        fn remove_binding(&self, path: &str) -> Result<u64, SysError> {
+            self.removed.lock().unwrap().push(path.to_string());
             Ok(1)
         }
     }
@@ -225,6 +261,50 @@ mod tests {
             backend.inserted.lock().unwrap().len(),
             1,
             "row reached backend"
+        );
+    }
+
+    #[test]
+    fn upsert_into_sys_paths_routes_to_the_binding_backend() {
+        // t100020: `CONNECT` desugars to `UPSERT INTO /sys/paths` — routes to upsert_binding.
+        let backend = Arc::new(FakeBackend::default());
+        let applier = SysApplier::new(backend.clone());
+        let schema = Schema::new(vec![
+            Column::new("path", ColumnType::Text, false),
+            Column::new("driver", ColumnType::Text, true),
+        ]);
+        let row = RowBatch::new(
+            schema,
+            vec![Row::new(vec![
+                Value::Text("/work/orders".into()),
+                Value::Text("postgres".into()),
+            ])],
+        );
+        let node = effect(EffectKind::Upsert, "/sys/paths", row);
+        let out = applier.apply_shared(&node).expect("binding upsert applies");
+        assert_eq!(out.affected, 1);
+        assert_eq!(
+            backend.inserted.lock().unwrap().len(),
+            1,
+            "row reached backend"
+        );
+    }
+
+    #[test]
+    fn remove_on_sys_paths_reconstructs_the_multi_segment_path() {
+        // t100020: `DISCONNECT /work/orders` desugars to `REMOVE /sys/paths/work/orders` — the
+        // applier reconstructs the user path from the segments AFTER `paths`.
+        let backend = Arc::new(FakeBackend::default());
+        let applier = SysApplier::new(backend.clone());
+        let node = effect(
+            EffectKind::Remove,
+            "/sys/paths/work/orders",
+            RowBatch::new(Schema::new(vec![]), vec![]),
+        );
+        applier.apply_shared(&node).expect("binding remove applies");
+        assert_eq!(
+            backend.removed.lock().unwrap().as_slice(),
+            &["/work/orders".to_string()]
         );
     }
 

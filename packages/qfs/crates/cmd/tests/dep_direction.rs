@@ -279,6 +279,10 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         // qfs-cmd/qfs-exec stay off the wire client. qfs-driver-http is already in the
         // runtime-consumer allowlist; this is its only allowed dependent besides the driver layer.
         "qfs-driver-http",
+        // The binary registers the Cloudflare driver's cred-free PLANNING mount so `/cf/...`
+        // statements plan + describe — a runtime-consumer leaf only the terminal binary depends on,
+        // the same composition-root rationale as the other driver edges.
+        "qfs-driver-cf",
         // google-drivers live commit: the binary composes the OAuth-authenticated gmail/gdrive/ga
         // commit stack (src/google.rs) over qfs-google-auth — bridging the ONE reqwest transport onto
         // its runtime-free `HttpExchange` seam, building the per-account StoredTokenSource +
@@ -595,6 +599,7 @@ fn runtime_is_confined_to_plan_and_types() {
         // terminal binary depends on it — so tokio still dead-ends in the binary.
         "qfs-driver-fs",
         "qfs-driver-http",
+        "qfs-driver-cf",
         "qfs-driver-gmail",
         "qfs-driver-gdrive",
         "qfs-driver-ga",

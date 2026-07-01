@@ -10,10 +10,10 @@
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
-use qfs_pushdown::{Aggregate, Aggregator, JoinOn, OrderKey, SetKind};
+use qfs_pushdown::{Aggregate, Aggregator, JoinOn, OrderKey, ScalarExpr, SetKind};
 use qfs_types::{
-    CmpOp, ColRef, Column, ColumnType, Literal, Name, Pattern, Predicate, Row, RowBatch, Schema,
-    Value,
+    CmpOp, ColRef, Column, ColumnType, Fields, Literal, Name, Pattern, Predicate, Row, RowBatch,
+    Schema, Value,
 };
 
 /// Evaluate a [`Predicate`] against a row under its schema. Total: a comparison whose
@@ -165,6 +165,93 @@ pub(crate) fn project(batch: RowBatch, columns: &[Name]) -> RowBatch {
     RowBatch::new(schema, rows)
 }
 
+/// Evaluate a per-row [`ScalarExpr`] against a row under its schema (t92). Total: a column
+/// that does not resolve is `Null` (mirroring the projection/predicate late-binding), never a
+/// panic. A `Struct`/`Array` constructor builds the mirrored [`Value`] from its evaluated
+/// field/element expressions (field order preserved).
+#[must_use]
+pub(crate) fn eval_value(expr: &ScalarExpr, schema: &Schema, row: &Row) -> Value {
+    match expr {
+        ScalarExpr::Col(col) => resolve(col, schema, row).unwrap_or(Value::Null),
+        ScalarExpr::Lit(v) => v.clone(),
+        ScalarExpr::Array(elems) => {
+            Value::Array(elems.iter().map(|e| eval_value(e, schema, row)).collect())
+        }
+        ScalarExpr::Struct(fields) => Value::Struct(Fields::new(
+            fields
+                .iter()
+                .map(|(name, e)| (name.clone(), eval_value(e, schema, row)))
+                .collect(),
+        )),
+    }
+}
+
+/// A **computed** projection (t92): each output column is a per-row [`ScalarExpr`] (a struct/
+/// array constructor over the input columns). Unlike name-only [`project`], this evaluates an
+/// expression per row, so `SELECT {filename: name, bytes: content} AS att` produces a real
+/// `Struct` value. Output column types are late-bound (`Unknown`) — the value carries its shape.
+#[must_use]
+pub(crate) fn project_expr(batch: RowBatch, projections: &[(Name, ScalarExpr)]) -> RowBatch {
+    let schema = Schema::new(
+        projections
+            .iter()
+            .map(|(name, _)| Column::new(name.clone(), ColumnType::Unknown, true))
+            .collect(),
+    );
+    let src = batch.schema;
+    let rows = batch
+        .rows
+        .into_iter()
+        .map(|r| {
+            Row::new(
+                projections
+                    .iter()
+                    .map(|(_, e)| eval_value(e, &src, &r))
+                    .collect(),
+            )
+        })
+        .collect();
+    RowBatch::new(schema, rows)
+}
+
+/// `EXTEND`/`SET` (t92): add or overwrite columns with per-row computed values. An assignment
+/// naming an existing column overwrites it in place; a new name is appended. Assignments apply
+/// left-to-right over a progressively-updated row, so a later assignment can read an earlier
+/// one. Output column types are late-bound (`Unknown`).
+#[must_use]
+pub(crate) fn extend(batch: RowBatch, assignments: &[(Name, ScalarExpr)]) -> RowBatch {
+    // Resolve the output column layout once, recording each assignment's target index.
+    let mut out_cols: Vec<Column> = batch.schema.columns.clone();
+    let mut targets: Vec<usize> = Vec::with_capacity(assignments.len());
+    for (name, _) in assignments {
+        if let Some(i) = out_cols.iter().position(|c| &c.name == name) {
+            out_cols[i].ty = ColumnType::Unknown;
+            targets.push(i);
+        } else {
+            out_cols.push(Column::new(name.clone(), ColumnType::Unknown, true));
+            targets.push(out_cols.len() - 1);
+        }
+    }
+    let schema = Schema::new(out_cols);
+    let width = schema.columns.len();
+    let rows = batch
+        .rows
+        .into_iter()
+        .map(|r| {
+            // Pad the row to the full output width; evaluate each assignment against the
+            // progressively-updated row (so a later assignment sees an earlier one).
+            let mut values = r.values;
+            values.resize(width, Value::Null);
+            for ((_, expr), &idx) in assignments.iter().zip(&targets) {
+                let cur = Row::new(values.clone());
+                values[idx] = eval_value(expr, &schema, &cur);
+            }
+            Row::new(values)
+        })
+        .collect();
+    RowBatch::new(schema, rows)
+}
+
 /// Cap a batch to at most `n` rows.
 #[must_use]
 pub(crate) fn limit(mut batch: RowBatch, n: u64) -> RowBatch {
@@ -290,6 +377,7 @@ pub(crate) fn aggregate(batch: RowBatch, group_by: &[Name], aggs: &[Aggregate]) 
     for a in aggs {
         let ty = match a.func {
             Aggregator::Count => ColumnType::Int,
+            Aggregator::ArrayAgg => ColumnType::Array(Box::new(ColumnType::Unknown)),
             _ => ColumnType::Unknown,
         };
         out_cols.push(Column::new(a.output.clone(), ty, true));
@@ -353,6 +441,16 @@ fn run_aggregate(func: Aggregator, col: Option<usize>, rows: &[Row]) -> Value {
         }
         Aggregator::Min => fold_extreme(&vals, Ordering::Less),
         Aggregator::Max => fold_extreme(&vals, Ordering::Greater),
+        // `ARRAY_AGG(col)` collects the column's per-row values in row order into one `Array`.
+        // Unlike the numeric aggregates it keeps every row's cell (including nulls) — it is a
+        // faithful collect, not a fold — so N input rows pack into one Array of N elements.
+        Aggregator::ArrayAgg => Value::Array(match col {
+            Some(i) => rows
+                .iter()
+                .filter_map(|r| r.values.get(i).cloned())
+                .collect(),
+            None => Vec::new(),
+        }),
     }
 }
 

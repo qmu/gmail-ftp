@@ -268,6 +268,32 @@ fn applier_move_deletes_source_only_after_verify() {
 }
 
 #[test]
+fn positional_single_column_write_payload_maps_onto_the_blob() {
+    // A write whose payload column is NOT named `content` — a positional `VALUES ('hi')`, or a
+    // piped one-column relation — still writes the blob when unambiguous (exactly one Text/Bytes
+    // column). Regression: such payloads previously failed at decode with "no `content` payload".
+    use qfs_plan::{DriverId, EffectKind, EffectNode, NodeId, Target, VfsPath};
+    use qfs_types::{Column, ColumnType, Row, RowBatch, Schema, Value};
+    let args = RowBatch::new(
+        Schema::new(vec![Column::new("col0", ColumnType::Text, false)]),
+        vec![Row::new(vec![Value::Text("hello-positional".to_string())])],
+    );
+    let node = EffectNode::new(
+        NodeId(0),
+        EffectKind::Upsert,
+        Target::new(DriverId::new("local"), VfsPath::new("/local/out.txt")),
+    )
+    .with_args(args);
+    assert_eq!(
+        LocalEffect::from_node(&node).unwrap(),
+        LocalEffect::Write {
+            dst: "/local/out.txt".to_string(),
+            bytes: b"hello-positional".to_vec(),
+        }
+    );
+}
+
+#[test]
 fn read_only_applier_denies_writes_and_touches_no_files() {
     let (dir, sandbox) = fixture();
     let applier = LocalApplier::new(sandbox, true);

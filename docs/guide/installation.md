@@ -59,9 +59,39 @@ completely offline:
 qfs describe /mail/drafts
 
 # Preview a query — shows the plan, changes nothing
-qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com', 'Hi', 'Body text')"
+qfs run "insert into /mail/drafts values ('alice@example.com', 'Hi', 'Body text')"
 ```
 
 When you're ready to act on real services, [add a connection](/guide/connections).
 
-**Next:** [Your first queries →](/guide/getting-started)
+## Use qfs from Claude Code (the plugin)
+
+qfs ships a **Claude Code plugin** that bundles the qfs *skills* — the describe→preview→commit how-to
+an agent loads on demand — so Claude can drive the `qfs` CLI over your connected services. Add the
+marketplace and install it:
+
+```
+/plugin marketplace add qmu/qfs
+/plugin install qfs@qfs
+```
+
+This lands in `~/.claude/settings.json`:
+
+```jsonc
+{
+  "extraKnownMarketplaces": {
+    "qfs": { "source": { "source": "github", "repo": "qmu/qfs" } }
+  },
+  "enabledPlugins": {
+    "qfs@qfs": true
+  }
+}
+```
+
+The plugin carries knowledge, not credentials: its skills shell out to the `qfs` binary you
+installed above, so finish a one-time [connection setup](/guide/connections) for the services you
+want. The agent inherits qfs's safety model unchanged — every write previews first, and irreversible
+actions (sending a draft, trashing, merging a PR) still need an explicit `--commit-irreversible`, so
+an agent can't fire them by accident.
+
+**Next:** [Get started →](/guide/getting-started)

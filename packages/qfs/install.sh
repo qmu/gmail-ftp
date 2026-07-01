@@ -25,26 +25,33 @@ next_steps() {
 
   ✓ qfs is installed. Next steps:
 
-  1) Try it — no account needed; PREVIEW changes nothing:
-       qfs describe /mail/drafts
-       qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')"
-     (qfs run PREVIEWs by default; add --commit to actually apply.)
+  1) Try it — runs entirely on your machine, no account, no network:
+       qfs run "/local/etc |> select name, size, is_dir |> limit 5"   # list a folder
+       echo '{"k":1,"name":"alpha"}' > /tmp/d.json
+       qfs run "/local/tmp/d.json |> decode json |> encode yaml"       # convert a file
+     Both return real output immediately.
 
-  2) Connect a service — only needed to apply real changes:
-     First export QFS_PASSPHRASE — the master passphrase that unlocks your local
-     credential vault (argon2id KDF; NOT a service credential). It must stay set
-     for the shell that runs `connection add/list/remove`:
+  2) Preview a write — still no account; PREVIEW changes nothing:
+       qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')"
+     (qfs run PREVIEWs by default; add --commit to actually apply — applying a
+     real change needs a connected account, next.)
+
+  3) Connect a service — only needed to apply real changes:
+     First export QFS_PASSPHRASE — a password you choose that encrypts the
+     service logins you save on this machine. It is not any service's own
+     password; it just locks the local file your saved logins live in. Keep it
+     set for the shell that runs `connection add/list/remove`:
        read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE   # no shell-history leak
      Then add the connection, piping the credential VALUE via stdin (never argv,
      which leaks into the process table + shell history):
        printf %s "$TOKEN" | qfs connection add mail work   # then: qfs connection list
      Your credential is stored locally and never printed back.
 
-  3) Update qfs later — re-run the installer (always fetches the latest):
+  4) Update qfs later — re-run the installer (always fetches the latest):
        curl -fsSL https://raw.githubusercontent.com/qmu/qfs/main/packages/qfs/install.sh | sh
      Pin a version with QFS_VERSION=vX.Y.Z.
 
-  4) Learn more:
+  5) Learn more:
        https://github.com/qmu/qfs#readme
        https://github.com/qmu/qfs/blob/main/docs/guide/getting-started.md
        qfs skill      # the operating procedure for AI agents

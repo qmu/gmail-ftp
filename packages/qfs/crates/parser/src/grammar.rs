@@ -31,10 +31,10 @@ use winnow::token::any;
 use winnow::{ModalResult, Parser};
 
 use crate::ast::{
-    Assignment, CallRef, Codec, DdlKind, EffectBody, EffectStmt, EffectVerb, Expr, FnRef, Ident,
-    JoinOp, Literal, NamedArg, Op, OrderKey, Param, PathExpr, PathRef, PathSegment, PipeOp,
-    Pipeline, PlanWrap, PolicyRuleAst, PolicySubjectAst, Projection, ServerDdl, Source, Statement,
-    TypeAnn, Values,
+    Assignment, CallRef, Codec, ConnectionDeclAst, DdlKind, EffectBody, EffectStmt, EffectVerb,
+    Expr, FnRef, Ident, JoinOp, Literal, NamedArg, Op, OrderKey, Param, PathExpr, PathRef,
+    PathSegment, PipeOp, Pipeline, PlanWrap, PolicyRuleAst, PolicySubjectAst, Projection,
+    ServerDdl, Source, Statement, TypeAnn, Values,
 };
 use crate::error::{ParseError, ParseErrorCode};
 
@@ -198,6 +198,11 @@ fn describe(tok: &Token) -> String {
         Token::Null => "`NULL`".to_string(),
         Token::Size { .. } => "a size literal".to_string(),
         Token::TypedLit { .. } => "a typed literal".to_string(),
+        Token::Bytes(_) => "a bytes literal".to_string(),
+        Token::LBrace => "`{`".to_string(),
+        Token::RBrace => "`}`".to_string(),
+        Token::LBracket => "`[`".to_string(),
+        Token::RBracket => "`]`".to_string(),
         _ => "a token".to_string(),
     }
 }
@@ -450,13 +455,47 @@ fn paren_expr_list(input: &mut Stream<'_>) -> ModalResult<Vec<Expr>> {
 /// `(a == b)` still parses as `paren_expr`.
 fn primary(input: &mut Stream<'_>) -> ModalResult<Expr> {
     alt((
-        literal.map(Expr::Lit),
+        // Composite constructors first — their `[`/`{` opener is unambiguous in value
+        // position and their elements are full sub-expressions (t92, generalised).
+        array_expr,
+        struct_expr,
+        scalar_literal.map(Expr::Lit),
         lambda,
         paren_expr,
         fn_call,
         dotted_path,
     ))
     .parse_next(input)
+}
+
+/// An array constructor `[ e1, e2, … ]` (t92, generalised): comma-separated element
+/// **expressions**, empty `[]` allowed. The `[` opener is backtrackable (so a non-array
+/// `primary` alternative can still match); once opened, a missing `]` is a hard error.
+fn array_expr(input: &mut Stream<'_>) -> ModalResult<Expr> {
+    let _ = punct(Token::LBracket).parse_next(input)?;
+    let elems: Vec<Expr> = separated(0.., expr, punct(Token::Comma)).parse_next(input)?;
+    let _ = cut_err(punct(Token::RBracket)).parse_next(input)?;
+    Ok(Expr::Array(elems))
+}
+
+/// A struct constructor `{ name: value, … }` (t92, generalised): comma-separated
+/// `name: <expr>` fields in insertion order, empty `{}` allowed. The field name is a bare
+/// identifier or a keyword-in-name-position ([`column_name`]). The `{` opener is
+/// backtrackable; once opened, a malformed field or missing `}` is a hard error.
+fn struct_expr(input: &mut Stream<'_>) -> ModalResult<Expr> {
+    let _ = punct(Token::LBrace).parse_next(input)?;
+    let fields: Vec<(String, Expr)> =
+        separated(0.., struct_field, punct(Token::Comma)).parse_next(input)?;
+    let _ = cut_err(punct(Token::RBrace)).parse_next(input)?;
+    Ok(Expr::Struct(fields))
+}
+
+/// One `name: <expr>` field of a struct constructor.
+fn struct_field(input: &mut Stream<'_>) -> ModalResult<(String, Expr)> {
+    let name = column_name(input)?;
+    let _ = cut_err(punct(Token::Colon)).parse_next(input)?;
+    let value = cut_err(expr).parse_next(input)?;
+    Ok((name.node, value))
 }
 
 /// A lambda literal `( params ) => <expr>` — a first-class value (M6 ticket t61,
@@ -535,8 +574,8 @@ fn dotted_path(input: &mut Stream<'_>) -> ModalResult<Expr> {
     }
 }
 
-/// A literal value token → AST literal (RFD §4).
-fn literal(input: &mut Stream<'_>) -> ModalResult<Literal> {
+/// A single-token scalar literal (string/int/float/bool/null/size/typed/bytes).
+fn scalar_literal(input: &mut Stream<'_>) -> ModalResult<Literal> {
     any.verify_map(|t: Spanned<Token>| match t.node {
         Token::Str(s) => Some(Literal::Str(s)),
         Token::Int(i) => Some(Literal::Int(i)),
@@ -551,6 +590,7 @@ fn literal(input: &mut Stream<'_>) -> ModalResult<Literal> {
             ty: lit_type_text(ty).to_string(),
             raw,
         }),
+        Token::Bytes(b) => Some(Literal::Bytes(b)),
         _ => None,
     })
     .parse_next(input)
@@ -969,6 +1009,181 @@ fn returning_clause(input: &mut Stream<'_>) -> ModalResult<Vec<Projection>> {
     preceded(kw(Keyword::Returning), projection_list).parse_next(input)
 }
 
+// ---- CONNECT / DISCONNECT — defined-path bindings (EPIC 20260701100000) -----
+//
+// A `CONNECT /<path> TO <driver> [AT '<loc>'] [SECRET '<ref>']` binds a user-chosen PATH to a
+// driver + credential; `CONNECT /<path> TO /<existing>` is an ALIAS (reuse a connection);
+// `DISCONNECT /<path>` removes a binding. `CONNECT`/`DISCONNECT` are **contextual idents** (like
+// `CONNECTION`/`SECRET`/`AT`) — NO new frozen keyword (the t31 `AT` lesson).
+//
+// They are **SUGAR** over a write to the `/sys/paths` administration node (the defined-path binding
+// registry, persisted in the Project DB) — exactly as `CREATE JOB` is sugar over `INSERT INTO
+// /server/jobs`. Desugaring here (in the parser, to the existing `Statement::Effect`) means the
+// whole effect→preview→commit machinery, the capability gate, and the CLOSED-CORE `Statement` set
+// are reused UNCHANGED: no new `Statement` variant, no new `EffectKind`. A full/alias CONNECT is an
+// `UPSERT INTO /sys/paths` (upsert on `path`); a DISCONNECT is a `REMOVE /sys/paths/<path>`.
+
+/// The `/sys/paths` binding-registry columns, in the order the desugar emits them (the sys applier
+/// reads them by NAME, so the order is internal). A defined path stores selectors + metadata only —
+/// `secret_ref` is a REFERENCE (`env:`/`vault:`), never a secret value.
+const PATH_BINDING_COLUMNS: [&str; 5] = ["path", "driver", "at", "secret_ref", "alias_of"];
+
+/// A plain (unversioned, non-glob) path segment — the shape the synthetic `/sys/paths` target uses.
+fn plain_segment(name: &str) -> PathSegment {
+    PathSegment {
+        name: name.to_string(),
+        version: None,
+        glob: false,
+    }
+}
+
+/// Render a parsed defined [`PathExpr`] to its canonical `/a/b/c` string (the value stored in the
+/// binding's `path` column). Segments only — version/glob/`AS OF` coordinates are not part of a
+/// mount identity.
+fn canonical_path(path: &PathExpr) -> String {
+    let mut out = String::new();
+    for seg in &path.segments {
+        out.push('/');
+        out.push_str(&seg.name);
+    }
+    out
+}
+
+/// Build the single-row `VALUES (path, driver, at, secret_ref, alias_of)` the `/sys/paths` upsert
+/// carries. Absent optional fields are `NULL` (an alias has no driver/at/secret; a full connect has
+/// no alias target).
+fn binding_values(
+    path: &str,
+    driver: Option<&str>,
+    at: Option<&str>,
+    secret_ref: Option<&str>,
+    alias_of: Option<&str>,
+) -> Values {
+    let lit = |v: Option<&str>| {
+        v.map_or(Expr::Lit(Literal::Null), |s| {
+            Expr::Lit(Literal::Str(s.to_string()))
+        })
+    };
+    Values {
+        columns: Some(
+            PATH_BINDING_COLUMNS
+                .iter()
+                .map(|c| (*c).to_string())
+                .collect(),
+        ),
+        rows: vec![vec![
+            Expr::Lit(Literal::Str(path.to_string())),
+            lit(driver),
+            lit(at),
+            lit(secret_ref),
+            lit(alias_of),
+        ]],
+    }
+}
+
+/// Wrap a binding row into the `INSERT INTO /sys/paths …` effect. Like the other gated `/sys`
+/// writes (`/sys/settings`, `/sys/billing`), the SURFACE verb is `INSERT` and the backend applies
+/// **upsert-on-`path`** semantics (re-connecting a path replaces its binding) — an `INSERT` is
+/// reversible, so a CONNECT auto-applies under the default safety mode (only DISCONNECT's `REMOVE`
+/// needs an irreversible ack).
+fn upsert_sys_paths(values: Values, span: Span) -> Statement {
+    Statement::Effect(EffectStmt {
+        verb: EffectVerb::Insert,
+        target: PathExpr {
+            segments: vec![plain_segment("sys"), plain_segment("paths")],
+            as_of: None,
+            span,
+        },
+        body: EffectBody::Values(values),
+        returning: None,
+    })
+}
+
+/// `CONNECT /<path> TO ( <driver> [AT '…'] [SECRET '…'] | /<existing-path> )` — the defined-path
+/// declaration. Disambiguated by what follows `TO`: a leading-`/` path is an ALIAS (reuse the
+/// connection); a bare driver ident is a FULL connect. Desugars to an `UPSERT INTO /sys/paths`.
+fn connect_stmt(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    let _ = word("CONNECT").parse_next(input)?;
+    // Committed after the verb: a malformed CONNECT is a crisp error, never a silent fallthrough.
+    let user = cut_err(path_expr).parse_next(input)?;
+    if user.segments.is_empty() {
+        // `CONNECT /` names no path.
+        return Err(ErrMode::Cut(ContextError::new()));
+    }
+    let user_path = canonical_path(&user);
+    let span = user.span;
+    let _ = cut_err(word("TO")).parse_next(input)?;
+    // ALIAS arm: a leading-`/` target path (a `Token::Path`) reusing an existing connection.
+    if let Some(target) = opt(path_expr).parse_next(input)? {
+        if target.segments.is_empty() {
+            return Err(ErrMode::Cut(ContextError::new()));
+        }
+        let target_path = canonical_path(&target);
+        let values = binding_values(&user_path, None, None, None, Some(&target_path));
+        return Ok(upsert_sys_paths(values, span));
+    }
+    // FULL connect: a bare driver ident, then optional `AT '<loc>'` / `SECRET '<ref>'` in any order.
+    let driver = cut_err(ident).parse_next(input)?.node;
+    let (at, secret) = connect_secret_clauses(input)?;
+    let values = binding_values(
+        &user_path,
+        Some(&driver),
+        at.as_deref(),
+        secret.as_deref(),
+        None,
+    );
+    Ok(upsert_sys_paths(values, span))
+}
+
+/// The optional `AT '<locator>'` / `SECRET '<ref>'` tail of a full `CONNECT`, collected in any order
+/// (the sugar shape, like the `CREATE CONNECTION` clause loop). Reuses the shared connection-clause
+/// parsers so the `AT`/`SECRET` contextual idents are recognised identically.
+fn connect_secret_clauses(input: &mut Stream<'_>) -> ModalResult<(Option<String>, Option<String>)> {
+    let mut at = None;
+    let mut secret = None;
+    loop {
+        if at.is_none() {
+            if let Some(v) = opt(conn_at_clause).parse_next(input)? {
+                at = Some(v);
+                continue;
+            }
+        }
+        if secret.is_none() {
+            if let Some(v) = opt(conn_secret_clause).parse_next(input)? {
+                secret = Some(v);
+                continue;
+            }
+        }
+        break;
+    }
+    Ok((at, secret))
+}
+
+/// `DISCONNECT /<path>` — remove a defined path. Desugars to `REMOVE /sys/paths/<path>` (the user
+/// path rides as the segments after `paths`, so a multi-segment defined path removes cleanly).
+fn disconnect_stmt(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    let _ = word("DISCONNECT").parse_next(input)?;
+    let user = cut_err(path_expr).parse_next(input)?;
+    if user.segments.is_empty() {
+        return Err(ErrMode::Cut(ContextError::new()));
+    }
+    let mut segments = vec![plain_segment("sys"), plain_segment("paths")];
+    segments.extend(user.segments.iter().cloned());
+    Ok(Statement::Effect(EffectStmt {
+        verb: EffectVerb::Remove,
+        target: PathExpr {
+            segments,
+            as_of: None,
+            span: user.span,
+        },
+        body: EffectBody::SetWhere {
+            set: Vec::new(),
+            filter: None,
+        },
+        returning: None,
+    }))
+}
+
 // ---- writes as pipeline stages (decision Q, t72) --------------------------
 
 /// The head of a terminal **pipe-stage write** (decision Q, t72): the write verb plus its
@@ -1137,7 +1352,33 @@ fn server_ddl(input: &mut Stream<'_>) -> ModalResult<ServerDdl> {
     let mut do_plan = None;
     let mut policy_rules: Vec<PolicyRuleAst> = Vec::new();
     let mut policy_attach: Option<String> = None;
+    let mut driver: Option<String> = None;
+    let mut at_locator: Option<String> = None;
+    let mut secret_ref: Option<String> = None;
     loop {
+        // `CREATE CONNECTION <name> DRIVER <driver> [AT '<loc>'] [SECRET '<ref>']` — the
+        // connection-declaration clauses (contextual idents, no frozen keyword). Probed first for
+        // the CONNECTION form so `DRIVER`/`SECRET` are consumed before the generic clause probes.
+        if matches!(kind, DdlKind::Connection) {
+            if driver.is_none() {
+                if let Some(v) = opt(conn_driver_clause).parse_next(input)? {
+                    driver = Some(v);
+                    continue;
+                }
+            }
+            if at_locator.is_none() {
+                if let Some(v) = opt(conn_at_clause).parse_next(input)? {
+                    at_locator = Some(v);
+                    continue;
+                }
+            }
+            if secret_ref.is_none() {
+                if let Some(v) = opt(conn_secret_clause).parse_next(input)? {
+                    secret_ref = Some(v);
+                    continue;
+                }
+            }
+        }
         // The `POLICY <name>` ATTACHMENT clause (t35) on a binding DDL — the policy a fired
         // plan commits under. `POLICY` is a frozen keyword (no new keyword). Only on a
         // non-POLICY DDL (for `CREATE POLICY` the leading POLICY is the kind, not an attach).
@@ -1205,6 +1446,13 @@ fn server_ddl(input: &mut Stream<'_>) -> ModalResult<ServerDdl> {
         on,
         policy_rules,
         policy: policy_attach,
+        connection: (driver.is_some() || at_locator.is_some() || secret_ref.is_some()).then(|| {
+            Box::new(ConnectionDeclAst {
+                driver,
+                at_locator,
+                secret_ref,
+            })
+        }),
     })
 }
 
@@ -1359,7 +1607,38 @@ fn ddl_kind(input: &mut Stream<'_>) -> ModalResult<DdlKind> {
         kw(Keyword::View).map(|_| DdlKind::View),
         kw(Keyword::Webhook).map(|_| DdlKind::Webhook),
         kw(Keyword::Policy).map(|_| DdlKind::Policy),
+        // `CONNECTION` is a contextual ident (no frozen keyword), like `materialized`.
+        word("CONNECTION").map(|_| DdlKind::Connection),
     ))
+    .parse_next(input)
+}
+
+/// `DRIVER <driver>` — the connection's driver kind (a bare ident). `DRIVER` is a contextual ident.
+fn conn_driver_clause(input: &mut Stream<'_>) -> ModalResult<String> {
+    let _ = word("DRIVER").parse_next(input)?;
+    ident(input).map(|s| s.node)
+}
+
+/// `AT '<locator>'` — the connection's non-secret location, a quoted string (consistent with the
+/// rest of the grammar's literal locators). `AT` is a contextual ident.
+fn conn_at_clause(input: &mut Stream<'_>) -> ModalResult<String> {
+    let _ = word("AT").parse_next(input)?;
+    string_value(input)
+}
+
+/// `SECRET '<ref>'` — the connection's secret REFERENCE (`env:<VAR>` / `vault:<path>`), a quoted
+/// string. `SECRET` is a contextual ident; the value is a reference, never an inline secret.
+fn conn_secret_clause(input: &mut Stream<'_>) -> ModalResult<String> {
+    let _ = word("SECRET").parse_next(input)?;
+    string_value(input)
+}
+
+/// A single string-literal token's text (the `'…'` body).
+fn string_value(input: &mut Stream<'_>) -> ModalResult<String> {
+    any.verify_map(|t: Spanned<Token>| match t.node {
+        Token::Str(s) => Some(s),
+        _ => None,
+    })
     .parse_next(input)
 }
 
@@ -1380,6 +1659,7 @@ fn ddl_kind_segment(kind: DdlKind) -> &'static str {
         DdlKind::MaterializedView => "materialized_views",
         DdlKind::Webhook => "webhooks",
         DdlKind::Policy => "policies",
+        DdlKind::Connection => "connections",
     }
 }
 
@@ -1446,6 +1726,11 @@ fn inner_statement(input: &mut Stream<'_>) -> ModalResult<Statement> {
         // A `TRANSACTION { … }` block (M6, t62): a distinct leading keyword, so order-independent.
         transaction_block,
         server_ddl.map(Statement::Ddl),
+        // CONNECT/DISCONNECT (EPIC 20260701100000): defined-path bindings, contextual-ident verbs
+        // that desugar to a `/sys/paths` effect. Probed before the generic effect/pipeline forms so
+        // the `connect`/`disconnect` lead idents are consumed as verbs, not a bare source name.
+        connect_stmt,
+        disconnect_stmt,
         // Verb-leading effect (`INSERT INTO …`, the source-less `VALUES` literal form among
         // them) wins first; a source-leading pipeline then either reads (`Statement::Query`)
         // or terminates in a write stage and lowers to the same `Statement::Effect` (t72).
@@ -1549,12 +1834,14 @@ fn let_value(input: &mut Stream<'_>) -> ModalResult<Statement> {
     alt((
         lambda.map(wrap_value_binding),
         pipeline.map(Statement::Query),
-        // A scalar value binding (`LET cutoff = '2026-03-27'`). Restricted to a *literal* so
-        // it cannot collide with the `pipeline` source forms above: a bare identifier stays a
-        // `LET`-bound relation name (`LET b = a`, t60), and a fn-call (`map(…)`) belongs in a
-        // pipeline stage, not as a bare `LET` value — keeping every existing relation binding
-        // parsing exactly as before.
-        literal.map(|lit| wrap_value_binding(Expr::Lit(lit))),
+        // A composite or scalar value binding (`LET atts = [ … ]`, `LET cutoff = '2026-03-27'`).
+        // Restricted to a *constructor / literal* so it cannot collide with the `pipeline`
+        // source forms above: a bare identifier stays a `LET`-bound relation name (`LET b = a`,
+        // t60), and a fn-call (`map(…)`) belongs in a pipeline stage, not as a bare `LET` value
+        // — keeping every existing relation binding parsing exactly as before.
+        array_expr.map(wrap_value_binding),
+        struct_expr.map(wrap_value_binding),
+        scalar_literal.map(|lit| wrap_value_binding(Expr::Lit(lit))),
     ))
     .parse_next(input)
 }

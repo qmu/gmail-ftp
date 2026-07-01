@@ -41,14 +41,51 @@ pub fn scan_rows(
     vfs: &str,
     project: Option<&[Name]>,
 ) -> Result<RowBatch, LocalError> {
+    // A single existing file reads its *content*: the listing row plus a `content` (Bytes)
+    // column, so a downstream codec (`DECODE`/`ENCODE`, ticket T2) can transform the bytes.
+    // Directory and glob listings fall through and are unchanged (no content column).
+    if let Some(batch) = scan_file_content(sandbox, vfs)? {
+        return Ok(apply_project(batch, project));
+    }
     let local_rows = scan_local_rows(sandbox, vfs)?;
     let full = LocalRow::schema();
     let rows: Vec<Row> = local_rows.iter().map(LocalRow::to_row).collect();
-    let batch = RowBatch::new(full, rows);
-    Ok(match project {
+    Ok(apply_project(RowBatch::new(full, rows), project))
+}
+
+/// Apply an optional projection to `batch`, preserving requested column order. A `None`/empty
+/// projection returns the batch unchanged.
+fn apply_project(batch: RowBatch, project: Option<&[Name]>) -> RowBatch {
+    match project {
         Some(cols) if !cols.is_empty() => project_batch(&batch, cols),
         _ => batch,
-    })
+    }
+}
+
+/// If `vfs` is a non-glob path that resolves to a single **regular file**, read its bytes and
+/// return the listing row augmented with a `content` (Bytes) column ([`LocalRow::content_schema`]).
+/// Returns `None` for globs, directories, and missing paths — those fall through to the listing
+/// scan. A sandbox escape surfaces as a [`LocalError`] (propagated, not `None`).
+fn scan_file_content(sandbox: &Sandbox, vfs: &str) -> Result<Option<RowBatch>, LocalError> {
+    if vfs.contains(['*', '?']) {
+        return Ok(None);
+    }
+    let abs = sandbox.resolve(vfs)?;
+    let is_file = matches!(abs.symlink_metadata(), Ok(meta) if meta.is_file());
+    if !is_file {
+        return Ok(None);
+    }
+    let listing = fs_core::resolve_glob(sandbox, vfs)?;
+    let bytes = fs_core::read_blob(sandbox, vfs)?;
+    let rows: Vec<Row> = listing
+        .iter()
+        .map(|lr| {
+            let mut values = lr.to_row().values;
+            values.push(Value::Bytes(bytes.clone()));
+            Row::new(values)
+        })
+        .collect();
+    Ok(Some(RowBatch::new(LocalRow::content_schema(), rows)))
 }
 
 /// Resolve `vfs` to its listing [`LocalRow`]s (the shape-dispatch above), pure over `fs_core`.
@@ -148,6 +185,36 @@ mod tests {
             Value::Text(s) => assert_eq!(s, "a.md"),
             other => panic!("expected name text, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn single_file_carries_content_bytes() {
+        let (_d, sandbox) = fixture();
+        let batch = scan_rows(&sandbox, "/local/a.md", None).unwrap();
+        // Listing columns + the trailing `content` (Bytes) column.
+        assert_eq!(batch.schema.columns.len(), 7);
+        assert_eq!(batch.schema.columns[6].name.as_str(), "content");
+        let content = batch.rows[0].values.last().expect("content value");
+        match content {
+            Value::Bytes(b) => assert_eq!(b, b"alpha", "the file's raw bytes"),
+            other => panic!("expected content bytes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn directory_listing_has_no_content_column() {
+        let (_d, sandbox) = fixture();
+        let batch = scan_rows(&sandbox, "/local", None).unwrap();
+        assert_eq!(
+            batch.schema.columns.len(),
+            6,
+            "listing has no content column"
+        );
+        assert!(batch
+            .schema
+            .columns
+            .iter()
+            .all(|c| c.name.as_str() != "content"));
     }
 
     #[test]

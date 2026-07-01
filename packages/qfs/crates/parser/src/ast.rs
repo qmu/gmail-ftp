@@ -344,6 +344,29 @@ pub struct ServerDdl {
     /// `CREATE POLICY` statement itself.
     #[serde(default)]
     pub policy: Option<String>,
+    /// The `CREATE CONNECTION` clauses (`DRIVER`/`AT`/`SECRET`), present only for the `Connection`
+    /// kind. **Boxed** so the rare connection form doesn't widen every parsed `Statement` (the
+    /// `large_enum_variant` discipline). `None` for every non-CONNECTION DDL.
+    #[serde(default)]
+    pub connection: Option<Box<ConnectionDeclAst>>,
+}
+
+/// The clauses of a `CREATE CONNECTION <name> DRIVER <driver> [AT '<loc>'] [SECRET '<ref>']`
+/// declaration — the in-language replacement for the `QFS_SQL_*` / `QFS_GIT_*` env-var alias
+/// convention. A shape-only AST node (the driver→path-family map + secret resolution live
+/// downstream); `CONNECTION`/`DRIVER`/`SECRET` are contextual idents, so this adds NO frozen keyword.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionDeclAst {
+    /// `DRIVER <driver>` — the driver kind (`sqlite`/`postgres`/`mysql`/`git`/`gmail`/…) that
+    /// decides which path family the connection mounts under. `None` only in the permissive parse;
+    /// a real declaration requires it (validated downstream).
+    pub driver: Option<String>,
+    /// `AT '<locator>'` — the non-secret location (a file path / URL / bucket / base URL). `None`
+    /// when the driver's locator is implicit (e.g. Gmail).
+    pub at_locator: Option<String>,
+    /// `SECRET '<ref>'` — a secret **reference** (`env:<VAR>` / `vault:<path>`), never an inline
+    /// value (a literal is rejected downstream). `None` when the connection needs no secret.
+    pub secret_ref: Option<String>,
 }
 
 /// One `ALLOW`/`DENY` rule clause inside a `CREATE POLICY` form (t35). A shape-only AST node —
@@ -406,6 +429,10 @@ pub enum DdlKind {
     Webhook,
     /// `CREATE POLICY`
     Policy,
+    /// `CREATE CONNECTION` — an in-language connection declaration (the env-var alias replacement).
+    /// `CONNECTION` is parsed as a contextual UPPERCASE ident (the `AT` lesson, like `MATERIALIZED`)
+    /// so it adds NO frozen keyword.
+    Connection,
 }
 
 /// An expression (RFD §3 operators, frozen). The boolean structure (`AND`/`OR`/
@@ -490,6 +517,16 @@ pub enum Expr {
         /// The body expression, evaluated with the params in scope.
         body: Box<Expr>,
     },
+    /// An array constructor `[ e1, e2, … ]` (t92, generalised): each element is a full
+    /// sub-expression (a column reference, a literal, a nested array/struct), so the array
+    /// is built per row on the read path, not only from constants. An all-constant array is
+    /// constant-folded to a [`Value::Array`](qfs_types::Value::Array); an empty array is `[]`.
+    Array(Vec<Expr>),
+    /// A struct constructor `{ name: value, … }` (t92, generalised): named fields whose
+    /// values are full sub-expressions in insertion order (field order preserved). Lowers to
+    /// [`Value::Struct`](qfs_types::Value::Struct). The per-row constructor is what feeds a
+    /// Gmail draft's `attachments` column from Drive columns (`{filename: name, bytes: content}`).
+    Struct(Vec<(String, Expr)>),
 }
 
 /// One lambda parameter: a name with an optional type annotation (`addr: string`).
@@ -574,6 +611,10 @@ pub enum Literal {
         /// The raw, unvalidated inner string content.
         raw: String,
     },
+    /// A hex bytes literal (`X'48656c6c6f'`): the decoded raw bytes (t92). The only composite
+    /// **scalar** literal that remains; `[ … ]` arrays and `{ … }` structs are now the
+    /// expression forms [`Expr::Array`]/[`Expr::Struct`] (their elements are sub-expressions).
+    Bytes(Vec<u8>),
 }
 
 /// A `/driver/seg/seg` path expression — the open path/mount registry seam (RFD §3,

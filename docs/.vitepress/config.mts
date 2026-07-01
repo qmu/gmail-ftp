@@ -20,14 +20,13 @@ export default defineConfig({
     languages: [qfsGrammar as any],
   },
   themeConfig: {
-    // Show H2 + H3 in the right-hand "On this page" outline, so the roadmap's
+    // Show H2 + H3 in the right-hand "On this page" outline, so the query cookbook's
     // `## Part N` headers appear with their `### N.M` subsections nested under them
     // (the default level-2-only outline hid the Part groupings).
     outline: { level: [2, 3], label: 'On this page' },
     nav: [
       { text: 'Get started', link: '/guide/getting-started' },
       { text: 'Cookbook', link: '/cookbook/' },
-      { text: 'Roadmap', link: '/roadmap' },
       { text: 'Query cookbook', link: '/query-cookbook' },
       {
         text: 'Reference',
@@ -38,6 +37,7 @@ export default defineConfig({
           { text: 'CLI', link: '/guide/cli' },
         ],
       },
+      { text: 'Roadmap', link: '/roadmap' },
     ],
     // One shared sidebar across every page (an array, not a path-keyed object) so navigating into
     // the Cookbook doesn't hide the rest of the docs. Sections are collapsible.
@@ -46,8 +46,8 @@ export default defineConfig({
         text: 'Get started',
         items: [
           { text: 'Installation', link: '/guide/installation' },
-          { text: 'Your first queries', link: '/guide/getting-started' },
-          { text: 'How qfs works', link: '/guide/concepts' },
+          { text: 'Get started', link: '/guide/getting-started' },
+          { text: 'Connect a service', link: '/guide/connect' },
         ],
       },
       {
@@ -55,20 +55,26 @@ export default defineConfig({
         collapsed: false,
         items: [
           { text: 'Overview', link: '/cookbook/' },
-          { text: 'Mail', link: '/cookbook/mail' },
+          { text: 'Gmail', link: '/cookbook/gmail' },
+          { text: 'Google Drive', link: '/cookbook/gdrive' },
           { text: 'Databases', link: '/cookbook/databases' },
-          { text: 'Files & storage', link: '/cookbook/files' },
+          { text: 'git', link: '/cookbook/git' },
+          { text: 'GitHub', link: '/cookbook/github' },
+          { text: 'Slack', link: '/cookbook/slack' },
+          { text: 'Files & object storage', link: '/cookbook/files' },
           { text: 'Cross-service', link: '/cookbook/cross-service' },
-          { text: 'Code: git, GitHub, Slack', link: '/cookbook/code' },
           { text: 'Automation (server)', link: '/cookbook/automation' },
+          { text: 'Query cookbook (catalogue)', link: '/query-cookbook' },
         ],
       },
       {
         text: 'Using qfs',
         items: [
+          { text: 'How qfs works', link: '/guide/concepts' },
           { text: 'CLI reference', link: '/guide/cli' },
           { text: 'Interactive shell', link: '/guide/shell' },
           { text: 'Connections & credentials', link: '/guide/connections' },
+          { text: 'Where qfs is going (roadmap)', link: '/roadmap' },
         ],
       },
       {
@@ -96,14 +102,6 @@ export default defineConfig({
         text: 'Security',
         collapsed: true,
         items: [{ text: 'Threat model', link: '/security/threat-model' }],
-      },
-      {
-        text: 'Roadmap',
-        collapsed: true,
-        items: [
-          { text: 'Where qfs is going', link: '/roadmap' },
-          { text: 'Query cookbook', link: '/query-cookbook' },
-        ],
       },
     ],
     socialLinks: [{ icon: 'github', link: 'https://github.com/qmu/qfs' }],

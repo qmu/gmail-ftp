@@ -23,6 +23,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod addressing;
+mod codec;
 mod dto;
 mod error;
 mod exec;
@@ -37,6 +38,10 @@ pub use exec::{
     plan_preview,
 };
 pub use output::{JsonRenderer, OutputFormat, Renderer, TableRenderer};
+// Re-export the engine's residual predicate filter so a read facet in the binary (which the
+// dep-direction guard keeps off qfs-engine directly) can apply a driver's pushed-WHERE residual —
+// the rows a driver returns after pushing only the faithfully-renderable part of a predicate.
+pub use qfs_engine::apply_residual;
 pub use read::{ReadDriver, ReadRegistry};
 pub use shell::{Builtin, Completer, Outcome, Session, VfsPath};
 

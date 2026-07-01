@@ -221,9 +221,11 @@ impl Lexer {
         self.bump(); // consume '@'
         let mut ver = String::new();
         while let Some(ch) = self.peek() {
-            // The ref runs until the next path separator or a delimiter. Dots are
-            // allowed (e.g. `@v1.2`); the raw ref text is preserved verbatim.
-            if ch.c == '/' || is_path_delimiter(ch.c) {
+            // The ref runs until the next path separator or a delimiter. Dots are allowed
+            // (`@v1.2`), and so is `~` — a git relative-ref char (`@HEAD~1`, `@main~2`) that is
+            // otherwise the `~` match operator; inside a path-version run it is part of the ref, not
+            // an operator. (`^`, `{`, `}` are already non-delimiters, so `@HEAD^`, `@v1.2^{}` lex.)
+            if ch.c == '/' || (is_path_delimiter(ch.c) && ch.c != '~') {
                 break;
             }
             ver.push(ch.c);
@@ -387,6 +389,27 @@ impl Lexer {
             }
         }
 
+        // Hex bytes literal `X'48656c6c6f'` (SQL-style): the introducer word is exactly
+        // `x`/`X` and a string quote follows **immediately** (no space, unlike a typed
+        // literal). The hex is decoded now so a `Token::Bytes` always carries valid bytes;
+        // a non-hex digit or an odd length is a `BadHexBytes` lex error.
+        if word.eq_ignore_ascii_case("x") && self.peek().is_some_and(|ch| ch.c == '\'') {
+            let before = self.out.len();
+            self.lex_string()?;
+            let raw = match self.out.get(before).map(|t| &t.node) {
+                Some(Token::Str(s)) => {
+                    let r = s.clone();
+                    self.out.truncate(before);
+                    r
+                }
+                _ => unreachable!("lex_string pushes exactly one Str token"),
+            };
+            let bytes =
+                decode_hex(&raw).ok_or_else(|| self.err(start, LexErrorKind::BadHexBytes))?;
+            self.push(start, Token::Bytes(bytes));
+            return Ok(());
+        }
+
         // Boolean / null literal words.
         if let Some(tok) = literal_word(&word) {
             self.push(start, tok);
@@ -481,6 +504,8 @@ impl Lexer {
                 ')' => Token::RParen,
                 '{' => Token::LBrace,
                 '}' => Token::RBrace,
+                '[' => Token::LBracket,
+                ']' => Token::RBracket,
                 ';' => Token::Semicolon,
                 ',' => Token::Comma,
                 ':' => Token::Colon,
@@ -497,6 +522,23 @@ impl Lexer {
         self.push(start, token);
         Ok(())
     }
+}
+
+/// Decode an even-length ASCII hex string to raw bytes. Returns `None` on an odd
+/// length or a non-hex digit (the `X'…'` bytes-literal validation). An empty string
+/// decodes to zero bytes.
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks(2) {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        out.push((hi * 16 + lo) as u8);
+    }
+    Some(out)
 }
 
 /// Whether `c` can start a bare identifier / word.

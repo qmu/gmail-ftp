@@ -252,6 +252,55 @@ fn insert_values_returning() {
 }
 
 #[test]
+fn insert_draft_with_array_struct_bytes_attachment_literal() {
+    // t92: an `[ { filename, mime, bytes: X'…' } ]` attachments column parses end-to-end (the
+    // foundation for a Gmail draft attachment). `X'68656c6c6f'` decodes to "hello".
+    let stmt = parse_ok(
+        "INSERT INTO /mail/drafts VALUES ('to@x.y', 'Subject', 'Body', \
+         [ { filename: 'note.txt', mime: 'text/plain', bytes: X'68656c6c6f' } ])",
+    );
+    let Statement::Effect(e) = stmt else {
+        panic!("expected Effect")
+    };
+    let EffectBody::Values(v) = &e.body else {
+        panic!("expected Values body")
+    };
+    let row = &v.rows[0];
+    assert_eq!(row.len(), 4);
+    let Expr::Array(items) = &row[3] else {
+        panic!("expected an array constructor, got {:?}", row[3])
+    };
+    assert_eq!(items.len(), 1);
+    let Expr::Struct(fields) = &items[0] else {
+        panic!("expected a struct constructor element")
+    };
+    assert_eq!(fields.len(), 3);
+    assert_eq!(fields[0].0, "filename");
+    assert!(matches!(&fields[0].1, Expr::Lit(Literal::Str(s)) if s == "note.txt"));
+    assert_eq!(fields[2].0, "bytes");
+    assert!(matches!(&fields[2].1, Expr::Lit(Literal::Bytes(b)) if b == b"hello"));
+}
+
+#[test]
+fn empty_array_and_struct_literals_parse() {
+    let Statement::Effect(e) = parse_ok("INSERT INTO /t VALUES ([], {})") else {
+        panic!("expected Effect")
+    };
+    let EffectBody::Values(v) = &e.body else {
+        panic!("expected Values body")
+    };
+    assert!(matches!(&v.rows[0][0], Expr::Array(a) if a.is_empty()));
+    assert!(matches!(&v.rows[0][1], Expr::Struct(s) if s.is_empty()));
+}
+
+#[test]
+fn bad_hex_bytes_literal_is_rejected() {
+    // A non-hex digit or an odd number of digits is a lex error surfaced as a parse failure.
+    let _ = parse_err("INSERT INTO /t VALUES (X'zz')");
+    let _ = parse_err("INSERT INTO /t VALUES (X'abc')");
+}
+
+#[test]
 fn upsert_distinct_from_insert() {
     let stmt = parse_ok("UPSERT INTO /s3/bucket/key VALUES ('blob')");
     let Statement::Effect(e) = stmt else { panic!() };
@@ -423,6 +472,173 @@ fn ddl_endpoint_as_query() {
     assert_eq!(d.target, vec!["server", "endpoints", "recent"]);
     assert!(d.as_query.is_some());
     assert_eq!(d.on.as_deref(), Some("GET /recent"));
+}
+
+#[test]
+fn ddl_connection_driver_at_and_secret() {
+    // The headline form: a postgres connection pointing at a URL, with a SECRET *reference*.
+    let stmt = parse_ok(
+        "CREATE CONNECTION analytics DRIVER postgres AT 'postgres://db/analytics' SECRET 'env:PG_PASSWORD'",
+    );
+    let Statement::Ddl(d) = stmt else {
+        panic!("expected Ddl")
+    };
+    assert_eq!(d.kind, DdlKind::Connection);
+    assert_eq!(d.name, "analytics");
+    assert_eq!(d.target, vec!["server", "connections", "analytics"]);
+    let c = d.connection.as_deref().expect("connection clauses");
+    assert_eq!(c.driver.as_deref(), Some("postgres"));
+    assert_eq!(c.at_locator.as_deref(), Some("postgres://db/analytics"));
+    assert_eq!(c.secret_ref.as_deref(), Some("env:PG_PASSWORD"));
+}
+
+#[test]
+fn ddl_connection_local_needs_no_secret() {
+    // A local SQLite file: a locator, no secret.
+    let stmt = parse_ok("CREATE CONNECTION orders DRIVER sqlite AT '/data/orders.db'");
+    let Statement::Ddl(d) = stmt else { panic!() };
+    assert_eq!(d.kind, DdlKind::Connection);
+    let c = d.connection.as_deref().expect("connection clauses");
+    assert_eq!(c.driver.as_deref(), Some("sqlite"));
+    assert_eq!(c.at_locator.as_deref(), Some("/data/orders.db"));
+    assert!(c.secret_ref.is_none());
+}
+
+#[test]
+fn ddl_connection_gmail_needs_no_locator() {
+    // Gmail's locator is implicit: a SECRET reference, no AT.
+    let stmt = parse_ok("CREATE CONNECTION work DRIVER gmail SECRET 'vault:gmail/work'");
+    let Statement::Ddl(d) = stmt else { panic!() };
+    let c = d.connection.as_deref().expect("connection clauses");
+    assert_eq!(c.driver.as_deref(), Some("gmail"));
+    assert!(c.at_locator.is_none());
+    assert_eq!(c.secret_ref.as_deref(), Some("vault:gmail/work"));
+}
+
+// ---- CONNECT / DISCONNECT — defined-path bindings (EPIC 20260701100000) -----
+
+/// Pull the desugared `EffectStmt` out of a CONNECT/DISCONNECT parse.
+fn effect_of(stmt: Statement) -> EffectStmt {
+    match stmt {
+        Statement::Effect(e) => e,
+        other => panic!("expected an Effect (the CONNECT desugar), got {other:?}"),
+    }
+}
+
+/// The canonical `/a/b/c` path of an effect target.
+fn target_path(e: &EffectStmt) -> String {
+    let mut s = String::new();
+    for seg in &e.target.segments {
+        s.push('/');
+        s.push_str(&seg.name);
+    }
+    s
+}
+
+/// Read a named column's string value from a single-row `VALUES` body (`None` for a NULL cell).
+fn values_cell(e: &EffectStmt, col: &str) -> Option<String> {
+    let EffectBody::Values(v) = &e.body else {
+        panic!("expected a VALUES body")
+    };
+    let cols = v.columns.as_ref().expect("explicit columns");
+    let idx = cols.iter().position(|c| c == col).expect("column present");
+    match &v.rows[0][idx] {
+        Expr::Lit(Literal::Str(s)) => Some(s.clone()),
+        Expr::Lit(Literal::Null) => None,
+        other => panic!("unexpected cell {other:?}"),
+    }
+}
+
+#[test]
+fn connect_full_desugars_to_a_sys_paths_upsert() {
+    // The headline form: bind `/work/orders` to a postgres connection with an AT locator + a SECRET
+    // reference. CONNECT is SUGAR over `UPSERT INTO /sys/paths` — no new Statement variant.
+    let e = effect_of(parse_ok(
+        "CONNECT /work/orders TO postgres AT 'postgres://db/orders' SECRET 'env:PG_PASS'",
+    ));
+    assert_eq!(e.verb, EffectVerb::Insert);
+    assert_eq!(target_path(&e), "/sys/paths");
+    assert_eq!(values_cell(&e, "path").as_deref(), Some("/work/orders"));
+    assert_eq!(values_cell(&e, "driver").as_deref(), Some("postgres"));
+    assert_eq!(
+        values_cell(&e, "at").as_deref(),
+        Some("postgres://db/orders")
+    );
+    assert_eq!(
+        values_cell(&e, "secret_ref").as_deref(),
+        Some("env:PG_PASS")
+    );
+    assert_eq!(values_cell(&e, "alias_of"), None);
+}
+
+#[test]
+fn connect_multi_segment_path_binds() {
+    // A recursive/nested defined path (`/team/finance/ledger`) is just a longer `path` value.
+    let e = effect_of(parse_ok(
+        "CONNECT /team/finance/ledger TO sqlite AT '/data/l.db'",
+    ));
+    assert_eq!(
+        values_cell(&e, "path").as_deref(),
+        Some("/team/finance/ledger")
+    );
+    assert_eq!(values_cell(&e, "driver").as_deref(), Some("sqlite"));
+    assert_eq!(values_cell(&e, "secret_ref"), None);
+}
+
+#[test]
+fn connect_secret_before_at_is_order_independent() {
+    // AT/SECRET are collected in any order (the sugar-shape clause loop).
+    let e = effect_of(parse_ok("CONNECT /m TO gmail SECRET 'vault:gmail/work'"));
+    assert_eq!(values_cell(&e, "driver").as_deref(), Some("gmail"));
+    assert_eq!(values_cell(&e, "at"), None);
+    assert_eq!(
+        values_cell(&e, "secret_ref").as_deref(),
+        Some("vault:gmail/work")
+    );
+}
+
+#[test]
+fn connect_alias_reuses_a_connection() {
+    // `TO /existing-path` (a leading-slash target) is the ALIAS arm: no driver/secret, an alias_of.
+    let e = effect_of(parse_ok("CONNECT /db TO /work/orders"));
+    assert_eq!(e.verb, EffectVerb::Insert);
+    assert_eq!(target_path(&e), "/sys/paths");
+    assert_eq!(values_cell(&e, "path").as_deref(), Some("/db"));
+    assert_eq!(values_cell(&e, "alias_of").as_deref(), Some("/work/orders"));
+    assert_eq!(values_cell(&e, "driver"), None);
+}
+
+#[test]
+fn disconnect_desugars_to_a_sys_paths_remove() {
+    // `DISCONNECT /<path>` → `REMOVE /sys/paths/<path>` (the user path rides as trailing segments).
+    let e = effect_of(parse_ok("DISCONNECT /work/orders"));
+    assert_eq!(e.verb, EffectVerb::Remove);
+    assert_eq!(target_path(&e), "/sys/paths/work/orders");
+    assert!(matches!(
+        e.body,
+        EffectBody::SetWhere { ref set, filter: None } if set.is_empty()
+    ));
+}
+
+#[test]
+fn connect_without_a_target_is_a_crisp_error() {
+    // Committed after the verb: `CONNECT /x` with no `TO …` is a hard parse error, not a silent
+    // fallthrough to a pipeline named `connect`.
+    assert!(parse_statement("CONNECT /x").is_err());
+    assert!(parse_statement("CONNECT").is_err());
+    assert!(parse_statement("DISCONNECT").is_err());
+}
+
+#[test]
+fn connect_and_disconnect_add_no_frozen_keyword() {
+    // The additive-by-contextual-ident contract (the t31 AT lesson): CONNECT/DISCONNECT/TO are NOT
+    // in the frozen keyword set — they are `word(...)` idents, exactly like CONNECTION/SECRET/AT.
+    for w in ["connect", "disconnect", "to"] {
+        assert!(
+            !KEYWORDS.contains(&w),
+            "`{w}` must NOT be a frozen keyword (it is a contextual ident)"
+        );
+    }
 }
 
 #[test]
@@ -639,6 +855,7 @@ fn closed_core_variant_counts_are_locked() {
             on: None,
             policy_rules: vec![],
             policy: None,
+            connection: None,
         }),
         Statement::Plan(PlanWrap {
             commit: false,

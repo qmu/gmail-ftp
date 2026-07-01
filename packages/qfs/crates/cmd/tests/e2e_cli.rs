@@ -298,9 +298,52 @@ fn parse_error_writes_kind_parse_to_stderr_exit_two() {
 }
 
 #[test]
+fn local_run_at_default_log_level_emits_no_cloud_bind_noise() {
+    // t8: the registry binds EVERY cloud driver at startup; a bind refusal used to WARN on every
+    // run — even a pure /local read — reading like a credential failure on an unrelated command.
+    // Run at the DEFAULT log level (NOT RUST_LOG=off) in a fresh, signed-out HOME so every cloud
+    // gate fails, and assert the stderr carries no cloud-driver consent noise.
+    let base = std::env::temp_dir().join(format!("qfs-t8-{}", std::process::id()));
+    let home = base.join("home");
+    std::fs::create_dir_all(home.join(".config")).expect("mk home");
+    std::fs::write(base.join("a.txt"), b"hi").expect("seed file");
+    let query = format!("/local{} |> select name", base.display());
+    let out = Command::new(qfs_bin())
+        .args(["run", "-e", &query, "--json"])
+        .env_clear()
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run qfs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let _ = std::fs::remove_dir_all(&base);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("cloud driver"),
+        "no cloud bind noise on an unrelated /local run: {stderr}"
+    );
+    assert!(
+        !stderr.contains("qfs::consent"),
+        "no consent-target noise on stderr: {stderr}"
+    );
+}
+
+#[test]
 fn unknown_source_is_capability_exit_three() {
     // No read driver registered → an absolute source resolves to a structured capability error.
-    let o = qfs(&["run", "-e", "/mail/inbox |> LIMIT 1", "--json"]);
+    // `/claude` (no QFS_CLAUDE_SESSIONS configured) leaves its read facet UNregistered, so it is the
+    // genuine unknown_source case. The cloud sources (`/mail`, `/github`, …) now carry actionable
+    // connect-account capability errors (still exit 3) rather than the raw unknown_source (t5/t6).
+    let o = qfs(&["run", "-e", "/claude/sessions |> LIMIT 1", "--json"]);
     assert_eq!(o.code, 3, "unsupported-op/capability is exit 3");
     let v = json(&o.stderr);
     assert_eq!(v["error"]["kind"], "capability");

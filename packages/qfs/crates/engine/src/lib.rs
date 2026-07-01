@@ -32,3 +32,18 @@ mod scan;
 
 pub use combine::{CombineEngine, EngineError, MiniEvaluator};
 pub use scan::ScanResults;
+
+/// Re-filter a [`RowBatch`](qfs_types::RowBatch) by a residual [`Predicate`](qfs_types::Predicate)
+/// — the read-facet residual seam. A driver that pushed only PART of a `WHERE` into its native query
+/// returns the (over-returned) rows plus the predicate it could not faithfully render; the caller
+/// applies it here so the rows are exactly the pushed query's result before the engine runs the
+/// remaining cross-source residual. Total: an incomparable / late-bound comparison drops the row
+/// (the same semantics the [`MiniEvaluator`]'s own `WHERE` residual uses, so push-then-filter equals
+/// all-local).
+#[must_use]
+pub fn apply_residual(
+    batch: qfs_types::RowBatch,
+    predicate: &qfs_types::Predicate,
+) -> qfs_types::RowBatch {
+    eval::filter(batch, predicate)
+}

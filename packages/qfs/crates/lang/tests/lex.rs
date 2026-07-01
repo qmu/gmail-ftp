@@ -86,6 +86,25 @@ fn golden_path_with_version() {
 }
 
 #[test]
+fn golden_path_with_relative_git_ref() {
+    // A git relative ref carries `~` (and `^`), which are otherwise operators — inside a path
+    // version run they are part of the raw ref (`@HEAD~1`), not the `~` match operator.
+    let src = "/git/app@HEAD~1/src |> SELECT path";
+    let toks = lex(src).expect("valid");
+    assert_spans_round_trip(src, &toks);
+    let got = nodes(src);
+    assert_eq!(
+        got[0],
+        Token::Path(vec![
+            PathSeg::new("git", None, false),
+            PathSeg::new("app", Some("HEAD~1".into()), false),
+            PathSeg::new("src", None, false),
+        ]),
+        "the relative ref `HEAD~1` is preserved verbatim as the version, not split at `~`"
+    );
+}
+
+#[test]
 fn golden_insert_into_is_two_words() {
     // Multi-word keyword: INSERT INTO lexes as two adjacent uppercase idents.
     let src = "INSERT INTO /mail/drafts VALUES (id) RETURNING id";

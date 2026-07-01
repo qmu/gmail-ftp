@@ -10,10 +10,10 @@
 //! dropped — so the planner never loses a filter.
 
 use qfs_parser::{Expr, Literal as AstLit, Op, PipeOp, Pipeline, Projection, Source};
-use qfs_types::{CmpOp, ColRef, Literal, Name, Pattern, Predicate, Schema};
+use qfs_types::{CmpOp, ColRef, Literal, Name, Pattern, Predicate, Schema, Value};
 
 use crate::logical::{
-    Aggregate, Aggregator, JoinKind, JoinOn, LogicalPlan, OrderKey, SetKind, SourceId,
+    Aggregate, Aggregator, JoinKind, JoinOn, LogicalPlan, OrderKey, ScalarExpr, SetKind, SourceId,
 };
 
 /// A structured lowering error — an AST shape the planner IR cannot represent.
@@ -146,9 +146,19 @@ fn lower_source(
             let segs: Vec<String> = path.segments.iter().map(|s| s.name.clone()).collect();
             let src = source_of(&segs);
             let schema = schema_of(&src);
-            // Retain the full addressed VFS path (`/seg/seg`) so a read driver can navigate to
-            // the exact node (t28), not just the mount root.
-            let vfs = format!("/{}", segs.join("/"));
+            // Retain the full addressed VFS path so a read driver can navigate to the exact node
+            // (t28) — INCLUDING each segment's `@version` (e.g. `/git/app@v1.2/…`) so a time-travel
+            // read reaches the driver at the addressed ref instead of the latest. Source routing /
+            // schema lookup key on names only (above); the addressed path keeps the ref.
+            let mut vfs = String::new();
+            for seg in &path.segments {
+                vfs.push('/');
+                vfs.push_str(&seg.name);
+                if let Some(version) = &seg.version {
+                    vfs.push('@');
+                    vfs.push_str(version);
+                }
+            }
             Ok(LogicalPlan::scan_at(src, vfs, schema))
         }
         Source::Subquery(inner) => lower_query(inner, source_of, schema_of),
@@ -179,10 +189,22 @@ fn lower_op(
             input: Box::new(input),
             predicate: lower_predicate(e)?,
         }),
-        PipeOp::Select(projs) => Ok(LogicalPlan::Project {
-            input: Box::new(input),
-            columns: project_columns(projs)?,
-        }),
+        PipeOp::Select(projs) => {
+            // A projection of only plain columns (`*`/`col`/`col AS a`) lowers to the pushable
+            // name-only `Project`. A projection with any **computed** term (a struct/array
+            // constructor, t92) lowers to the local `ProjectExpr` carrying the per-row exprs.
+            if projs.iter().all(is_plain_projection) {
+                Ok(LogicalPlan::Project {
+                    input: Box::new(input),
+                    columns: project_columns(projs)?,
+                })
+            } else {
+                Ok(LogicalPlan::ProjectExpr {
+                    input: Box::new(input),
+                    projections: project_expr_terms(projs)?,
+                })
+            }
+        }
         PipeOp::Limit(n) => Ok(LogicalPlan::Limit {
             input: Box::new(input),
             n: (*n).max(0) as u64,
@@ -253,16 +275,22 @@ fn lower_op(
         PipeOp::Union(p) => set_op(input, p, SetKind::Union, source_of, schema_of),
         PipeOp::Except(p) => set_op(input, p, SetKind::Except, source_of, schema_of),
         PipeOp::Intersect(p) => set_op(input, p, SetKind::Intersect, source_of, schema_of),
-        // EXTEND/SET/AS/DECODE/ENCODE/CALL are schema-shaping or effect-adjacent; they
-        // are out of the pushdown-split scope (the ticket's FROM/WHERE/SELECT/EXTEND/
-        // AGGREGATE/JOIN/UNION/EXCEPT/INTERSECT/EXPAND subset treats EXTEND as a local
-        // pass-through). Keep the relation unchanged so the partition is still total.
-        PipeOp::Extend(_)
-        | PipeOp::Set(_)
-        | PipeOp::As(_)
-        | PipeOp::Decode(_)
-        | PipeOp::Encode(_)
-        | PipeOp::Call(_) => Ok(input),
+        // EXTEND/SET add or overwrite columns with per-row computed values (t92): lowered to a
+        // local `Extend` residual op carrying the assignments. Never pushed (a driver cannot
+        // evaluate the constructor); the engine evaluates it after the scan returns.
+        PipeOp::Extend(asgns) | PipeOp::Set(asgns) => {
+            let assignments = asgns
+                .iter()
+                .map(|a| Ok((a.name.clone(), lower_scalar(&a.value)?)))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(LogicalPlan::Extend {
+                input: Box::new(input),
+                assignments,
+            })
+        }
+        // AS/DECODE/ENCODE/CALL are schema-shaping or effect-adjacent; out of the pushdown-split
+        // scope. Keep the relation unchanged so the partition is still total.
+        PipeOp::As(_) | PipeOp::Decode(_) | PipeOp::Encode(_) | PipeOp::Call(_) => Ok(input),
     }
 }
 
@@ -329,9 +357,100 @@ fn aggregator(name: &str) -> Result<Aggregator, LowerError> {
         "SUM" => Ok(Aggregator::Sum),
         "MIN" => Ok(Aggregator::Min),
         "MAX" => Ok(Aggregator::Max),
+        "ARRAY_AGG" => Ok(Aggregator::ArrayAgg),
         other => Err(LowerError::UnsupportedProjection {
             what: format!("unknown aggregate `{other}`"),
         }),
+    }
+}
+
+/// Whether a projection term is a plain, pushable column (`*`, `col`, `col AS a`, or a
+/// dotted path) — i.e. it names an existing column rather than computing a new value.
+fn is_plain_projection(p: &Projection) -> bool {
+    match p {
+        Projection::Star => true,
+        Projection::Expr { expr, .. } => matches!(expr, Expr::Col(_) | Expr::Path(_)),
+    }
+}
+
+/// Lower a computed `SELECT` projection list into `(output name, ScalarExpr)` terms. A `*`
+/// cannot be mixed with computed terms (there is no single output name for it), so it is a
+/// structured [`LowerError`] here.
+fn project_expr_terms(projs: &[Projection]) -> Result<Vec<(Name, ScalarExpr)>, LowerError> {
+    let mut out = Vec::with_capacity(projs.len());
+    for (i, p) in projs.iter().enumerate() {
+        match p {
+            Projection::Star => {
+                return Err(LowerError::UnsupportedProjection {
+                    what: "`*` cannot be mixed with a computed projection".into(),
+                })
+            }
+            Projection::Expr { expr, alias } => {
+                let name = alias.clone().unwrap_or_else(|| default_proj_name(expr, i));
+                out.push((name, lower_scalar(expr)?));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The default output column name for an un-aliased computed projection term: a bare column
+/// keeps its name; a path keeps its dotted join; anything else is `exprN` (its position).
+fn default_proj_name(expr: &Expr, idx: usize) -> Name {
+    match expr {
+        Expr::Col(c) => c.clone(),
+        Expr::Path(segs) => segs.join("."),
+        _ => format!("expr{idx}"),
+    }
+}
+
+/// Lower a parser [`Expr`] into a per-row [`ScalarExpr`] (t92). Only the forms the engine can
+/// evaluate with the type model alone are accepted: a column / path reference, a constant
+/// literal (constant-folded to a [`Value`]), and the `[ ]`/`{ }` constructors (recursively).
+/// A scalar `fn(...)` / operator expression is a structured [`LowerError`] (it would need the
+/// stdlib registry the engine does not depend on).
+fn lower_scalar(expr: &Expr) -> Result<ScalarExpr, LowerError> {
+    match expr {
+        // The lexer surfaces the keyword constants true/false/null as identifiers; in a value
+        // position they are literals, not column references (mirrors the evaluator's VALUES rule).
+        Expr::Col(name) => Ok(match name.to_ascii_lowercase().as_str() {
+            "true" => ScalarExpr::Lit(Value::Bool(true)),
+            "false" => ScalarExpr::Lit(Value::Bool(false)),
+            "null" => ScalarExpr::Lit(Value::Null),
+            _ => ScalarExpr::Col(ColRef::col(name.clone())),
+        }),
+        Expr::Path(segs) => Ok(ScalarExpr::Col(ColRef::path(segs.clone()))),
+        Expr::Lit(lit) => Ok(ScalarExpr::Lit(lit_to_value(lit))),
+        Expr::Array(elems) => Ok(ScalarExpr::Array(
+            elems.iter().map(lower_scalar).collect::<Result<_, _>>()?,
+        )),
+        Expr::Struct(fields) => Ok(ScalarExpr::Struct(
+            fields
+                .iter()
+                .map(|(n, e)| Ok((n.clone(), lower_scalar(e)?)))
+                .collect::<Result<Vec<_>, LowerError>>()?,
+        )),
+        other => Err(LowerError::UnsupportedProjection {
+            what: format!(
+                "{} is not a per-row scalar expression (only columns, literals, and [ ]/{{ }} constructors)",
+                describe_expr(other)
+            ),
+        }),
+    }
+}
+
+/// Constant-fold a parser [`Literal`] into a runtime [`Value`] (the constant leaf of a
+/// [`ScalarExpr`]). Mirrors the evaluator's `literal_to_value` lowering.
+fn lit_to_value(lit: &AstLit) -> Value {
+    match lit {
+        AstLit::Str(s) => Value::Text(s.clone()),
+        AstLit::Int(n) => Value::Int(*n),
+        AstLit::Float(f) => Value::Float(*f),
+        AstLit::Bool(b) => Value::Bool(*b),
+        AstLit::Null => Value::Null,
+        AstLit::Size { value, .. } => Value::Int(*value as i64),
+        AstLit::Typed { raw, .. } => Value::Text(raw.clone()),
+        AstLit::Bytes(b) => Value::Bytes(b.clone()),
     }
 }
 
@@ -423,5 +542,9 @@ fn describe_expr(expr: &Expr) -> String {
         // A lambda is a value, never a backend-pushable predicate (M6 t61) — it surfaces
         // here only as the secret-free label of an unsupported predicate shape.
         Expr::Lambda { .. } => "lambda".into(),
+        // Composite constructors (t92): valid in a projection (lowered to a `ScalarExpr`),
+        // never a backend-pushable predicate — labelled here for the unsupported case.
+        Expr::Array(_) => "array".into(),
+        Expr::Struct(_) => "struct".into(),
     }
 }

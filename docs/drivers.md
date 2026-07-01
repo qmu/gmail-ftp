@@ -12,7 +12,7 @@ The verbs are always `select` / `insert` / `upsert` / `update` / `remove` (plus 
 ### `/claude` — RelationalTable
 
 - example node: `/claude/sessions`
-- native verbs: SELECT JOIN INSERT UPDATE UPSERT
+- native verbs: SELECT
 
 Universal verbs (✓ supported / ✗ rejected at parse time):
 
@@ -37,7 +37,7 @@ Pushdown: where=false project=false limit=false order=false join=false aggregate
 ### `/drive` — BlobNamespace
 
 - example node: `/drive/my/Reports/report.pdf`
-- native verbs: ls cp mv rm (+ universal upsert/remove)
+- native verbs: SELECT INSERT UPSERT UPDATE REMOVE LS CP MV
 
 Universal verbs (✓ supported / ✗ rejected at parse time):
 
@@ -66,7 +66,7 @@ Pushdown: where=true project=false limit=true order=false join=false aggregate=f
 ### `/fs` — BlobNamespace
 
 - example node: `/fs/projects/report.md`
-- native verbs: ls cp mv rm (+ universal upsert/remove)
+- native verbs: UPSERT REMOVE LS CP MV RM
 
 Universal verbs (✓ supported / ✗ rejected at parse time):
 
@@ -88,35 +88,10 @@ Prelude aliases: _none_
 
 Pushdown: where=false project=true limit=false order=false join=false aggregate=false distinct=false group_by=false
 
-### `/ga` — RelationalTable
-
-- example node: `/ga/123456789`
-- native verbs: SELECT JOIN INSERT UPDATE UPSERT
-
-Universal verbs (✓ supported / ✗ rejected at parse time):
-
-| verb | supported |
-|------|-----------|
-| `select` | ✓ |
-| `insert` | ✗ |
-| `upsert` | ✗ |
-| `update` | ✗ |
-| `remove` | ✗ |
-| `ls` | ✗ |
-| `cp` | ✗ |
-| `mv` | ✗ |
-| `rm` | ✗ |
-
-Procedures: _none_
-
-Prelude aliases: _none_
-
-Pushdown: where=true project=true limit=true order=true join=false aggregate=true distinct=false group_by=true
-
 ### `/github` — ObjectGraphWorkflow
 
 - example node: `/github/o/r/pulls`
-- native verbs: SELECT INSERT UPDATE REMOVE + CALL driver.action
+- native verbs: SELECT INSERT UPDATE
 
 Universal verbs (✓ supported / ✗ rejected at parse time):
 
@@ -144,10 +119,35 @@ Prelude aliases: _none_
 
 Pushdown: where=true project=false limit=true order=false join=false aggregate=false distinct=false group_by=false
 
+### `/google-analytics` — RelationalTable
+
+- example node: `/google-analytics/123456789`
+- native verbs: SELECT
+
+Universal verbs (✓ supported / ✗ rejected at parse time):
+
+| verb | supported |
+|------|-----------|
+| `select` | ✓ |
+| `insert` | ✗ |
+| `upsert` | ✗ |
+| `update` | ✗ |
+| `remove` | ✗ |
+| `ls` | ✗ |
+| `cp` | ✗ |
+| `mv` | ✗ |
+| `rm` | ✗ |
+
+Procedures: _none_
+
+Prelude aliases: _none_
+
+Pushdown: where=true project=true limit=true order=true join=false aggregate=true distinct=false group_by=true
+
 ### `/local` — BlobNamespace
 
 - example node: `/local/x.txt`
-- native verbs: ls cp mv rm (+ universal upsert/remove)
+- native verbs: UPSERT REMOVE LS CP MV RM
 
 Universal verbs (✓ supported / ✗ rejected at parse time):
 
@@ -172,7 +172,7 @@ Pushdown: where=false project=true limit=false order=false join=false aggregate=
 ### `/mail` — AppendLog
 
 - example node: `/mail/drafts`
-- native verbs: SELECT(tail) INSERT(append)
+- native verbs: SELECT(tail) INSERT(append) UPSERT REMOVE
 
 Universal verbs (✓ supported / ✗ rejected at parse time):
 
@@ -201,7 +201,7 @@ Pushdown: where=true project=false limit=true order=false join=false aggregate=f
 ### `/r2` — BlobNamespace
 
 - example node: `/r2/bucket/key`
-- native verbs: ls cp mv rm (+ universal upsert/remove)
+- native verbs: SELECT UPSERT REMOVE LS CP MV RM
 
 Universal verbs (✓ supported / ✗ rejected at parse time):
 
@@ -223,10 +223,35 @@ Prelude aliases: _none_
 
 Pushdown: where=true project=true limit=true order=false join=false aggregate=false distinct=false group_by=false
 
+### `/rest` — RelationalTable
+
+- example node: `/rest`
+- native verbs: SELECT JOIN INSERT UPDATE UPSERT
+
+Universal verbs (✓ supported / ✗ rejected at parse time):
+
+| verb | supported |
+|------|-----------|
+| `select` | ✗ |
+| `insert` | ✗ |
+| `upsert` | ✗ |
+| `update` | ✗ |
+| `remove` | ✗ |
+| `ls` | ✗ |
+| `cp` | ✗ |
+| `mv` | ✗ |
+| `rm` | ✗ |
+
+Procedures: _none_
+
+Prelude aliases: _none_
+
+Pushdown: where=false project=false limit=true order=false join=false aggregate=false distinct=false group_by=false
+
 ### `/s3` — BlobNamespace
 
 - example node: `/s3/bucket/key`
-- native verbs: ls cp mv rm (+ universal upsert/remove)
+- native verbs: SELECT UPSERT REMOVE LS CP MV RM
 
 Universal verbs (✓ supported / ✗ rejected at parse time):
 
@@ -251,7 +276,7 @@ Pushdown: where=true project=true limit=true order=false join=false aggregate=fa
 ### `/slack` — AppendLog
 
 - example node: `/slack/ws/#general/messages`
-- native verbs: SELECT(tail) INSERT(append)
+- native verbs: SELECT(tail) INSERT(append) REMOVE
 
 Universal verbs (✓ supported / ✗ rejected at parse time):
 
@@ -284,7 +309,7 @@ Pushdown: where=true project=false limit=true order=false join=false aggregate=f
 ### `/sys` — RelationalTable
 
 - example node: `/sys/users`
-- native verbs: SELECT JOIN INSERT UPDATE UPSERT
+- native verbs: SELECT
 
 Universal verbs (✓ supported / ✗ rejected at parse time):
 
@@ -313,7 +338,7 @@ Codecs bridge blob ↔ relational independent of driver identity. Builtin format
 - `csv`
 - `json`
 - `jsonl`
-- `md+frontmatter`
+- `md`
 - `toml`
 - `yaml`
 

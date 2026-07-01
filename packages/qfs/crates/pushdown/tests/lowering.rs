@@ -38,6 +38,22 @@ fn pipeline_of(src: &str) -> qfs_parser::Pipeline {
 }
 
 #[test]
+fn path_version_survives_lowering_into_the_addressed_scan_path() {
+    // A `@version` segment (e.g. a git time-travel read `/git/app@v1.2/…`) must survive lowering
+    // into the addressed scan path the read driver navigates — not be dropped to the latest
+    // revision. Source routing / schema lookup key on segment names only; the addressed path keeps
+    // the ref. Regression: lower_source previously rendered the path from names alone.
+    let pipe = pipeline_of("/git/app@v1.2/commits");
+    let plan = lower_query(&pipe, &source_of, &schema_of).unwrap();
+    let LogicalPlan::Scan { path, source, .. } = &plan else {
+        panic!("expected a bare Scan, got {plan:?}");
+    };
+    assert_eq!(path.as_str(), "/git/app@v1.2/commits");
+    // Routing still keys on the name only (the `@v1.2` is addressing, not part of the source id).
+    assert_eq!(source, &SourceId::new("git"));
+}
+
+#[test]
 fn where_predicate_is_sourced_from_the_ast_and_pushed() {
     // The AST WHERE survives lowering into a typed Predicate and is pushed (O-t07-3).
     let pipe = pipeline_of("/db/users |> WHERE age > 30 |> SELECT id, name");

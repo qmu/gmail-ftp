@@ -170,3 +170,76 @@ fn base64_with(input: &[u8], alphabet: &[u8; 64]) -> String {
     }
     out
 }
+
+/// Decode a base64url string (RFC 4648 §5) to raw bytes — the inverse of [`base64_url`], used to
+/// read an attachment's `data` field (Gmail returns base64url). Tolerates the standard `+`/`/`
+/// alphabet and any `=` padding / whitespace; returns `None` on an invalid character or a
+/// truncated (single-char) trailing group. Owned, panic-free — no external crate.
+pub(crate) fn decode_base64url(s: &str) -> Option<Vec<u8>> {
+    fn sextet(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some(u32::from(c - b'A')),
+            b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
+            b'+' | b'-' => Some(62),
+            b'/' | b'_' => Some(63),
+            _ => None,
+        }
+    }
+    let cleaned: Vec<u8> = s
+        .bytes()
+        .filter(|&c| c != b'=' && !c.is_ascii_whitespace())
+        .collect();
+    let mut out = Vec::with_capacity(cleaned.len() / 4 * 3);
+    for chunk in cleaned.chunks(4) {
+        // A full 4-sextet group decodes to 3 bytes; a trailing 3- or 2-char group to 2 or 1
+        // byte(s). A lone trailing char carries no full byte and is malformed.
+        if chunk.len() < 2 {
+            return None;
+        }
+        let mut acc = 0u32;
+        for &c in chunk {
+            acc = (acc << 6) | sextet(c)?;
+        }
+        acc <<= 6 * (4 - chunk.len()); // right-pad to a full 24-bit field
+        let bytes = [(acc >> 16) as u8, (acc >> 8) as u8, acc as u8];
+        out.extend_from_slice(&bytes[..chunk.len() - 1]);
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::{base64_url, decode_base64url};
+
+    #[test]
+    fn base64url_round_trips_every_tail_length() {
+        // Cover all three padding cases (len % 3 == 0/1/2) plus the empty input.
+        for input in [
+            b"".as_slice(),
+            b"h",
+            b"he",
+            b"hel",
+            b"hello",
+            b"hello world",
+            &[0u8, 255, 16, 128, 63, 64],
+        ] {
+            let encoded = base64_url(input);
+            assert_eq!(
+                decode_base64url(&encoded).unwrap(),
+                input,
+                "round-trip {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_accepts_unpadded_and_rejects_bad_input() {
+        // Gmail returns base64url; padding is optional and whitespace is tolerated.
+        assert_eq!(decode_base64url("aGVsbG8").unwrap(), b"hello"); // unpadded
+        assert_eq!(decode_base64url("aGVs bG8=").unwrap(), b"hello"); // whitespace
+        assert!(decode_base64url("aGVsbG8*").is_none()); // invalid char
+        assert!(decode_base64url("a").is_none()); // lone trailing char
+    }
+}

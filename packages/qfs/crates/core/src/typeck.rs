@@ -32,7 +32,7 @@
 use std::collections::HashMap;
 
 use qfs_parser::{Expr, FnRef, Literal, Op};
-use qfs_types::{CmpOp, ColumnType, Schema, TypeError};
+use qfs_types::{CmpOp, Column, ColumnType, Schema, TypeError};
 
 use crate::eval::EvalError;
 use crate::stdlib::{BuiltinEval, FnError, StdlibRegistry};
@@ -152,6 +152,33 @@ pub fn check_expr(
         Expr::Path(segs) => Ok(Ty::Prim(
             schema.resolve_path(segs).unwrap_or(ColumnType::Unknown),
         )),
+        // t92 composite constructors (generalised): an array's type is `Array(<elem>)` from
+        // its first element (empty `[]` is `Array(Unknown)`); a struct's type is a schema of
+        // its named field types. Each sub-expression is type-checked so a nested mismatch (or
+        // unknown fn) surfaces at plan time. Non-`Prim` element types (a nested lambda) degrade
+        // to `Unknown`, keeping the constructor total.
+        Expr::Array(elems) => {
+            let mut elem_ty = ColumnType::Unknown;
+            for (i, e) in elems.iter().enumerate() {
+                let t = check_expr(e, env, schema, stdlib)?;
+                if i == 0 {
+                    elem_ty = t.as_prim().cloned().unwrap_or(ColumnType::Unknown);
+                }
+            }
+            Ok(Ty::Prim(ColumnType::Array(Box::new(elem_ty))))
+        }
+        Expr::Struct(fields) => {
+            let mut cols = Vec::with_capacity(fields.len());
+            for (name, e) in fields {
+                let t = check_expr(e, env, schema, stdlib)?;
+                cols.push(Column::new(
+                    name.clone(),
+                    t.as_prim().cloned().unwrap_or(ColumnType::Unknown),
+                    true,
+                ));
+            }
+            Ok(Ty::Prim(ColumnType::Struct(Schema::new(cols))))
+        }
         Expr::Fn(fnref) => check_fn(fnref, env, schema, stdlib),
         Expr::Lambda { params, body } => {
             // Each parameter binds at its annotation (if present, t61's retained `TypeAnn`),
@@ -377,6 +404,9 @@ fn literal_type(lit: &Literal) -> ColumnType {
             "TIMESTAMP" | "TIME" => ColumnType::Timestamp,
             _ => ColumnType::Unknown,
         },
+        // t92: `Bytes` is the opaque byte type. `[ … ]`/`{ … }` are the expression forms
+        // `Expr::Array`/`Expr::Struct`, typed in `check_expr`.
+        Literal::Bytes(_) => ColumnType::Bytes,
     }
 }
 

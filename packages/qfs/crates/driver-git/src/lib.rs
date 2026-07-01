@@ -127,20 +127,12 @@ impl GitDriver {
         Self {
             repos,
             applier,
-            // The relational history nodes push a ref-range / LIMIT down to the revwalk and keep
-            // the rest as a truthful residual the engine re-filters (the t20 lesson). WHERE on
-            // the walked-from ref + LIMIT are native; ORDER BY time is the natural revwalk order;
-            // everything richer stays residual.
-            pushdown: PushdownProfile::Partial {
-                where_: true,
-                project: true,
-                limit: true,
-                order: true,
-                join: false,
-                aggregate: false,
-                distinct: false,
-                group_by: false,
-            },
+            // The read facet (t3) reads each node via the in-house object reader keyed on the path's
+            // `@<ref>` coordinate; arbitrary WHERE / projection / LIMIT are NOT yet threaded into the
+            // revwalk, so nothing is declared pushable and the engine re-filters the full (capped)
+            // result locally — correctness over optimization, mirroring the SQL read facet. (Native
+            // ref-range / LIMIT pushdown can flip back on per flag as the read seam grows.)
+            pushdown: PushdownProfile::None,
             procs: procedures::git_procedures(),
         }
     }

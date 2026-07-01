@@ -79,6 +79,10 @@ pub async fn execute_read(
         .execute(&physical, ScanResults::new(batches))
         .map_err(|e| ExecError::new(ErrorKind::Internal, e.code(), e.to_string()))?;
 
+    // 4. Apply any trailing DECODE/ENCODE codec stages locally (pushdown drops them; they are
+    //    schema-shaping, driver-independent transforms). A no-op when the pipeline has none.
+    let out = crate::codec::apply_codecs(out, stmt)?;
+
     Ok(RowSet::from_batch(out))
 }
 

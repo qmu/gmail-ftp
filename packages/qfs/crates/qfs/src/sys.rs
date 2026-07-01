@@ -143,6 +143,22 @@ impl SysBackend for SystemDbBackend {
                     ]))
                 },
             )?,
+            // t100020 (the CONNECT model): the DEFINED-PATH binding registry, from the Project DB.
+            // Metadata only — `secret_ref` is a REFERENCE (`env:`/`vault:`), never a secret value.
+            SysNode::Paths => self.scan_project(
+                "SELECT path, driver_id, at_locator, secret_ref, alias_of, created_at \
+                 FROM path_binding ORDER BY path",
+                |r| {
+                    Ok(Row::new(vec![
+                        text(r, 0)?,
+                        nullable_text(r, 1)?,
+                        nullable_text(r, 2)?,
+                        nullable_text(r, 3)?,
+                        nullable_text(r, 4)?,
+                        nullable_text(r, 5)?,
+                    ]))
+                },
+            )?,
             SysNode::Policies => self.scan_system(
                 "SELECT name, allow, target, created_at FROM sys_policies ORDER BY id",
                 |r| {
@@ -298,9 +314,85 @@ impl SysBackend for SystemDbBackend {
         tx.commit().map_err(backend)?;
         Ok(1)
     }
+
+    fn upsert_binding(&self, row: &RowBatch) -> Result<u64, SysError> {
+        // t100020 (the CONNECT model): bind / re-bind a defined path in the PROJECT DB `path_binding`
+        // table (upsert on `path`). A row carrying `alias_of` is an ALIAS (reuse another defined
+        // path's connection); otherwise it is a FULL connect and MUST name a driver.
+        let path = required_text(row, "path")?;
+        let alias_of = optional_text(row, "alias_of");
+        let Some(project) = &self.project else {
+            return Err(SysError::Backend(
+                "no project database (set HOME or XDG_CONFIG_HOME) to persist a connection".into(),
+            ));
+        };
+        let conn = project.lock().map_err(poisoned)?;
+        let affected = if let Some(target) = alias_of {
+            crate::path_binding::db_upsert_alias(&conn, &path, &target).map_err(binding_err)?
+        } else {
+            let driver = required_text(row, "driver").map_err(|_| SysError::MalformedEffect {
+                reason: "a full CONNECT needs a driver (or a `/path` alias target)".into(),
+            })?;
+            let at = optional_text(row, "at");
+            let secret_ref = optional_text(row, "secret_ref");
+            crate::path_binding::db_upsert_binding(
+                &conn,
+                &path,
+                &driver,
+                at.as_deref(),
+                secret_ref.as_deref(),
+            )
+            .map_err(binding_err)?
+        };
+        drop(conn);
+        // Administration observes itself (t76). The binding lives in the Project DB and the audit
+        // chain in the System DB, so — unlike the single-DB /sys writes — this appends best-effort
+        // AFTER the binding commits (a cross-DB write cannot share one transaction).
+        self.audit_paths_write("INSERT", &path);
+        Ok(affected)
+    }
+
+    fn remove_binding(&self, path: &str) -> Result<u64, SysError> {
+        // t100020: `DISCONNECT` — remove the defined path from the PROJECT DB (aliases cascade).
+        let Some(project) = &self.project else {
+            return Err(SysError::Backend(
+                "no project database (set HOME or XDG_CONFIG_HOME) to remove a connection".into(),
+            ));
+        };
+        let conn = project.lock().map_err(poisoned)?;
+        let affected = crate::path_binding::db_remove_binding(&conn, path).map_err(binding_err)?;
+        drop(conn);
+        self.audit_paths_write("REMOVE", path);
+        Ok(affected)
+    }
 }
 
 impl SystemDbBackend {
+    /// Append a best-effort t76 audit row (into the System DB) for a `/sys/paths` mutation. The
+    /// binding lives in the Project DB, so this cannot share the write's transaction; it runs after
+    /// the binding commits and NEVER fails the mutation (administration still observes itself, but a
+    /// torn audit does not roll back a committed connect). Metadata only — verb + node path, never
+    /// the binding row.
+    fn audit_paths_write(&self, verb: &str, user_path: &str) {
+        let Ok(conn) = self.system.lock() else {
+            return;
+        };
+        let Ok(tx) = conn.unchecked_transaction() else {
+            return;
+        };
+        let event = AuditEvent {
+            actor: ACTOR_CLI.to_string(),
+            connection: "default".to_string(),
+            verb: verb.to_string(),
+            // The defined path is the subject; record it under the /sys/paths node it was written to.
+            path: format!("{}{}", SysNode::Paths.path(), user_path),
+            committed: true,
+            ts: now_rfc3339(),
+        };
+        if append_audit_tx(&tx, event).is_ok() {
+            let _ = tx.commit();
+        }
+    }
     /// Resolve a team's recorded **billing plan** (t67) from `/sys/billing` — the authority the
     /// ENTITLEMENT GATE reads. **Fail-closed (default-deny toward the free floor):** a missing row, a
     /// read error, or a garbled tier/status all resolve to the FREE plan
@@ -602,6 +694,20 @@ fn cell<'a>(row: &'a RowBatch, col: &str) -> Option<&'a Value> {
 }
 
 fn backend(e: rusqlite::Error) -> SysError {
+    SysError::Backend(e.to_string())
+}
+
+/// Map a `path_binding` I/O error (t100020). A foreign-key violation means an ALIAS named a target
+/// defined path that does not exist — a fail-closed rejection with a clear, secret-free reason
+/// (never a fake mount); everything else is a plain backend error.
+fn binding_err(e: rusqlite::Error) -> SysError {
+    if let rusqlite::Error::SqliteFailure(err, _) = &e {
+        if err.code == rusqlite::ErrorCode::ConstraintViolation {
+            return SysError::MalformedEffect {
+                reason: "the alias target is not a defined path — CONNECT it first".to_string(),
+            };
+        }
+    }
     SysError::Backend(e.to_string())
 }
 fn poisoned<T>(_: std::sync::PoisonError<T>) -> SysError {

@@ -83,6 +83,11 @@ pub fn sys_node_capabilities(node: SysNode) -> Capabilities {
         SysNode::Policies | SysNode::Settings | SysNode::Billing => {
             Capabilities::from_verbs(&[Verb::Select, Verb::Insert])
         }
+        // The defined-path binding registry (t100020, the CONNECT model): SELECT to review, INSERT
+        // to bind/re-bind (`CONNECT` — upsert on `path`), REMOVE to disconnect (`DISCONNECT`). The
+        // ONE `/sys` node that accepts REMOVE — a defined path is a user-owned mount the user may
+        // withdraw, unlike the deployment's own audit/policy state.
+        SysNode::Paths => Capabilities::from_verbs(&[Verb::Select, Verb::Insert, Verb::Remove]),
         // Read-only admin views (audit is append-only: emitted, never user-written; no
         // UPDATE/REMOVE — the rejection the t53 acceptance test pins).
         SysNode::Users

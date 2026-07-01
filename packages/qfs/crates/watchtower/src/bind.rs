@@ -211,6 +211,17 @@ fn rewrite_expr(e: &mut Expr, binds: &NewBindings) {
         // A lambda body (M6, t61) is walked like any sub-expression so a `NEW.*` slot
         // inside it is still substituted.
         Expr::Lambda { body, .. } => rewrite_expr(body, binds),
+        // t92 composite constructors: substitute `NEW.*` slots inside each element/field.
+        Expr::Array(elems) => {
+            for el in elems {
+                rewrite_expr(el, binds);
+            }
+        }
+        Expr::Struct(fields) => {
+            for (_, v) in fields {
+                rewrite_expr(v, binds);
+            }
+        }
         Expr::Lit(_) | Expr::Col(_) => {}
     }
 }

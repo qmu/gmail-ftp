@@ -22,11 +22,19 @@ cargo build --workspace
 cargo test --workspace            # 1240+ tests, all hermetic (no network/credentials)
 cargo clippy --workspace --all-targets -- -D warnings   # NOT --all-features (qfs-host features are mutually exclusive)
 cargo fmt --all --check
-cargo run -p xtask -- gen-docs --check   # anti-drift: committed docs must match the binary
+cargo run -p xtask -- gen-docs --check     # anti-drift: committed docs must match the binary
+cargo run -p xtask -- gen-skills --check   # anti-drift: Agent Skills must match docs/cookbook/*.md
 ```
 
 Generated reference docs (`docs/{language,drivers,server}.md`) are rendered from the binary by
 `cargo run -p xtask -- gen-docs` — never hand-edit them; change the source and regenerate.
+
+The Claude Code **Agent Skills** (`plugins/qfs/skills/qfs-*/SKILL.md`) are generated from the human
+cookbook articles (`docs/cookbook/*.md`, each carrying `skill_name` + `skill_description`
+frontmatter) by `cargo run -p xtask -- gen-skills` — never hand-edit a `SKILL.md`; edit the article
+and regenerate. Every `qfs` recipe in an article is parse-checked by
+`crates/test/tests/cookbook_skills.rs` (the verified-true ratchet), so a skill can never teach an
+agent a statement the binary rejects.
 
 ## Versioning — bump the patch on every shipped PR
 

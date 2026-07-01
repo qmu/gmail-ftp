@@ -16,7 +16,7 @@ use qfs_google_auth::GoogleApiClient;
 use qfs_http_core::{HttpMethod, HttpRequest, HttpResponse};
 
 use crate::error::DriveError;
-use crate::schema::{FileMeta, SharedDrive};
+use crate::schema::{FileMeta, SharedDrive, FOLDER_MIME};
 
 /// The Drive v3 API base URL. Every op is a path under this.
 const API_BASE: &str = "https://www.googleapis.com/drive/v3";
@@ -285,16 +285,28 @@ impl GDriveClient for GoogleApiDriveClient {
         bytes: &[u8],
     ) -> Result<String, DriveError> {
         let op = "files.create";
-        // A multipart upload: metadata part + media part. Build the related body deterministically.
         let metadata = serde_json::json!({ "name": name, "parents": [parent], "mimeType": mime });
-        let body = multipart_related(&metadata, mime, bytes, op)?;
-        let url = format!("{UPLOAD_BASE}/files?uploadType=multipart&supportsAllDrives=true");
-        let req = HttpRequest::new(HttpMethod::Post, url)
-            .header(
-                "Content-Type",
-                format!("multipart/related; boundary={MULTIPART_BOUNDARY}"),
-            )
-            .with_body(body);
+        // A folder (`mkdir`) is a **metadata-only** `files.create`: a JSON body, no media part (a
+        // folder carries no bytes). Everything else is a `multipart/related` metadata + media upload.
+        let req = if mime == FOLDER_MIME {
+            let body = serde_json::to_vec(&metadata).map_err(|_| DriveError::Decode {
+                op,
+                reason: "could not encode the folder metadata".to_string(),
+            })?;
+            let url = format!("{API_BASE}/files?supportsAllDrives=true");
+            HttpRequest::new(HttpMethod::Post, url)
+                .header("Content-Type", "application/json")
+                .with_body(body)
+        } else {
+            let body = multipart_related(&metadata, mime, bytes, op)?;
+            let url = format!("{UPLOAD_BASE}/files?uploadType=multipart&supportsAllDrives=true");
+            HttpRequest::new(HttpMethod::Post, url)
+                .header(
+                    "Content-Type",
+                    format!("multipart/related; boundary={MULTIPART_BOUNDARY}"),
+                )
+                .with_body(body)
+        };
         let resp = self.send(op, &req)?;
         let json = Self::parse_json(op, &resp)?;
         json.get("id")

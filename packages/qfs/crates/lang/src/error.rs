@@ -23,6 +23,8 @@ pub enum LexErrorKind {
     UnexpectedChar(char),
     /// A numeric literal was malformed (e.g. overflow, multiple dots).
     BadNumber,
+    /// A hex bytes literal `X'…'` contained a non-hex digit or an odd number of digits.
+    BadHexBytes,
 }
 
 impl LexErrorKind {
@@ -34,6 +36,7 @@ impl LexErrorKind {
             Self::BadEscape => "BAD_ESCAPE",
             Self::UnexpectedChar(_) => "UNEXPECTED_CHAR",
             Self::BadNumber => "BAD_NUMBER",
+            Self::BadHexBytes => "BAD_HEX_BYTES",
         }
     }
 }

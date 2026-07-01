@@ -9,7 +9,7 @@
 
 use qfs_types::{Name, Predicate, Schema};
 
-use crate::logical::{Aggregate, JoinOn, OrderKey, SetKind, SourceId};
+use crate::logical::{Aggregate, JoinOn, OrderKey, ScalarExpr, SetKind, SourceId};
 
 /// The owned description of the work pushed down to one source (RFD §6/§9). Each field
 /// is what the driver accepted; the planner populated only the fields the driver's
@@ -115,8 +115,13 @@ pub enum CombineOp {
     /// A residual `WHERE` the source could not push (e.g. a `None`-pushdown source, or a
     /// predicate referencing a federated join's columns).
     Filter(Predicate),
-    /// A residual projection.
+    /// A residual projection to named columns.
     Project(Vec<Name>),
+    /// A residual **computed** projection (t92): each `(output name, expr)` is evaluated per
+    /// row (a struct/array constructor). Always local — a driver cannot build a struct.
+    ProjectExpr(Vec<(Name, ScalarExpr)>),
+    /// A residual `EXTEND`/`SET` (t92): each `(column, expr)` adds/overwrites a per-row value.
+    Extend(Vec<(Name, ScalarExpr)>),
     /// A residual `LIMIT`.
     Limit(u64),
     /// A residual `ORDER BY`.
@@ -145,6 +150,8 @@ impl CombineOp {
         match self {
             CombineOp::Filter(_) => "Filter",
             CombineOp::Project(_) => "Project",
+            CombineOp::ProjectExpr(_) => "ProjectExpr",
+            CombineOp::Extend(_) => "Extend",
             CombineOp::Limit(_) => "Limit",
             CombineOp::Sort(_) => "Sort",
             CombineOp::Distinct => "Distinct",

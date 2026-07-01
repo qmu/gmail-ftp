@@ -4,9 +4,11 @@
 //! its numeric property id.
 //!
 //! ## Addressing
-//! - `/ga` — the virtual root (no property selected; lists nothing queryable on its own).
-//! - `/ga/<propertyId>` — a GA4 property's **core report** relation (`properties.runReport`).
-//! - `/ga/<propertyId>/realtime` — the property's **realtime report** relation
+//! The canonical mount is `/google-analytics` (the deprecated `/ga` alias still parses identically
+//! for one release).
+//! - `/google-analytics` — the virtual root (no property selected; lists nothing queryable on its own).
+//! - `/google-analytics/<propertyId>` — a GA4 property's **core report** relation (`properties.runReport`).
+//! - `/google-analytics/<propertyId>/realtime` — the property's **realtime report** relation
 //!   (`properties.runRealtimeReport`, last ~30 min, a restricted dimension/metric catalog).
 //!
 //! The property id is the GA4 numeric id (e.g. `123456789`); it is threaded into the
@@ -17,9 +19,14 @@ use qfs_driver::Path;
 
 use crate::error::GaError;
 
-/// The mount this driver answers for. The virtual root carries no property; a child segment
-/// selects the GA4 property.
-pub const MOUNT: &str = "/ga";
+/// The mount this driver answers for — the **real (full) name** (owner item #8). The virtual root
+/// carries no property; a child segment selects the GA4 property.
+pub const MOUNT: &str = "/google-analytics";
+
+/// The DEPRECATED short mount kept working for one release: `/ga` still routes here (parsed the same
+/// as [`MOUNT`]) so existing `/ga/...` paths do not hard-break. The canonical name is [`MOUNT`]; a
+/// general user-defined-alias mechanism (`CREATE ALIAS <short> FOR <mount>`) is separate future work.
+pub const DEPRECATED_MOUNT: &str = "/ga";
 
 /// The reserved trailing segment selecting the realtime report surface
 /// (`properties.runRealtimeReport`).
@@ -61,13 +68,22 @@ impl GaPath {
     /// [`GaError::InvalidPath`] on a malformed address.
     pub fn parse_str(raw: &str) -> Result<Self, GaError> {
         let trimmed = raw.trim_end_matches('/');
-        if trimmed == MOUNT || raw == MOUNT {
+        // Accept the canonical `/google-analytics` mount AND the DEPRECATED `/ga` alias (one-release
+        // shim): both parse identically, so an old `/ga/...` path keeps working.
+        if trimmed == MOUNT
+            || raw == MOUNT
+            || trimmed == DEPRECATED_MOUNT
+            || raw == DEPRECATED_MOUNT
+        {
             return Ok(GaPath::Root);
         }
-        let Some(after) = trimmed.strip_prefix(&format!("{MOUNT}/")) else {
+        let after = trimmed
+            .strip_prefix(&format!("{MOUNT}/"))
+            .or_else(|| trimmed.strip_prefix(&format!("{DEPRECATED_MOUNT}/")));
+        let Some(after) = after else {
             return Err(GaError::InvalidPath {
                 path: raw.to_string(),
-                reason: "path is not under the /ga mount",
+                reason: "path is not under the /google-analytics mount",
             });
         };
 
@@ -82,11 +98,11 @@ impl GaPath {
             }),
             [_property, other] => Err(GaError::InvalidPath {
                 path: (*other).to_string(),
-                reason: "a /ga property has only the core report and the `realtime` sub-surface",
+                reason: "a property has only the core report and the `realtime` sub-surface",
             }),
             _ => Err(GaError::InvalidPath {
                 path: raw.to_string(),
-                reason: "a /ga path is /ga/<propertyId> or /ga/<propertyId>/realtime",
+                reason: "a path is /google-analytics/<propertyId> or /google-analytics/<propertyId>/realtime",
             }),
         }
     }

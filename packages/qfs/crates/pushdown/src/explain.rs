@@ -87,6 +87,14 @@ fn render_op(op: &CombineOp) -> String {
     match op {
         CombineOp::Filter(_) => "Filter".to_string(),
         CombineOp::Project(cols) => format!("Project({})", cols.join(",")),
+        CombineOp::ProjectExpr(terms) => {
+            let names: Vec<&str> = terms.iter().map(|(n, _)| n.as_str()).collect();
+            format!("Project({})", names.join(","))
+        }
+        CombineOp::Extend(asgns) => {
+            let names: Vec<&str> = asgns.iter().map(|(n, _)| n.as_str()).collect();
+            format!("Extend({})", names.join(","))
+        }
         CombineOp::Limit(n) => format!("Limit {n}"),
         CombineOp::Sort(keys) => {
             let ks: Vec<String> = keys

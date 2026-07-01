@@ -205,6 +205,17 @@ fn rewrite_expr(e: &mut Expr, args: &QueryArgs) {
         // A lambda body (M6, t61) is walked like any sub-expression so a bound param slot
         // inside it is still substituted.
         Expr::Lambda { body, .. } => rewrite_expr(body, args),
+        // t92 composite constructors: substitute bound param slots inside each element/field.
+        Expr::Array(elems) => {
+            for el in elems {
+                rewrite_expr(el, args);
+            }
+        }
+        Expr::Struct(fields) => {
+            for (_, v) in fields {
+                rewrite_expr(v, args);
+            }
+        }
         // A literal is already a value; a path is struct navigation, not a param slot.
         Expr::Lit(_) | Expr::Path(_) => {}
     }
@@ -375,6 +386,17 @@ fn collect_expr(e: &Expr, out: &mut std::collections::BTreeSet<String>) {
         // A lambda body (M6, t61) is walked so any bare column it references is collected
         // for the access-widening shadow check.
         Expr::Lambda { body, .. } => collect_expr(body, out),
+        // t92 composite constructors: collect bare columns referenced in each element/field.
+        Expr::Array(elems) => {
+            for el in elems {
+                collect_expr(el, out);
+            }
+        }
+        Expr::Struct(fields) => {
+            for (_, v) in fields {
+                collect_expr(v, out);
+            }
+        }
         Expr::Lit(_) | Expr::Path(_) => {}
     }
 }

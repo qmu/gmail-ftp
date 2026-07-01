@@ -296,5 +296,16 @@ fn normalize_expr(e: &mut Expr) {
         // A lambda body (M6, t61) is normalized like any sub-expression; its parameter
         // list carries no span-bearing nodes to canonicalize.
         Expr::Lambda { body, .. } => normalize_expr(body),
+        // t92 composite constructors: normalize each element/field sub-expression.
+        Expr::Array(elems) => {
+            for el in elems {
+                normalize_expr(el);
+            }
+        }
+        Expr::Struct(fields) => {
+            for (_, v) in fields {
+                normalize_expr(v);
+            }
+        }
     }
 }

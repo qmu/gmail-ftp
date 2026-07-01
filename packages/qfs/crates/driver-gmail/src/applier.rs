@@ -49,6 +49,10 @@ impl GmailApplier {
                 self.client.create_draft(&raw)?;
                 Ok(1)
             }
+            GmailEffect::CreateLabel { name } => {
+                self.client.create_label(name)?;
+                Ok(1)
+            }
             GmailEffect::UpsertDraft { id, draft } => {
                 let raw = draft_raw(draft)?;
                 self.client.upsert_draft(id, &raw)?;

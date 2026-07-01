@@ -37,6 +37,8 @@ pub const BODY_COL: &str = "body";
 pub const ADD_LABELS_COL: &str = "add_labels";
 /// Row column carrying label ids to remove (comma-separated) for a label `UPDATE`.
 pub const REMOVE_LABELS_COL: &str = "remove_labels";
+/// Row column carrying a new label's name (`INSERT INTO /mail/labels`, the label-create `name`).
+pub const NAME_COL: &str = "name";
 
 /// One fully-decoded Gmail effect — what the apply leg executes against the API. Owned DTOs;
 /// no google type appears here. `Send`, `TrashMessage`, `TrashThread` are irreversible (RFD §10).
@@ -54,6 +56,11 @@ pub enum GmailEffect {
         id: String,
         /// The draft content.
         draft: MailDraft,
+    },
+    /// Create a new user label (`INSERT INTO /mail/labels`, gmail-ftp `mkdir`) — reversible.
+    CreateLabel {
+        /// The new label's name (may be nested, e.g. `Work/Receipts`).
+        name: String,
     },
     /// Modify a message's labels (`UPDATE /mail/<label>`).
     ModifyLabels {
@@ -93,7 +100,10 @@ impl GmailEffect {
     pub fn from_node(node: &EffectNode) -> Result<Self, GmailError> {
         let path = MailPath::parse_str(node.target.path.as_str())?;
         match &node.kind {
-            EffectKind::Insert => Self::decode_create_draft(node, &path),
+            EffectKind::Insert => match &path {
+                MailPath::Labels => Self::decode_create_label(node),
+                _ => Self::decode_create_draft(node, &path),
+            },
             EffectKind::Upsert => Self::decode_upsert_draft(node, &path),
             EffectKind::Update => Self::decode_modify_labels(node, &path),
             EffectKind::Remove => Self::decode_trash(&path, node),
@@ -110,6 +120,16 @@ impl GmailEffect {
         require_drafts(path, "INSERT", node)?;
         let draft = draft_from_row(node)?;
         Ok(GmailEffect::CreateDraft { draft })
+    }
+
+    /// Decode `INSERT INTO /mail/labels VALUES ('<name>')` — the label-create (gmail-ftp `mkdir`).
+    fn decode_create_label(node: &EffectNode) -> Result<Self, GmailError> {
+        let name = text_col(node, NAME_COL).ok_or_else(|| GmailError::MalformedEffect {
+            verb: "INSERT",
+            path: node.target.path.as_str().to_string(),
+            reason: format!("INSERT INTO /mail/labels needs a `{NAME_COL}` for the new label"),
+        })?;
+        Ok(GmailEffect::CreateLabel { name })
     }
 
     fn decode_upsert_draft(node: &EffectNode, path: &MailPath) -> Result<Self, GmailError> {
@@ -205,7 +225,7 @@ impl GmailEffect {
     #[must_use]
     pub const fn verb_label(&self) -> &'static str {
         match self {
-            GmailEffect::CreateDraft { .. } => "INSERT",
+            GmailEffect::CreateDraft { .. } | GmailEffect::CreateLabel { .. } => "INSERT",
             GmailEffect::UpsertDraft { .. } => "UPSERT",
             GmailEffect::ModifyLabels { .. } => "UPDATE",
             GmailEffect::TrashMessage { .. } | GmailEffect::TrashThread { .. } => "REMOVE",

@@ -242,8 +242,17 @@ mod sql_fixture {
             qfs_core::DescribeReport::from_driver(driver.as_ref(), &Path::new("/sql/pg/orders"))
                 .expect("/sql/pg/orders describes");
         assert_eq!(report.archetype, qfs_core::Archetype::RelationalTable);
-        assert!(report.pushdown.where_, "sql pushes WHERE down");
-        assert!(report.pushdown.project, "sql pushes projection down");
+        assert!(
+            report.pushdown.where_,
+            "sql pushes WHERE down into the database"
+        );
+        // Column PROJECTION is now pushed into the native SELECT too (it keeps every residual column
+        // and the facet narrows after the local re-filter — never wrong rows). Aggregate / group_by /
+        // distinct / JOIN remain local residuals until each is threaded through the QuerySpec.
+        assert!(
+            report.pushdown.project,
+            "sql pushes column projection into the SELECT"
+        );
         assert!(report.verbs.select);
         // No credential shape in the report (secrets never appear).
         let json = serde_json::to_string(&report).unwrap();

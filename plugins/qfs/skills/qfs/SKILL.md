@@ -46,8 +46,8 @@ authoritative; this skill is the quick operating guide.
 
 ```sh
 qfs describe /mail/drafts --json                 # 1: the contract
-qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')"          # 2+3: PREVIEW
-qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')" --commit # 4: apply
+qfs run "insert into /mail/drafts values ('alice@example.com','Hi','Body')"          # 2+3: PREVIEW
+qfs run "insert into /mail/drafts values ('alice@example.com','Hi','Body')" --commit # 4: apply
 ```
 
 ## Path model
@@ -70,42 +70,44 @@ A statement is a **source** followed by **stages** joined by `|>` (a pipe). Writ
 statements one stage per line:
 
 ```qfs
-FROM /sql/pg/orders
-|> WHERE total > 100 AND status IN ('open', 'pending')
-|> SELECT id, total, status
-|> ORDER BY total DESC
-|> LIMIT 5
+/sql/pg/orders
+|> where total > 100 AND status IN ('open', 'pending')
+|> select id, total, status
+|> order by total DESC
+|> limit 5
 ```
 
-Read/transform stages: `WHERE <cond>` (`=`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE`, `IN`, `BETWEEN`,
-`AND`/`OR`), `SELECT <cols>` (rename with `AS`), `EXTEND <col> = <expr>`,
-`JOIN <path> ON <cond>` (works **across services**), `AGGREGATE <fn>(<col>) AS <name>` (+ `GROUP BY`),
-`ORDER BY <col> [DESC]`, `LIMIT <n>`, `DISTINCT`, and `UNION`/`EXCEPT`/`INTERSECT FROM <path>`.
+The **source is a leading `/path`** (a `LET`-bound name also works); there is no `FROM` keyword — it
+was removed from the closed core. Bind with `=`, compare with `==`. Read/transform stages:
+`where <cond>` (`==`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE`, `IN`, `BETWEEN`, `AND`/`OR`),
+`select <cols>` (rename with `as`), `extend <col> = <expr>`, `join <path> on <cond>` (works
+**across services**), `aggregate <fn>(<col>) as <name>` (+ `group by`), `order by <col> [DESC]`,
+`limit <n>`, `distinct`, and `union`/`except`/`intersect <path>`.
 
 Effect (write) stages and statements:
 
 ```qfs
-INSERT INTO /slack/acme/general/messages VALUES ('Deploy done')
-UPSERT INTO /s3/backups/db.sql VALUES ('…bytes…')          -- retry-safe write
-UPDATE /sql/pg/orders SET status = 'shipped' WHERE id = 7
-REMOVE /mail/inbox WHERE subject LIKE '%spam%'              -- REMOVE takes a path + WHERE
-FROM /github/acme/web/pulls/42 |> CALL github.merge(method => 'squash')
+insert into /slack/acme/general/messages values ('Deploy done')
+upsert into /drive/my/Reports/report.pdf values ('…bytes…')   -- retry-safe blob write
+update /sql/pg/orders set status = 'shipped' where id == 7
+remove /mail/inbox where subject LIKE '%spam%'             -- REMOVE takes a path + WHERE
+/github/acme/web/pulls/42 |> call github.merge(method => 'squash')
 ```
 
-Codecs convert formats — `DECODE`/`ENCODE` with `json`, `jsonl`, `yaml`, `toml`, `csv`, `md`:
+Codecs convert formats — `decode`/`encode` with `json`, `jsonl`, `yaml`, `toml`, `csv`, `md`:
 
 ```qfs
-FROM /local/config.json
-|> DECODE json
-|> ENCODE yaml
+/local/config.json
+|> decode json
+|> encode yaml
 ```
 
 Cross-service join (qfs pushes each side's filters down, then joins locally):
 
 ```qfs
-FROM /sql/pg/orders
-|> JOIN /github/acme/web/issues ON id = issue_id
-|> SELECT id, title
+/sql/pg/orders
+|> join /github/acme/web/issues on id == issue_id
+|> select id, title
 ```
 
 See `docs/cookbook/` in the repo for many more recipes.
@@ -117,7 +119,7 @@ See `docs/cookbook/` in the repo for many more recipes.
 
 ```sh
 qfs describe /mail/drafts --json | jq '.verbs, .procedures'
-qfs run "FROM /sql/pg/orders |> WHERE total > 100 |> SELECT id" --json
+qfs run "/sql/pg/orders |> where total > 100 |> select id" --json
 ```
 
 A preview's JSON includes `preview.rows` (each with `verb`, `target`, `affected`, `irreversible`),
@@ -134,9 +136,9 @@ A preview's JSON includes `preview.rows` (each with `verb`, `target`, `affected`
 
 ```sh
 # Reversible: --commit is enough
-qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')" --commit
+qfs run "insert into /mail/drafts values ('alice@example.com','Hi','Body')" --commit
 # Irreversible: needs the explicit ack
-qfs run "FROM /mail/drafts |> CALL mail.send" --commit --commit-irreversible
+qfs run "/mail/drafts |> call mail.send" --commit --commit-irreversible
 ```
 
 ## Error / exit contract (for scripting)
@@ -151,8 +153,25 @@ qfs run "FROM /mail/drafts |> CALL mail.send" --commit --commit-irreversible
 ## Gotchas
 
 - Statements use **absolute paths** in one-shot mode — no `cd`, no relative paths.
-- `REMOVE` is `REMOVE <path> WHERE …`, not a pipe stage.
-- Don't reach for a verb describe didn't list (e.g. `UPDATE` on an append log) — it's rejected.
-- Quote interval literals: `CREATE JOB nightly EVERY '1h' DO …`.
-- Server bindings (`CREATE ENDPOINT|TRIGGER|JOB|VIEW|POLICY`) are statements too — preview them to
+- `remove` is `remove <path> where …`, not a pipe stage.
+- Don't reach for a verb describe didn't list (e.g. `update` on an append log) — it's rejected.
+- Keywords are **canonical lowercase** (recognition is case-insensitive, but write lowercase). There
+  is **no `from`** — a leading `/path` is the source. Bind with `=`, compare with `==`.
+- Quote interval literals: `create job nightly every '1h' do …`.
+- Server bindings (`create endpoint|trigger|job|view|policy`) are statements too — preview them to
   see the exact plan they'd install before `qfs serve` runs them.
+
+## Beyond the loop (the shipped surface)
+
+- **Three faces, one engine.** The same describe → preview → commit loop is reached over the **CLI**,
+  the **MCP endpoint** (exposed as MCP tools), or the **web dashboard** whose approval cards route a
+  pending irreversible commit to a human for sign-off. Same grammar, same gates everywhere.
+- **`/sys/*` is administration as paths.** Query the deployment's own state with the same grammar:
+  `/sys/{users,projects,audit,connections,policies,metrics,settings,billing}` (e.g.
+  `/sys/audit |> order by seq desc |> limit 20`). `/sys/audit` is append-only + hash-chained;
+  `/sys/connections` is names/metadata only.
+- **Selectable safety mode** lives in `/sys/settings`, above the always-on floor (preview default +
+  the irreversible ack) — you never bypass it; preview, then commit, and let the gate decide.
+- **Teams:** `qfs invite create` → `qfs invite redeem` adds a member; a `POLICY` / the ACL (not
+  membership) is what authorizes an action (default-deny).
+- **Credential lifecycle:** `qfs connection rotate|revoke|rekey` for offboarding + key hygiene.

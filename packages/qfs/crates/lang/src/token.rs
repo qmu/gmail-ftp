@@ -53,10 +53,16 @@ pub enum Token {
     LParen,
     /// `)`
     RParen,
-    /// `{` — opens a `TRANSACTION { … }` block (M6, ticket t62).
+    /// `{` — opens a `TRANSACTION { … }` block (M6, ticket t62), or a struct
+    /// literal `{ name: value, … }` in value position (t92).
     LBrace,
-    /// `}` — closes a `TRANSACTION { … }` block (M6, ticket t62).
+    /// `}` — closes a `TRANSACTION { … }` block (M6, ticket t62), or a struct
+    /// literal in value position (t92).
     RBrace,
+    /// `[` — opens an array literal `[ e1, e2, … ]` in value position (t92).
+    LBracket,
+    /// `]` — closes an array literal in value position (t92).
+    RBracket,
     /// `;` — separates effect statements inside a `TRANSACTION` block (M6, ticket t62). It is
     /// **not** a general statement terminator (the program model is `;`-free, RFD §1.2); it is
     /// structural punctuation that only the transaction grammar consumes.
@@ -108,6 +114,10 @@ pub enum Token {
         /// The raw inner string content (escapes resolved, contents unchecked).
         raw: String,
     },
+    /// A hex bytes literal `X'48656c6c6f'` (SQL-style): the already-decoded raw
+    /// bytes (t92). The lexer validates the hex and reports a `BadHexBytes` on a
+    /// malformed digit or an odd length, so a `Token::Bytes` always carries valid bytes.
+    Bytes(Vec<u8>),
 }
 
 /// A size unit for a [`Token::Size`] literal.

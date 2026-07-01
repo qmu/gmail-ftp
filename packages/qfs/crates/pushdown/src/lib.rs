@@ -50,7 +50,7 @@ mod planner;
 pub use error::PlanError;
 pub use explain::explain;
 pub use logical::{
-    Aggregate, Aggregator, JoinKind, JoinOn, LogicalPlan, OrderKey, SetKind, SourceId,
+    Aggregate, Aggregator, JoinKind, JoinOn, LogicalPlan, OrderKey, ScalarExpr, SetKind, SourceId,
 };
 pub use lower::{lower_predicate, lower_query, LowerError};
 pub use physical::{CombineOp, PhysicalPlan, PushedQuery, ScanNode};

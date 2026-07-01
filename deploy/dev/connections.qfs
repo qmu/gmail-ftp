@@ -1,0 +1,2 @@
+CREATE CONNECTION pg DRIVER postgres AT 'postgres://qfs:qfs@localhost:5432/qfs';
+CREATE CONNECTION my DRIVER mysql AT 'mysql://qfs:qfs@localhost:3306/qfs';

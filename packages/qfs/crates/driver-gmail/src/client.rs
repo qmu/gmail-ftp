@@ -59,6 +59,16 @@ pub trait GmailClient: Send + Sync {
     /// [`GmailError`] on a non-2xx status, a decode failure, or an auth/transport failure.
     fn get_message(&self, id: &str) -> Result<MailMessage, GmailError>;
 
+    /// Download and decode one attachment's raw bytes (`messages.{message_id}.attachments.
+    /// {attachment_id}.get`, gmail-ftp `get id:att:<msg>:<att>`). The base64url `data` is decoded
+    /// here so no vendor encoding crosses the client seam (the caller pairs these bytes with the
+    /// message's [`AttachmentMeta`](crate::schema::AttachmentMeta) for `filename`/`mime`).
+    ///
+    /// # Errors
+    /// [`GmailError`] on a non-2xx status, a response missing/undecodable `data`, or a transport
+    /// failure.
+    fn get_attachment(&self, message_id: &str, attachment_id: &str) -> Result<Vec<u8>, GmailError>;
+
     /// Create a draft from a base64url-encoded RFC 5322 `raw` message; returns the new draft id.
     ///
     /// # Errors
@@ -96,6 +106,12 @@ pub trait GmailClient: Send + Sync {
     /// # Errors
     /// [`GmailError`] on a non-2xx status or an auth/transport failure.
     fn modify_labels(&self, id: &str, add: &[String], remove: &[String]) -> Result<(), GmailError>;
+
+    /// Create a new user label (`labels.create`, gmail-ftp `mkdir`); returns the new label id.
+    ///
+    /// # Errors
+    /// [`GmailError`] on a non-2xx status, a decode failure, or an auth/transport failure.
+    fn create_label(&self, name: &str) -> Result<String, GmailError>;
 }
 
 /// The real Gmail client: builds owned [`HttpRequest`]s and sends them through the t19
@@ -224,6 +240,27 @@ impl GmailClient for GoogleApiGmailClient {
         })
     }
 
+    fn get_attachment(&self, message_id: &str, attachment_id: &str) -> Result<Vec<u8>, GmailError> {
+        let op = "attachments.get";
+        let req = HttpRequest::new(
+            HttpMethod::Get,
+            format!("{API_BASE}/messages/{message_id}/attachments/{attachment_id}"),
+        );
+        let resp = self.send(op, &req)?;
+        let json = Self::parse_json(op, &resp)?;
+        let data = json
+            .get("data")
+            .and_then(|v| v.as_str())
+            .ok_or(GmailError::Decode {
+                op,
+                reason: "attachment JSON missing `data`".to_string(),
+            })?;
+        crate::mime::decode_base64url(data).ok_or(GmailError::Decode {
+            op,
+            reason: "attachment `data` is not valid base64url".to_string(),
+        })
+    }
+
     fn create_draft(&self, raw_base64url: &str) -> Result<String, GmailError> {
         let op = "drafts.create";
         let body = serde_json::json!({ "message": { "raw": raw_base64url } });
@@ -299,6 +336,20 @@ impl GmailClient for GoogleApiGmailClient {
         });
         self.post_json("messages.modify", &format!("/messages/{id}/modify"), body)?;
         Ok(())
+    }
+
+    fn create_label(&self, name: &str) -> Result<String, GmailError> {
+        let op = "labels.create";
+        let body = serde_json::json!({ "name": name });
+        let resp = self.post_json(op, "/labels", body)?;
+        let json = Self::parse_json(op, &resp)?;
+        json.get("id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or(GmailError::Decode {
+                op,
+                reason: "labels.create response missing label id".to_string(),
+            })
     }
 }
 
@@ -425,6 +476,8 @@ fn encode_query(value: &str) -> String {
 pub struct MockGmailClient {
     labels: Vec<String>,
     messages: Vec<MailMessage>,
+    /// Seeded attachment bytes, keyed by `(message_id, attachment_id)`.
+    attachments: Vec<(String, String, Vec<u8>)>,
     search_ids: Mutex<Vec<MessageIdPage>>,
     recorded: Mutex<Vec<RecordedCall>>,
 }
@@ -447,6 +500,13 @@ pub enum RecordedCall {
     GetMessage {
         /// The message id fetched.
         id: String,
+    },
+    /// `messages.{id}.attachments.{attId}.get` — an attachment bytes download.
+    GetAttachment {
+        /// The owning message id.
+        message_id: String,
+        /// The attachment id fetched.
+        attachment_id: String,
     },
     /// `drafts.create` (carries the base64url raw so a test can decode it).
     CreateDraft {
@@ -484,6 +544,11 @@ pub enum RecordedCall {
         /// The label ids removed.
         remove: Vec<String>,
     },
+    /// `labels.create` — a new user label.
+    CreateLabel {
+        /// The new label's name.
+        name: String,
+    },
 }
 
 impl MockGmailClient {
@@ -504,6 +569,19 @@ impl MockGmailClient {
     #[must_use]
     pub fn with_message(mut self, message: MailMessage) -> Self {
         self.messages.push(message);
+        self
+    }
+
+    /// Seed the raw bytes `get_attachment` returns for a `(message_id, attachment_id)` pair.
+    #[must_use]
+    pub fn with_attachment(
+        mut self,
+        message_id: &str,
+        attachment_id: &str,
+        bytes: Vec<u8>,
+    ) -> Self {
+        self.attachments
+            .push((message_id.to_string(), attachment_id.to_string(), bytes));
         self
     }
 
@@ -583,6 +661,21 @@ impl GmailClient for MockGmailClient {
             })
     }
 
+    fn get_attachment(&self, message_id: &str, attachment_id: &str) -> Result<Vec<u8>, GmailError> {
+        self.record(RecordedCall::GetAttachment {
+            message_id: message_id.to_string(),
+            attachment_id: attachment_id.to_string(),
+        });
+        self.attachments
+            .iter()
+            .find(|(m, a, _)| m == message_id && a == attachment_id)
+            .map(|(_, _, bytes)| bytes.clone())
+            .ok_or(GmailError::Api {
+                op: "attachments.get",
+                status: 404,
+            })
+    }
+
     fn create_draft(&self, raw_base64url: &str) -> Result<String, GmailError> {
         self.record(RecordedCall::CreateDraft {
             raw: raw_base64url.to_string(),
@@ -622,5 +715,12 @@ impl GmailClient for MockGmailClient {
             remove: remove.to_vec(),
         });
         Ok(())
+    }
+
+    fn create_label(&self, name: &str) -> Result<String, GmailError> {
+        self.record(RecordedCall::CreateLabel {
+            name: name.to_string(),
+        });
+        Ok(format!("Label_{name}"))
     }
 }

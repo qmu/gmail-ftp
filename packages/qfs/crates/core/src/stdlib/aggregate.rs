@@ -29,6 +29,9 @@ pub enum AggregateKind {
     Min,
     /// `MAX(x)` — the maximum (numeric or text).
     Max,
+    /// `ARRAY_AGG(x)` — collect the group's values (in accumulation order) into one `Array`
+    /// value (t92). A faithful collect (keeps nulls), not a numeric fold.
+    ArrayAgg,
 }
 
 /// The set of aggregate built-ins, in stable (name) order. `COUNT` is registered once
@@ -45,6 +48,11 @@ pub(super) fn aggregate_builtins() -> Vec<BuiltinFn> {
         BuiltinFn::aggregate("AVG", AggregateKind::Avg, ColumnType::Float),
         BuiltinFn::aggregate("MIN", AggregateKind::Min, ColumnType::Unknown),
         BuiltinFn::aggregate("MAX", AggregateKind::Max, ColumnType::Unknown),
+        BuiltinFn::aggregate(
+            "ARRAY_AGG",
+            AggregateKind::ArrayAgg,
+            ColumnType::Array(Box::new(ColumnType::Unknown)),
+        ),
     ]
 }
 
@@ -89,6 +97,8 @@ pub struct AggregateState {
     max: Option<Value>,
     /// Distinct non-null values seen (only populated for `COUNT(DISTINCT)`).
     distinct: Vec<Value>,
+    /// Collected values in accumulation order (only populated for `ARRAY_AGG`).
+    collected: Vec<Value>,
     /// Whether any non-null numeric value contributed (so `SUM`/`AVG` of an empty group
     /// is `Null`, not `0`).
     saw_numeric: bool,
@@ -103,6 +113,7 @@ impl AggregateState {
             min: None,
             max: None,
             distinct: Vec::new(),
+            collected: Vec::new(),
             saw_numeric: false,
         }
     }
@@ -113,6 +124,12 @@ impl AggregateState {
     /// # Errors
     /// [`FnError::Type`] if `SUM`/`AVG` meets a non-numeric value.
     pub fn accumulate(&mut self, v: &Value) -> Result<(), FnError> {
+        // ARRAY_AGG is a faithful collect — it keeps every value, including nulls (mirroring
+        // the engine's `run_aggregate` collect), so it is handled before the null-skip guard.
+        if matches!(self.kind, AggregateKind::ArrayAgg) {
+            self.collected.push(v.clone());
+            return Ok(());
+        }
         if matches!(v, Value::Null) {
             return Ok(());
         }
@@ -146,6 +163,8 @@ impl AggregateState {
                     self.max = Some(v.clone());
                 }
             }
+            // Handled by the early collect above (kept for match exhaustiveness).
+            AggregateKind::ArrayAgg => {}
         }
         Ok(())
     }
@@ -177,6 +196,7 @@ impl AggregateState {
             }
             AggregateKind::Min => self.min.unwrap_or(Value::Null),
             AggregateKind::Max => self.max.unwrap_or(Value::Null),
+            AggregateKind::ArrayAgg => Value::Array(self.collected),
         }
     }
 
@@ -187,6 +207,7 @@ impl AggregateState {
             AggregateKind::Avg => "AVG",
             AggregateKind::Min => "MIN",
             AggregateKind::Max => "MAX",
+            AggregateKind::ArrayAgg => "ARRAY_AGG",
         }
     }
 }

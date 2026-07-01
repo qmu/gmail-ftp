@@ -246,15 +246,21 @@ fn is_body_column(node: ServerNode, col: &str) -> bool {
 /// (names, routes, intervals, plan source text) — a non-literal is a malformed config write.
 fn literal_value(expr: &Expr) -> Result<Value, String> {
     match expr {
-        Expr::Lit(lit) => Ok(match lit {
-            Literal::Str(s) => Value::Text(s.clone()),
-            Literal::Int(n) => Value::Int(*n),
-            Literal::Float(f) => Value::Float(*f),
-            Literal::Bool(b) => Value::Bool(*b),
-            Literal::Null => Value::Null,
-            Literal::Size { value, unit } => Value::Text(format!("{value} {unit}")),
-            Literal::Typed { raw, .. } => Value::Text(raw.clone()),
-        }),
+        Expr::Lit(lit) => match lit {
+            Literal::Str(s) => Ok(Value::Text(s.clone())),
+            Literal::Int(n) => Ok(Value::Int(*n)),
+            Literal::Float(f) => Ok(Value::Float(*f)),
+            Literal::Bool(b) => Ok(Value::Bool(*b)),
+            Literal::Null => Ok(Value::Null),
+            Literal::Size { value, unit } => Ok(Value::Text(format!("{value} {unit}"))),
+            Literal::Typed { raw, .. } => Ok(Value::Text(raw.clone())),
+            // t92 composite scalar literal (bytes) is not a valid scalar /server config value;
+            // `[ … ]`/`{ … }` arrive as `Expr::Array`/`Expr::Struct`, rejected by the `other` arm.
+            Literal::Bytes(_) => Err(
+                "/server config values must be scalar literals (a bytes literal is not a valid config value)"
+                    .to_string(),
+            ),
+        },
         other => Err(format!(
             "/server config values must be literals, got {}",
             expr_kind(other)
@@ -276,5 +282,7 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::Like { .. } => "LIKE",
         Expr::AnyOp { .. } => "ANY",
         Expr::Lambda { .. } => "lambda",
+        Expr::Array(_) => "array",
+        Expr::Struct(_) => "struct",
     }
 }

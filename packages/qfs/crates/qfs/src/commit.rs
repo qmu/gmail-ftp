@@ -394,6 +394,22 @@ fn live_s3_driver() -> Option<qfs_driver_objstore::S3Driver> {
     Some(qfs_driver_objstore::S3Driver::new(registry))
 }
 
+/// Build the live SigV4 [`ObjDriver`](qfs_driver_objstore::ObjDriver) for the READ facet (t-203070):
+/// the same fail-closed live registry [`live_s3_driver`]/[`live_r2_driver`] build for the apply path,
+/// exposed as the bare `ObjDriver` the read facet (`crate::read_facets::ObjReadDriver`) calls `ls`/
+/// `get` on. `None` (fail closed) whenever the routing config or the secret access key is absent.
+pub(crate) fn live_obj_read_driver(
+    scheme: qfs_driver_objstore::Scheme,
+) -> Option<qfs_driver_objstore::ObjDriver> {
+    use qfs_driver_objstore::Scheme;
+    let (driver_id, cfg) = match scheme {
+        Scheme::S3 => ("s3", crate::objstore::s3_config()?),
+        Scheme::R2 => ("r2", crate::objstore::r2_config()?),
+    };
+    let registry = build_obj_registry(driver_id, cfg)?;
+    Some(qfs_driver_objstore::ObjDriver::new(scheme, registry))
+}
+
 /// Build the live SigV4 [`R2Driver`](qfs_driver_objstore::R2Driver) when fully configured, else
 /// `None` (fail closed) — the R2 twin of [`live_s3_driver`], reusing the same native SigV4 backend.
 fn live_r2_driver() -> Option<qfs_driver_objstore::R2Driver> {
@@ -524,7 +540,13 @@ pub(crate) fn cloud_bind_allowed(driver: &str, connection: &str) -> bool {
     match qfs_secrets::bind_gate(&did, connection, signed_in, has_consent) {
         Ok(()) => true,
         Err(e) => {
-            tracing::warn!(
+            // DEBUG, not WARN: the registry is built once per run with EVERY cloud driver, so a
+            // WARN here fired for github/slack/gmail/… on every `qfs run` — even a pure `/local`
+            // ls or a `create trigger` — reading like a credential failure on an unrelated command
+            // (the t8 noise). The operator's actionable signal arrives when they actually TARGET an
+            // unbound driver: the read/commit errors (`unknown_source`, or the t5 "connect your
+            // account"). Keep the structured, secret-free reason at debug level for troubleshooting.
+            tracing::debug!(
                 target: "qfs::consent",
                 "cloud driver '{driver}' not bound for connection '{connection}': {} ({})",
                 e,

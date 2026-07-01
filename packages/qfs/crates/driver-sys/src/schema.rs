@@ -30,6 +30,13 @@ pub enum SysNode {
     /// `/sys/connections` — the connection **registry**: names + metadata ONLY (driver +
     /// connection label + created_at), NEVER secret material (the vault is never read here).
     Connections,
+    /// `/sys/paths` — the DEFINED-PATH binding registry (EPIC 20260701100000 / t100020, the
+    /// `CONNECT` model): a user-chosen path bound to a driver + credential REFERENCE, or an ALIAS
+    /// reusing another defined path's connection. The gated WRITES on this node are the desugar
+    /// targets of the `CONNECT`/`DISCONNECT` statements: `INSERT/UPSERT INTO /sys/paths` (bind /
+    /// re-bind) and `REMOVE /sys/paths/<path>` (disconnect). SELECTORS + METADATA only — the
+    /// `secret_ref` column is a REFERENCE (`env:`/`vault:`), NEVER a secret value.
+    Paths,
     /// `/sys/policies` — the policy grants (the path façade over the policy model). The one
     /// gated WRITE in this slice: `INSERT INTO /sys/policies`.
     Policies,
@@ -59,6 +66,7 @@ impl SysNode {
             "projects" => Some(Self::Projects),
             "audit" => Some(Self::Audit),
             "connections" => Some(Self::Connections),
+            "paths" => Some(Self::Paths),
             "policies" => Some(Self::Policies),
             "metrics" => Some(Self::Metrics),
             "settings" => Some(Self::Settings),
@@ -75,6 +83,7 @@ impl SysNode {
             Self::Projects => "projects",
             Self::Audit => "audit",
             Self::Connections => "connections",
+            Self::Paths => "paths",
             Self::Policies => "policies",
             Self::Metrics => "metrics",
             Self::Settings => "settings",
@@ -150,6 +159,19 @@ pub fn sys_node_schema(node: SysNode) -> Schema {
         SysNode::Connections => Schema::new(vec![
             col("driver", ColumnType::Text, false),
             col("connection", ColumnType::Text, false),
+            col("created_at", ColumnType::Text, true),
+        ]),
+        // The DEFINED-PATH binding registry (t100020, the CONNECT model): the user path, the
+        // canonical driver id it mounts (NULL for an alias), the non-secret `AT` locator, the secret
+        // REFERENCE (`env:`/`vault:` — NEVER a value), and the alias target (NULL for a full
+        // connect). There is structurally NO column a secret value could ride in (the redaction
+        // contract, §3.2): `secret_ref` names WHERE the secret lives, never the secret.
+        SysNode::Paths => Schema::new(vec![
+            col("path", ColumnType::Text, false),
+            col("driver", ColumnType::Text, true),
+            col("at", ColumnType::Text, true),
+            col("secret_ref", ColumnType::Text, true),
+            col("alias_of", ColumnType::Text, true),
             col("created_at", ColumnType::Text, true),
         ]),
         // The policy grants — the path façade over the policy model. `allow` is the granted verb

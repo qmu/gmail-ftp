@@ -11,6 +11,18 @@
 //! - **Tamper-evident.** Each applied migration's `sha256_hex(sql)` is stored; a relaunch whose
 //!   embedded SQL no longer matches the recorded checksum is a [`MigrationError::ChecksumMismatch`]
 //!   (someone edited a shipped migration in place — forbidden; add a new version instead).
+//!
+//! ## Healing a botched in-place edit that already SHIPPED
+//!
+//! The tamper-evidence above assumes an in-place edit is caught *before* it reaches a real DB. Once
+//! a botched edit ships in a release, two DB lineages exist in the wild — old-body and new-body —
+//! and neither embedded checksum can satisfy both (reverting breaks the new-body release; keeping
+//! the new body fail-closes every old-body DB). The narrow, audited escape hatch for *that already-
+//! happened* case is [`SUPERSEDED_BODIES`]: a registry, keyed by the OLD body's checksum, of the
+//! idempotent SQL that heals an old-body DB FORWARD to the current body. When the runner meets a
+//! recorded checksum that is a registered superseded body, it runs the heal + re-stamps the
+//! recorded checksum (in one transaction) instead of erroring. An UNLISTED mismatch still fails
+//! closed, so tamper-evidence is intact for genuinely-unknown edits. See ticket `20260630203120`.
 
 use qfs_crypto_core::sha256_hex;
 use rusqlite::OptionalExtension;
@@ -30,6 +42,35 @@ pub struct Migration {
     /// The migration body. Frozen once shipped; checksummed for tamper-evidence.
     pub sql: &'static str,
 }
+
+/// A prior, *released* body of a migration that was later edited in place — leaving DBs of BOTH
+/// bodies in the wild (a botched-but-shipped edit; see the module docs). Listing the OLD body's
+/// checksum here lets the runner heal an old-body DB FORWARD to the current body instead of
+/// fail-closing. Keyed by checksum, which is content-addressed and therefore globally unique across
+/// scopes (System / Project) — only a DB that applied EXACTLY that body records that checksum, so
+/// `reconcile` is guaranteed to run against the schema that body created.
+#[derive(Debug, Clone, Copy)]
+pub struct SupersededBody {
+    /// `sha256_hex` of the OLD shipped body (64 hex chars).
+    pub old_checksum: &'static str,
+    /// Idempotent forward-heal SQL bringing the OLD body's schema up to the CURRENT body's. Runs in
+    /// the SAME transaction that re-stamps the recorded checksum, so a crash rolls back both.
+    pub reconcile: &'static str,
+}
+
+/// The registry of botched-but-released in-place edits we heal forward (keyed by the OLD checksum).
+///
+/// Project migration v2 (`project_secret_store`): v0.0.9's commit `f95d20c` renamed the credential
+/// column `account` → `connection` by EDITING v2's body in place (checksum `1be5979f…` → `97466be6…`)
+/// rather than appending a new version. It shipped in the v0.0.9 release, so pre-v0.0.9 Project DBs
+/// (the old `account` column) cannot open against v0.0.9+ code. Reverting v2 is not an option — that
+/// would fail-close every v0.0.9 DB (the new `connection` column). So we heal the OLD lineage forward:
+/// rename its columns to match, then re-stamp the recorded checksum to the current body's.
+pub const SUPERSEDED_BODIES: &[SupersededBody] = &[SupersededBody {
+    old_checksum: "1be5979f79fed42dc5e47bf5ea9dd8e086721f8ab9ffc784093bf6699c7f16bb",
+    reconcile: "ALTER TABLE secret_store RENAME COLUMN account TO connection;\n\
+                ALTER TABLE active_account RENAME COLUMN account TO connection;",
+}];
 
 /// A row of the `schema_version` bookkeeping table — one per applied migration.
 #[derive(Debug, Clone)]
@@ -90,15 +131,30 @@ pub fn migrate(db: &mut Db, migrations: &[Migration]) -> Result<Vec<u32>, StoreE
         match existing {
             // Already applied AND the body still matches: verified no-op.
             Some(prev) if prev == checksum => continue,
-            // Already applied but the embedded body changed: a shipped migration was edited in
-            // place. Forbidden — fail closed rather than silently diverge from on-disk state.
+            // Already applied but the embedded body changed. Two cases:
+            //   1. A KNOWN botched-but-released in-place edit (the recorded body is a registered
+            //      `SUPERSEDED_BODIES` entry): heal the old-body DB forward to the current body and
+            //      re-stamp its recorded checksum, in ONE transaction (a crash rolls back both).
+            //   2. Anything else: a genuinely-unknown in-place edit. Fail closed — do not silently
+            //      diverge from on-disk state.
             Some(prev) => {
+                if let Some(s) = SUPERSEDED_BODIES.iter().find(|s| s.old_checksum == prev) {
+                    let tx = conn.transaction().map_err(StoreError::from)?;
+                    tx.execute_batch(s.reconcile).map_err(StoreError::from)?;
+                    tx.execute(
+                        "UPDATE schema_version SET checksum = ?1, name = ?2 WHERE version = ?3",
+                        rusqlite::params![checksum, m.name, m.version],
+                    )
+                    .map_err(StoreError::from)?;
+                    tx.commit().map_err(StoreError::from)?;
+                    continue;
+                }
                 return Err(MigrationError::ChecksumMismatch {
                     version: m.version,
                     recorded: prev,
                     embedded: checksum,
                 }
-                .into())
+                .into());
             }
             // Pending: apply the body + record it in ONE transaction so a crash rolls back both.
             None => {

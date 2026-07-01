@@ -177,7 +177,7 @@ fn s4_codec_roundtrip_identity_all_formats() {
         roundtrip_codec(fmt, bytes).assert_identity();
         seen.insert(fmt);
     }
-    for fmt in ["json", "yaml", "toml", "csv", "md+frontmatter"] {
+    for fmt in ["json", "yaml", "toml", "csv", "md"] {
         assert!(
             seen.contains(fmt),
             "consumer expected the corpus to cover `{fmt}` (RFD §4 round-trip invariant)"

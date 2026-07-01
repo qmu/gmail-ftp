@@ -134,6 +134,28 @@ impl LocalEffect {
             }
         }
 
+        // Fallback — a positional / single-column write payload (`VALUES ('hi')`, or a piped
+        // relation whose one column isn't named `content`) maps onto the blob when it is
+        // unambiguous: exactly one column carrying a `Text`/`Bytes` value. Same write as the
+        // explicit `content` contract above, so `upsert into /local/f values ('hi')` writes `f`.
+        if schema.columns.len() == 1 {
+            match first.and_then(|r| r.values.first()) {
+                Some(Value::Bytes(b)) => {
+                    return Ok(LocalEffect::Write {
+                        dst,
+                        bytes: b.clone(),
+                    })
+                }
+                Some(Value::Text(t)) => {
+                    return Ok(LocalEffect::Write {
+                        dst,
+                        bytes: t.clone().into_bytes(),
+                    })
+                }
+                _ => {}
+            }
+        }
+
         Err(DecodeError {
             reason: format!(
                 "write to {dst:?} carries no `{CONTENT_COL}` blob payload and no `{SRC_COL}` source"

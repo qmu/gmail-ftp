@@ -413,6 +413,11 @@ pub fn from_server_ddl(ddl: &ServerDdl) -> Result<ServerBindingDdl, DdlError> {
             "UNSUPPORTED_DDL",
             "CREATE POLICY is deferred to t34 (capability gating); not a t31 binding form",
         )),
+        DdlKind::Connection => Err(DdlError::validation(
+            "UNSUPPORTED_DDL",
+            "CREATE CONNECTION is a connection declaration, not a /server binding — it is handled \
+             by the connection registry, not this server-binding path",
+        )),
     }
 }
 

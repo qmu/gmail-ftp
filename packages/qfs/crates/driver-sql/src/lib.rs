@@ -104,20 +104,26 @@ impl SqlDriver {
         Self {
             registry: registry.clone(),
             applier: SqlApplier::new(registry),
-            // SQL is a full backend: the whole relational subtree over one connection collapses
-            // into one native SELECT that runs WHERE / projection / ORDER BY / LIMIT / aggregate /
-            // group_by / distinct / single-source JOIN natively. Declared as Partial-all-true so
-            // the planner queries by intent (and a future un-renderable construct can be turned
-            // off one flag at a time); residual WHERE conjuncts combine locally (see `compile`).
+            // The read path (`execute_query` → `QuerySpec` → `compile`) pushes the `WHERE`, the
+            // `ORDER BY`, the `LIMIT`, and the column `PROJECTION` INTO the database's native SELECT
+            // (a non-faithfully-renderable conjunct — LIKE/regex/OR-mixing — is returned as a residual
+            // and re-filtered locally, never wrong rows; a native `LIMIT` is emitted only when nothing
+            // is residual, and the read facet enforces the pushed `LIMIT` after the local re-filter so
+            // it is always honoured exactly). Projection narrows the SELECT column list, but `compile`
+            // KEEPS every column the residual reads (`projected ⊇ residual columns`) and the facet
+            // narrows back to the requested projection AFTER the residual re-filter — so a pushed
+            // projection never strips a column the residual still needs. Aggregate / group_by /
+            // distinct / JOIN are NOT yet threaded through the QuerySpec — they stay in the local
+            // residual the engine applies (correctness over optimization; each flips on as it grows).
             pushdown: PushdownProfile::Partial {
                 where_: true,
                 project: true,
                 limit: true,
                 order: true,
-                join: true,
-                aggregate: true,
-                distinct: true,
-                group_by: true,
+                join: false,
+                aggregate: false,
+                distinct: false,
+                group_by: false,
             },
             // The universal write verbs are the surface (no `CALL` procedures).
             procs: Vec::new(),
@@ -174,7 +180,14 @@ impl SqlDriver {
         &self,
         path: &Path,
         spec: &QuerySpec,
-    ) -> Result<(Vec<qfs_types::Row>, Option<qfs_types::Predicate>), SqlError> {
+    ) -> Result<
+        (
+            Vec<qfs_types::Row>,
+            Option<qfs_types::Predicate>,
+            qfs_types::Schema,
+        ),
+        SqlError,
+    > {
         let parsed = SqlPath::parse(path)?;
         let SqlPath::Table {
             conn,
@@ -196,7 +209,22 @@ impl SqlDriver {
             })?;
         let result = compile(&schema, table_cat, spec)?;
         let rows = handle.execute_read(&result.plan)?;
-        Ok((rows, result.residual))
+        // The output schema reflects what the SELECT actually returned: the (residual-expanded)
+        // projection in SELECT order, or the full catalog schema for a `SELECT *` (empty projection).
+        // The facet narrows to the requested projection AFTER re-applying the residual.
+        let full = table_cat.describe_schema();
+        let out_schema = if result.plan.projection.is_empty() {
+            full
+        } else {
+            let cols = result
+                .plan
+                .projection
+                .iter()
+                .filter_map(|name| full.column(name).cloned())
+                .collect();
+            qfs_types::Schema::new(cols)
+        };
+        Ok((rows, result.residual, out_schema))
     }
 
     /// The per-node capability set (RFD §5): a **table** admits full CRUD; a **view** admits

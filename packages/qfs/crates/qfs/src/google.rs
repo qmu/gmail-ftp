@@ -15,7 +15,10 @@
 //!
 //! ## Fail-closed by construction (RFD §10)
 //! There is **no baked-in OAuth app** — the operator registers a Google "Desktop" OAuth client and
-//! supplies its id/secret via [`GOOGLE_CLIENT_ID_ENV`] / [`GOOGLE_CLIENT_SECRET_ENV`]. Absent either
+//! supplies its id/secret either by saving the `credentials.json` into qfs's own encrypted DB
+//! (`cat credentials.json | qfs connection add google-app default` — read first by
+//! [`app_config_from_store`], so qfs owns the app and does not depend on an external file) or via
+//! [`GOOGLE_CLIENT_ID_ENV`] / [`GOOGLE_CLIENT_SECRET_ENV`] (the agent/CI fallback). Absent either
 //! (or absent a selected Google account email), [`live_google_stack`] returns `None` and the commit
 //! registry leaves `/mail` / `/drive` / `/ga` **unregistered** — a commit then fails with a clear
 //! "no driver / not configured" cause rather than faking success. The `client_secret` and the
@@ -70,14 +73,54 @@ pub struct GoogleStack {
     pub api: Arc<GoogleApiClient>,
 }
 
-/// Read the operator's Google OAuth app credentials from the environment. `None` (fail closed) when
-/// either the client id or the client secret is absent/empty. The pure decision is factored into
-/// [`config_from`] so the fail-closed logic is unit-tested without touching the process environment.
+/// The store driver/connection the Google OAuth **app** credentials are saved under, so a qfs user
+/// can offer them once and qfs owns them in its own encrypted DB (rather than depending on an env
+/// var or an external `credentials.json` that "isn't always there"). Set with:
+/// `cat credentials.json | qfs connection add google-app default` — the stored value is the Google
+/// `credentials.json` (or a `{"client_id":…,"client_secret":…}` blob); read back by
+/// [`app_config_from_store`].
+pub const GOOGLE_APP_DRIVER: &str = "google-app";
+/// The connection name the app credentials are stored under (a single app per install).
+pub const GOOGLE_APP_CONNECTION: &str = "default";
+
+/// Read the operator's Google OAuth app credentials: **qfs's own encrypted store first** (the
+/// user-offered `google-app/default` credentials), then the [`GOOGLE_CLIENT_ID_ENV`] /
+/// [`GOOGLE_CLIENT_SECRET_ENV`] environment (the agent/CI + back-compat path). `None` (fail closed)
+/// when neither yields both an id and a secret.
 fn google_app_config() -> Option<(String, Secret)> {
-    config_from(
-        std::env::var(GOOGLE_CLIENT_ID_ENV).ok(),
-        std::env::var(GOOGLE_CLIENT_SECRET_ENV).ok(),
-    )
+    app_config_from_store().or_else(|| {
+        config_from(
+            std::env::var(GOOGLE_CLIENT_ID_ENV).ok(),
+            std::env::var(GOOGLE_CLIENT_SECRET_ENV).ok(),
+        )
+    })
+}
+
+/// Read the OAuth app credentials saved in qfs's encrypted store under `google-app/default`. `None`
+/// when the store is unavailable/locked (no `QFS_PASSPHRASE`), the key is absent, or the stored blob
+/// does not parse — the env path is tried next, so a missing store is never fatal here.
+fn app_config_from_store() -> Option<(String, Secret)> {
+    use qfs_secrets::{ConnectionId, CredentialKey, DriverId};
+    let store = crate::connection::open_store_for_commit()?;
+    let key = CredentialKey::new(
+        DriverId(GOOGLE_APP_DRIVER.to_string()),
+        ConnectionId::new(GOOGLE_APP_CONNECTION).ok()?,
+    );
+    let blob = store.get(&key).ok()?;
+    let (id, secret) = parse_app_credentials(blob.expose_str()?)?;
+    config_from(Some(id), Some(secret))
+}
+
+/// Parse a stored app-credentials blob into `(client_id, client_secret)`. Accepts Google's downloaded
+/// `credentials.json` shape (`{"installed":{…}}` or `{"web":{…}}`) **and** a flat
+/// `{"client_id":…,"client_secret":…}`. Pure (no I/O), so it is unit-tested directly.
+fn parse_app_credentials(blob: &str) -> Option<(String, String)> {
+    let v: serde_json::Value = serde_json::from_str(blob).ok()?;
+    // Unwrap Google's `installed`/`web` envelope when present.
+    let inner = v.get("installed").or_else(|| v.get("web")).unwrap_or(&v);
+    let id = inner.get("client_id")?.as_str()?.trim().to_string();
+    let secret = inner.get("client_secret")?.as_str()?.trim().to_string();
+    (!id.is_empty() && !secret.is_empty()).then_some((id, secret))
 }
 
 /// Pure fail-closed gate: both the client id AND the client secret must be present and non-empty,
@@ -227,6 +270,31 @@ pub fn run_google_consent(driver: &str, store: Arc<dyn Secrets>) -> Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_googles_installed_credentials_json() {
+        // The exact shape Google Cloud Console hands you for a Desktop OAuth client.
+        let blob = r#"{"installed":{"client_id":"abc.apps.googleusercontent.com",
+            "client_secret":"s3cr3t","redirect_uris":["http://localhost"]}}"#;
+        assert_eq!(
+            parse_app_credentials(blob),
+            Some((
+                "abc.apps.googleusercontent.com".to_string(),
+                "s3cr3t".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn parses_a_flat_client_id_secret_blob_and_rejects_partial() {
+        assert_eq!(
+            parse_app_credentials(r#"{"client_id":"id","client_secret":"sec"}"#),
+            Some(("id".to_string(), "sec".to_string()))
+        );
+        assert!(parse_app_credentials(r#"{"client_id":"id"}"#).is_none());
+        assert!(parse_app_credentials(r#"{"client_id":"","client_secret":"x"}"#).is_none());
+        assert!(parse_app_credentials("not json").is_none());
+    }
 
     /// Fail-closed: the OAuth app config requires BOTH the client id and the client secret, each
     /// non-empty. Any missing/blank half yields `None`, so the Google drivers are never registered

@@ -112,6 +112,8 @@ fn eval_combine(
         // Unary ops: one input.
         CombineOp::Filter(p) => Ok(eval::filter(unary(inputs, cursor)?, p)),
         CombineOp::Project(cols) => Ok(eval::project(unary(inputs, cursor)?, cols)),
+        CombineOp::ProjectExpr(terms) => Ok(eval::project_expr(unary(inputs, cursor)?, terms)),
+        CombineOp::Extend(asgns) => Ok(eval::extend(unary(inputs, cursor)?, asgns)),
         CombineOp::Limit(n) => Ok(eval::limit(unary(inputs, cursor)?, *n)),
         CombineOp::Sort(keys) => Ok(eval::sort(unary(inputs, cursor)?, keys)),
         CombineOp::Distinct => Ok(eval::distinct(unary(inputs, cursor)?)),

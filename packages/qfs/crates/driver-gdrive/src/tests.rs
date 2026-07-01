@@ -490,6 +490,28 @@ fn insert_into_folder_decodes_to_upload() {
 }
 
 #[test]
+fn insert_of_a_folder_decodes_to_a_byteless_upload() {
+    // gmail-ftp `mkdir`: an INSERT carrying the folder mime and no bytes decodes to an Upload the
+    // real client sends as a **metadata-only** files.create (no media part).
+    let node = EffectNode::new(NodeId(0), EffectKind::Insert, target("/drive/my/reports"))
+        .with_args(args(&[
+            (PARENT_ID_COL, Value::Text("folder1".into())),
+            (NAME_COL, Value::Text("Q3".into())),
+            (MIME_COL, Value::Text(FOLDER_MIME.to_string())),
+        ]));
+    match DriveEffect::from_node(&node).unwrap() {
+        DriveEffect::Upload {
+            name, mime, bytes, ..
+        } => {
+            assert_eq!(name, "Q3");
+            assert_eq!(mime, FOLDER_MIME);
+            assert!(bytes.is_empty(), "a folder carries no bytes");
+        }
+        other => panic!("expected Upload, got {other:?}"),
+    }
+}
+
+#[test]
 fn upsert_with_file_id_is_retry_safe_content_replace() {
     let node = EffectNode::new(NodeId(0), EffectKind::Upsert, target("id:f1")).with_args(args(&[
         (FILE_ID_COL, Value::Text("f1".into())),

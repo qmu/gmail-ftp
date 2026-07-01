@@ -99,6 +99,28 @@ impl MailDraft {
     }
 }
 
+/// The label-listing [`Schema`] for `ls /mail` (the mailbox root): one `name` (Text) row per Gmail
+/// label — the directory view of the archetype (labels = directories, RFD §4). The client's
+/// `list_labels` yields the label names; richer label metadata (id/type/counts) is a later add.
+#[must_use]
+pub fn label_listing_schema() -> Schema {
+    Schema::new(vec![Column::new("name", ColumnType::Text, false)])
+}
+
+/// The single-node [`Schema`] for reading one attachment's bytes (`/mail/<label>/<msg>/<att>`,
+/// gmail-ftp `get id:att:<msg>:<att>`): the `filename`/`mime`/`size` metadata (from the owning
+/// message's part) plus the downloaded `content` (`Bytes`). The `content` column name mirrors the
+/// Drive content read so a cross-service attach pipeline lines the two up.
+#[must_use]
+pub fn attachment_read_schema() -> Schema {
+    Schema::new(vec![
+        Column::new("filename", ColumnType::Text, false),
+        Column::new("mime", ColumnType::Text, false),
+        Column::new("size", ColumnType::Int, false),
+        Column::new("content", ColumnType::Bytes, true),
+    ])
+}
+
 impl MailMessage {
     /// The canonical message listing [`Schema`] — the typed columns `DESCRIBE /mail/<label>`
     /// reports and a label scan's rows conform to. Stable column order powers golden snapshots.

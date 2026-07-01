@@ -10,7 +10,28 @@
 
 use std::sync::Arc;
 
-use qfs_types::{Name, Predicate, Schema};
+use qfs_types::{ColRef, Name, Predicate, Schema, Value};
+
+/// A scalar expression evaluated **per row** on the read path (t92, generalised from the
+/// t92 composite literals). This is the lowered, vendor-free form of the projection/extend
+/// expressions the parser AST carries — kept in the planner IR so the engine can evaluate a
+/// struct/array constructor over a row's columns without depending on the parser or stdlib.
+///
+/// The set is deliberately closed to the forms the engine can evaluate with only the type
+/// model: a column reference (with `.`-navigation), a constant [`Value`], and the `[ ]`/`{ }`
+/// constructors. A scalar `fn(...)` in a projection is NOT lowered here (it needs the stdlib
+/// registry the engine does not depend on) — it stays a structured `LowerError`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScalarExpr {
+    /// A column reference (positional lookup, `.`-navigation into a `Struct`).
+    Col(ColRef),
+    /// A constant value, constant-folded from a literal at lower time.
+    Lit(Value),
+    /// An array constructor `[ e1, e2, … ]` — each element evaluated per row.
+    Array(Vec<ScalarExpr>),
+    /// A struct constructor `{ name: e, … }` — each field value evaluated per row, names kept.
+    Struct(Vec<(Name, ScalarExpr)>),
+}
 
 /// The mount/driver a subtree resolves to (RFD §6). An owned `Arc<str>` so a `SourceId`
 /// is cheap to clone while tagging every node of a subtree. Two subtrees share a source
@@ -79,6 +100,10 @@ pub enum Aggregator {
     Min,
     /// `MAX(col)`.
     Max,
+    /// `ARRAY_AGG(col)` — collect the column's per-row values (in row order) into one
+    /// `Array` value (t92). Single-column, so it fits the closed [`Aggregate`] shape with no
+    /// change to the aggregate representation; it is never pushed to a driver (local only).
+    ArrayAgg,
 }
 
 impl Aggregator {
@@ -90,6 +115,7 @@ impl Aggregator {
             Aggregator::Sum => "sum",
             Aggregator::Min => "min",
             Aggregator::Max => "max",
+            Aggregator::ArrayAgg => "array_agg",
         }
     }
 }
@@ -137,12 +163,31 @@ pub enum LogicalPlan {
         /// The filter predicate (typed IR, t05).
         predicate: Predicate,
     },
-    /// A `SELECT` projection narrowing to the named columns.
+    /// A `SELECT` projection narrowing to the named columns (all items are plain columns —
+    /// pushable to a driver that supports `project`).
     Project {
         /// The projected input.
         input: Box<LogicalPlan>,
         /// The projected column names, in order.
         columns: Vec<Name>,
+    },
+    /// A `SELECT` projection with at least one **computed** term (a struct/array constructor,
+    /// t92). Each output column is `(alias, ScalarExpr)`, evaluated per row. Never pushed to a
+    /// driver (a driver cannot build a struct) — always a local residual op.
+    ProjectExpr {
+        /// The projected input.
+        input: Box<LogicalPlan>,
+        /// The `(output name, expression)` projection terms, in order.
+        projections: Vec<(Name, ScalarExpr)>,
+    },
+    /// `EXTEND`/`SET` adding or overwriting columns with computed values (t92). Each
+    /// assignment is `(name, ScalarExpr)`, evaluated per row. A local residual op — never
+    /// pushed. (Previously EXTEND was a schema-only pass-through with no runtime effect.)
+    Extend {
+        /// The extended input.
+        input: Box<LogicalPlan>,
+        /// The `(column name, expression)` assignments, in order.
+        assignments: Vec<(Name, ScalarExpr)>,
     },
     /// A `LIMIT n` cap.
     Limit {
@@ -235,6 +280,8 @@ impl LogicalPlan {
             LogicalPlan::Scan { source, .. } => Some(source.clone()),
             LogicalPlan::Filter { input, .. }
             | LogicalPlan::Project { input, .. }
+            | LogicalPlan::ProjectExpr { input, .. }
+            | LogicalPlan::Extend { input, .. }
             | LogicalPlan::Limit { input, .. }
             | LogicalPlan::Sort { input, .. }
             | LogicalPlan::Distinct { input }

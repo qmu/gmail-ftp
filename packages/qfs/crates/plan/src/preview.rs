@@ -96,7 +96,16 @@ impl std::fmt::Display for Preview {
         }
         writeln!(f, "PREVIEW: {} effect(s)", self.rows.len())?;
         for row in &self.rows {
-            let mark = if row.irreversible { " (!)" } else { "" };
+            // The irreversible `(!)` marker carries the warning highlight (no-op when color is
+            // disabled, so the plain text is unchanged).
+            let mark = if row.irreversible {
+                format!(
+                    " {}",
+                    qfs_types::color::paint(qfs_types::color::WARN, "(!)")
+                )
+            } else {
+                String::new()
+            };
             writeln!(
                 f,
                 "  {} {} -> {} [affected {}]{}",
@@ -105,9 +114,10 @@ impl std::fmt::Display for Preview {
         }
         if !self.irreversible.is_empty() {
             let ids: Vec<String> = self.irreversible.iter().map(NodeId::to_string).collect();
+            let marker = qfs_types::color::paint(qfs_types::color::WARN, "(!)");
             writeln!(
                 f,
-                "  (!) irreversible: {} node(s) [{}]",
+                "  {marker} irreversible: {} node(s) [{}]",
                 self.irreversible.len(),
                 ids.join(", ")
             )?;
