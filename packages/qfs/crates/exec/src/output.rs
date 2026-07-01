@@ -382,14 +382,16 @@ fn render_table(
     Ok(())
 }
 
-/// Write one space-padded, ` | `-separated table row.
+/// Write one space-padded, ` | `-separated table row with a leading `| ` left border (so the table
+/// has a bounding line on the left of the first column, matching the Markdown table shape).
 fn write_row(
     cells: &[String],
     widths: &[usize],
     color: Option<&str>,
     w: &mut dyn Write,
 ) -> std::io::Result<()> {
-    let mut line = String::new();
+    // The left border. Columns are then ` | `-separated, so the first cell follows this directly.
+    let mut line = String::from("| ");
     for (i, width) in widths.iter().enumerate() {
         if i > 0 {
             line.push_str(" | ");
