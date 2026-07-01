@@ -4,8 +4,8 @@ author: a@qmu.jp
 type: enhancement
 layer: [Domain, UX]
 effort:
-commit_hash:
-category: Added
+commit_hash: f20043a
+category: Changed
 depends_on: [20260701100000-epic-defined-paths-replace-driver-mounts.md]
 ---
 
