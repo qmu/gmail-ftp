@@ -1,0 +1,217 @@
+# Cookbook: Gmail
+
+qfs pre-mounts **nothing** for third-party services — Gmail is unreachable until you `CONNECT` it to
+a path of your choosing (see [Setup](#setup)). This cookbook mounts it at `/mail`
+(`qfs connect /mail --driver gmail`), but the path is yours — `/work/gmail` works just as well, and
+every `/mail/…` recipe below simply becomes `/work/gmail/…`.
+
+Once connected, that path is your Gmail account as an **append log**: you read the tail of a label
+(`/mail/INBOX`, `/mail/SENT`, or any user label), relabel or trash its messages, and *append* new
+mail by writing to `/mail/drafts`. Columns include `date`, `from`, `subject`, `snippet`,
+`label_ids`, and `attachments`. Sending is an irreversible `CALL`. Run `qfs describe /mail/INBOX`
+(after connecting) to see the full schema for your mailbox.
+
+::: tip Gmail labels are UPPERCASE
+A label segment is a real Gmail **label id**: the inbox is `/mail/INBOX` (not `/mail/inbox`),
+sent mail is `/mail/SENT`, and a custom label is its exact id. The one lowercase exception is
+`/mail/drafts` — a reserved collection name, not a label.
+:::
+
+## Setup
+
+A complete Gmail setup has four parts: an authenticated qfs operator, your Google OAuth **app**
+credentials, your account's **refresh token**, and the **mount** (the `CONNECT` that makes the path
+exist).
+
+### 0. Prerequisites
+
+- A Google account.
+- A Google **Desktop-app** OAuth client (`client_id` + `client_secret`), downloaded from the
+  [Google Cloud console](https://console.cloud.google.com/apis/credentials) as `credentials.json`.
+  Enable the **Gmail API** for the project.
+- `QFS_PASSPHRASE` exported in your shell — it unlocks qfs's encrypted credential store, where the
+  refresh token is sealed at rest.
+
+### 1. Sign in
+
+Cloud drivers require an authenticated operator — qfs fails closed for an anonymous one. The
+password is read from **stdin**, never argv:
+
+```sh
+printf '%s' "$YOUR_PASSWORD" | qfs identity signup you@example.com
+```
+
+### 2. Hand qfs your OAuth app credentials
+
+Store the downloaded `credentials.json` in qfs's own encrypted store (so it no longer depends on a
+file on disk):
+
+```sh
+cat credentials.json | qfs connection add google-app default
+```
+
+CI/agents can instead export `QFS_GOOGLE_CLIENT_ID` and `QFS_GOOGLE_CLIENT_SECRET`.
+
+### 3. Authorize your account (get a refresh token)
+
+Pick **one** of the two paths.
+
+**A — Fresh browser consent (recommended).** One command opens a Google consent screen; approve it
+and qfs stores the refresh token under `google:<email>:refresh_token`, records your consent, and
+selects the account:
+
+```sh
+QFS_GOOGLE_CONSENT=1 qfs connection add gmail default
+```
+
+On a **headless server**, forward the loopback port over SSH first, then open the printed URL in
+your laptop browser:
+
+```sh
+ssh -L 8080:localhost:8080 you@your-server      # in a second terminal
+```
+
+**B — Import an existing refresh token** (reuse one a prior tool already obtained). Store it under
+your url-encoded email, record consent, and select the account:
+
+```sh
+printf '%s' "$REFRESH_TOKEN" | qfs connection add google 'you%40example.com'  # %40 = @
+printf 'x'                   | qfs connection add gmail default                # records consent
+export QFS_GOOGLE_ACCOUNT=you@example.com                                      # selects the account
+```
+
+### 4. Connect the path
+
+Mount Gmail wherever you like — the rest of this cookbook assumes `/mail`:
+
+```sh
+qfs connect /mail --driver gmail
+```
+
+`qfs connection paths` now lists it, and `qfs describe /mail` shows the schema and verbs.
+
+### 5. Read real mail
+
+```sh
+qfs run "/mail/INBOX |> select date, from, subject |> limit 5"
+```
+
+Real messages come back. If a read reports *connect a Google account to read mail*, revisit steps
+1–3 — you are past addressing (the path resolved) but the cloud bind gate has no signed-in operator
+or recorded consent yet.
+
+## Search & read
+
+**Find invoices, newest first:**
+
+```qfs
+/mail/INBOX
+|> where subject LIKE '%invoice%'
+|> select date, from, subject
+|> order by date DESC
+|> limit 20
+```
+
+**Everything from one sender:**
+
+```qfs
+/mail/INBOX
+|> where from == 'billing@stripe.com'
+|> select date, subject
+```
+
+**Mail with attachments in a date range:**
+
+```qfs
+/mail/INBOX
+|> where date BETWEEN '2026-01-01' AND '2026-03-31'
+|> select date, from, subject, attachments
+```
+
+**Read a single message by id:**
+
+```qfs
+/mail/INBOX
+|> where id == '18f1a2b3c4'
+```
+
+## Summarize
+
+**Who emails you most?**
+
+```qfs
+/mail/INBOX
+|> group by from
+|> aggregate count(id) as messages
+|> order by messages DESC
+|> limit 10
+```
+
+## Write
+
+**Draft an email** (reversible — creating a draft sends nothing). Writing a draft *previews* until
+you `--commit`:
+
+```qfs
+insert into /mail/drafts
+  values ('alice@example.com', 'Q3 report', 'See attached.')
+```
+
+```text
+PREVIEW: 1 effect(s)
+  #0 INSERT -> mail:/mail/drafts [affected 1]
+  total affected: 1
+```
+
+**Draft, then send it.** The draft is reversible; the send is the irreversible step:
+
+```qfs
+insert into /mail/drafts
+  values ('alice@example.com', 'Q3 report', 'See attached.')
+
+/mail/drafts
+|> call mail.send
+```
+
+::: warning Irreversible
+`CALL mail.send` can't be undone. In a one-shot it needs `--commit --commit-irreversible`. A retry
+re-sends the **same** draft (de-duplicated), never a fresh message.
+:::
+
+## Clean up
+
+**Trash newsletters** (also irreversible — the preview shows it as a gate):
+
+```qfs
+remove /mail/INBOX
+  where subject LIKE '%unsubscribe%'
+```
+
+```text
+PREVIEW: 1 effect(s)
+  #0 REMOVE -> mail:/mail/INBOX [affected ?] (!)
+  (!) irreversible: 1 node(s) [#0]
+  total affected: ?
+```
+
+The `(!)` marks the irreversible gate: a one-shot needs `--commit --commit-irreversible` to apply it.
+
+**Trash by sender:**
+
+```qfs
+remove /mail/INBOX
+  where from == 'noreply@spammy.example'
+```
+
+::: tip describe never lies about verbs
+`qfs describe` reports the **exact** verb set for each node, derived from its real capabilities.
+A mailbox and its drafts differ:
+
+- `describe /mail/INBOX` → `native_verbs: SELECT(tail) UPDATE REMOVE`. The inbox is a tail you read,
+  *relabel* (`UPDATE`), and trash (`REMOVE`) — you don't append new mail to your own inbox, so
+  there's no `INSERT`.
+- `describe /mail/drafts` → `native_verbs: SELECT(tail) INSERT(append) UPSERT REMOVE`. Drafts is the
+  append log you write to.
+
+If a verb isn't listed, the statement is rejected — never silently dropped.
+:::

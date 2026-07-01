@@ -30,7 +30,8 @@ that can't be undone, like sending mail or merging a PR. So paste any recipe and
 
 ## The chapters
 
-- **[Mail](/cookbook/mail)** — search, triage, draft, send, label, clean up.
+- **[Gmail](/cookbook/gmail)** — connect a Google account, then search, triage, draft, send, label,
+  clean up.
 - **[Databases](/cookbook/databases)** — filter, aggregate, update, set operations.
 - **[Files & storage](/cookbook/files)** — local, Drive, S3/R2, and format conversion with codecs.
 - **[Cross-service](/cookbook/cross-service)** — join a database to GitHub, a file to a table, one

@@ -55,7 +55,7 @@ export default defineConfig({
         collapsed: false,
         items: [
           { text: 'Overview', link: '/cookbook/' },
-          { text: 'Mail', link: '/cookbook/mail' },
+          { text: 'Gmail', link: '/cookbook/gmail' },
           { text: 'Databases', link: '/cookbook/databases' },
           { text: 'Files & storage', link: '/cookbook/files' },
           { text: 'Cross-service', link: '/cookbook/cross-service' },

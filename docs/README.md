@@ -13,7 +13,7 @@ Welcome to the qfs docs. Here's the map.
 ## The Cookbook
 
 - **[Cookbook](/cookbook/)** — real problems and the single statement that solves each:
-  [mail](/cookbook/mail), [databases](/cookbook/databases),
+  [gmail](/cookbook/gmail), [databases](/cookbook/databases),
   [files & storage](/cookbook/files), [cross-service joins](/cookbook/cross-service),
   [code](/cookbook/code), and [automation](/cookbook/automation).
 
