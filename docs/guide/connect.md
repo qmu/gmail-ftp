@@ -49,25 +49,28 @@ to print the `CREATE CONNECTION` lines equivalent to your current env vars, then
 
 ## Gmail, Google Drive & Google Analytics — Google sign-in
 
-All three Google sources share one OAuth consent. Sign in, then add the connection — one consent
-covers Gmail, Drive, and Analytics:
+All three Google sources share one OAuth consent. Sign in, add the connection, then **mount** each
+service with `qfs connect` — nothing is pre-mounted, so you choose where each path lives:
 
 ```sh
 qfs identity signup you@example.com            # register a local identity (once per machine)
 export QFS_PASSPHRASE                           # the store passphrase (above)
 
-# Interactive browser consent (opens the Google approval page, captures the redirect):
-QFS_GOOGLE_CONSENT=1 qfs connection add gmail work
+# Interactive browser consent — one consent covers Gmail, Drive, and Analytics:
+QFS_GOOGLE_CONSENT=1 qfs connection add gmail default
+
+qfs connect /mail  --driver gmail              # mount Gmail at /mail
+qfs connect /drive --driver gdrive             # mount Drive at /drive
 ```
 
-`gmail` / `gdrive` / `ga` is the driver; `work` is your label (the path segment: `/mail/work/…`).
-The consent is recorded against that connection; the refresh token is stored encrypted and never
-printed. If you provision a refresh token out of band instead of using the browser flow, pipe it on
-stdin (`printf %s "$TOKEN" | qfs connection add gmail work`).
+`gmail` / `gdrive` / `ga` is the driver; the consent is recorded against the connection and the
+refresh token is stored encrypted and never printed. To provision a refresh token out of band
+instead of the browser flow, pipe it on stdin — the full walkthrough (and a token-import shortcut)
+is in the [Gmail cookbook Setup](/cookbook/gmail#setup).
 
-Once connected, **`/mail` reads return your real messages.** Reading `/drive` and `/ga` is still
-being wired — connecting works today, but those reads land per the [roadmap](/roadmap); until then
-they return the actionable "connect / not-yet-available" error.
+Once connected, **`/mail` and `/drive` reads return your real messages and files.** Coming from
+`gmail-ftp` / `gdrive-ftp`? The [migration guide](/guide/replace-gmail-gdrive-ftp) maps every FTP
+command (`ls`/`get`/`put`/`send`/`rm`/…) to its qfs form.
 
 ## GitHub & Slack — a token
 
@@ -101,7 +104,7 @@ printf %s "$R2_SECRET_ACCESS_KEY"  | qfs connection add r2 backups
 
 ```sh
 qfs connection list            # the connections you've added (names + metadata only, never secrets)
-qfs run "/mail/work/inbox |> where subject LIKE '%invoice%' |> select date, subject"
+qfs run "/mail/inbox |> where subject LIKE '%invoice%' |> select date, subject"
 ```
 
 `describe` and `preview` never need any of this — they're always offline. A connection is only

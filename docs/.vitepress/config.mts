@@ -48,6 +48,7 @@ export default defineConfig({
           { text: 'Installation', link: '/guide/installation' },
           { text: 'Get started', link: '/guide/getting-started' },
           { text: 'Connect a service', link: '/guide/connect' },
+          { text: 'Replace gmail-ftp / gdrive-ftp', link: '/guide/replace-gmail-gdrive-ftp' },
         ],
       },
       {

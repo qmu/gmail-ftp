@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: enhancement
 layer: [UX]
 effort: 4h
-commit_hash:
+commit_hash: a636c03
 category: Added
 depends_on: [20260630203030-google-live-verification-token-import.md]
 ---
