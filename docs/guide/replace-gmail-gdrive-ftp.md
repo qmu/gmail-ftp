@@ -43,13 +43,13 @@ files. Gmail's `label:` search is case-insensitive, so write labels however you 
 | `pwd` | in the shell: `pwd` |
 | `find <pat> [label]` | `/mail/inbox \|> where subject LIKE '%pat%'` |
 | `search <gmail-query>` | `/mail/inbox \|> where from == 'x@y.z'` — `WHERE` pushes down into Gmail search |
-| `get <msg>` | `id:<msg-id> \|> select date, from, subject, snippet` — read the message |
+| `get <msg>` | `/mail/inbox/<msg-id> \|> select date, from, subject, snippet` — read the message by path |
 | `get id:att:<msg>:<att>` | `/mail/inbox/<msg-id>/<att-id> \|> select filename, mime, size` |
-| `get id:thread:<id>` | `id:thread:<id> \|> select date, from, subject` |
+| `get id:thread:<id>` | `/mail/inbox \|> where thread_id == '<thread-id>' \|> select date, from, subject` |
 | `put` / `compose` (make a draft) | `insert into /mail/drafts values ('to@x.y', 'Subject', 'Body')` |
 | `send <draft>` | `/mail/drafts \|> call mail.send` — **irreversible** |
 | `rm <msg>` | `remove /mail/inbox where id == '<msg-id>'` — trash (**irreversible**) |
-| `rm id:thread:<id>` | `remove id:thread:<id>` — trash the whole thread (**irreversible**) |
+| `rm id:thread:<id>` | `remove /mail/inbox where thread_id == '<thread-id>'` — trash the thread's messages (**irreversible**) |
 
 **Beyond the FTP tools:** qfs also *relabels* in one statement — `update /mail/inbox set
 add_labels = 'STARRED', remove_labels = 'UNREAD' where from == 'boss@x.y'` (star + mark read),
@@ -72,7 +72,7 @@ blobs. The root lists the two corpora, `my` (My Drive) and `shared` (Shared Driv
 | `cd [dir]` | in the shell: `cd /drive/my/Reports` |
 | `pwd` | in the shell: `pwd` |
 | `find <pat> [dir]` | `/drive/my \|> where name LIKE '%pat%' \|> select name` |
-| `get <remote>` | `id:<file-id> \|> select name, mime_type, size, md5` — resolve/download a file |
+| `get <remote>` | `/drive/my/<path> \|> select name, mime_type, size, md5` — resolve/download a file by path |
 | `put <local> [folder]` | `insert into /drive/my/<folder> values ('name.pdf', 'application/pdf', <content>)` |
 | `mkdir <name>` | `insert into /drive/my/<folder> values ('<name>', 'application/vnd.google-apps.folder', '')` |
 | `rm <name>` | `remove /drive/my where name == '<name>'` — trash (**irreversible**) |
