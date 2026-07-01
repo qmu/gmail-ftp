@@ -19,12 +19,12 @@ Message columns: `id`, `thread_id`, `date`, `from`, `subject`, `snippet`, `label
 `attachments`. Attachment columns: `filename`, `mime`, `size`. Run `qfs describe /mail/inbox`
 (after connecting) to see the exact schema and verbs for any node.
 
-::: tip System labels are case-insensitive
-`inbox`, `Inbox`, and `INBOX` all name the same Gmail **system** label — write whichever you like
-(this cookbook uses lowercase). The system labels are `inbox`, `sent`, `draft`, `spam`, `trash`,
-`starred`, `important`, `unread`, and the `category_*` tabs. A **user** label keeps its exact id
-(Gmail treats those case-sensitively), so `/mail/Receipts` and `/mail/receipts` differ. `drafts` is
-qfs's reserved write collection, not a label.
+::: tip Labels are written verbatim
+A label segment is passed to Gmail **exactly as you write it** — qfs never rewrites the case. It
+reaches Gmail as a `label:` search term, which Gmail itself matches case-insensitively, so the
+ergonomic lowercase just works: `/mail/inbox` reads your inbox, and `sent`, `spam`, `trash`,
+`starred`, `important`, `unread`, the `category_*` tabs, and your own user labels all work the same
+way. `drafts` is qfs's reserved write collection (the INSERT target), not a label.
 :::
 
 ## Setup
@@ -126,7 +126,7 @@ or recorded consent yet.
 /mail/starred   |> select date, from, subject
 /mail/important |> select date, from, subject
 /mail/spam      |> select date, from, subject
-/mail/Receipts  |> select date, from, subject      -- a user label (exact id)
+/mail/Receipts  |> select date, from, subject      -- one of your own labels
 ```
 
 ## Search & read

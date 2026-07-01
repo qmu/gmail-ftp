@@ -135,31 +135,21 @@ fn capabilities_are_path_keyed() {
 }
 
 #[test]
-fn system_labels_are_case_insensitive() {
+fn a_label_segment_is_passed_through_verbatim() {
     use crate::path::MailPath;
-    // `/mail/inbox` and `/mail/INBOX` name the SAME system label (canonical uppercase Gmail id), so
-    // the ergonomic lowercase spelling in the cookbook resolves to the real `INBOX` label.
-    let inbox = MailPath::Label {
-        name: "INBOX".to_string(),
-    };
-    assert_eq!(MailPath::parse_str("/mail/inbox").unwrap(), inbox);
-    assert_eq!(MailPath::parse_str("/mail/INBOX").unwrap(), inbox);
+    // qfs does NOT normalize the label case — the segment is the label name verbatim (`inbox` stays
+    // `inbox`). It reaches Gmail as a `label:<name>` SEARCH term, which Gmail matches
+    // case-insensitively, so `/mail/inbox` reads the inbox without any qfs-side canonicalization.
     assert_eq!(
-        MailPath::parse_str("/mail/Sent").unwrap(),
+        MailPath::parse_str("/mail/inbox").unwrap(),
         MailPath::Label {
-            name: "SENT".to_string()
+            name: "inbox".to_string()
         }
     );
-    // The drafts collection is case-insensitive too.
     assert_eq!(
-        MailPath::parse_str("/mail/DRAFTS").unwrap(),
-        MailPath::Drafts
-    );
-    // A USER label keeps its exact case (Gmail user-label ids are case-sensitive).
-    assert_eq!(
-        MailPath::parse_str("/mail/Label_Work").unwrap(),
+        MailPath::parse_str("/mail/Receipts").unwrap(),
         MailPath::Label {
-            name: "Label_Work".to_string()
+            name: "Receipts".to_string()
         }
     );
 }

@@ -25,40 +25,6 @@ pub const MOUNT: &str = "/mail";
 /// The reserved label segment naming the drafts collection (the INSERT/UPSERT target).
 pub const DRAFTS_SEGMENT: &str = "drafts";
 
-/// Gmail's built-in **system** label ids. Their canonical form is UPPERCASE (`INBOX`, `SENT`, …),
-/// but a user naturally writes `/mail/inbox`, so a label segment is matched against these
-/// case-insensitively and canonicalized (see [`canonical_label`]).
-const SYSTEM_LABELS: &[&str] = &[
-    "INBOX",
-    "SENT",
-    "DRAFT",
-    "SPAM",
-    "TRASH",
-    "STARRED",
-    "IMPORTANT",
-    "UNREAD",
-    "CHAT",
-    "CATEGORY_PERSONAL",
-    "CATEGORY_SOCIAL",
-    "CATEGORY_PROMOTIONS",
-    "CATEGORY_UPDATES",
-    "CATEGORY_FORUMS",
-];
-
-/// Canonicalize a label segment to its Gmail label id. A **system** label is case-insensitive —
-/// `inbox`, `Inbox`, and `INBOX` all name the `INBOX` system label — so the ergonomic lowercase
-/// spelling works. A segment that is not a known system label is a **user** label id, which Gmail
-/// treats case-sensitively, so it passes through unchanged.
-#[must_use]
-fn canonical_label(segment: &str) -> String {
-    let upper = segment.to_ascii_uppercase();
-    if SYSTEM_LABELS.contains(&upper.as_str()) {
-        upper
-    } else {
-        segment.to_string()
-    }
-}
-
 /// A parsed Gmail address — what a `/mail/...` path or an `id:` selector resolves to.
 /// Owned, vendor-free. The applier and the introspective methods branch on this.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,9 +93,12 @@ impl MailPath {
         let segments: Vec<&str> = after.split('/').filter(|s| !s.is_empty()).collect();
         match segments.as_slice() {
             [] => Ok(MailPath::Root),
-            [one] if one.eq_ignore_ascii_case(DRAFTS_SEGMENT) => Ok(MailPath::Drafts),
+            [one] if *one == DRAFTS_SEGMENT => Ok(MailPath::Drafts),
             [label] => Ok(MailPath::Label {
-                name: canonical_label(label),
+                // The segment is the label name VERBATIM — no case normalization. It reaches Gmail
+                // as a `label:<name>` SEARCH term (see `query::build_query`), and Gmail matches that
+                // case-insensitively, so `/mail/inbox` reads the inbox exactly as written.
+                name: (*label).to_string(),
             }),
             // `/mail/<label>/<msg>` — a message under a label.
             [_label, msg] => Ok(MailPath::Message {
