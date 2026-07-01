@@ -104,9 +104,12 @@ impl OAuthClient {
 
     /// Build the consent/authorization URL for the loopback flow. Sets
     /// `access_type=offline` + `prompt=consent` so Google **reliably** returns a refresh token
-    /// (it otherwise omits it on re-consent), and threads `state` (CSRF) and the
-    /// `redirect_uri` (loopback `localhost`). The user opens this URL; on approval Google
-    /// redirects to `redirect_uri?code=...&state=...`.
+    /// (it otherwise omits it on re-consent), `include_granted_scopes=true` so a later consent
+    /// **accumulates** onto scopes the user already granted this client (Google's incremental
+    /// authorization) instead of replacing them — the single shared `google:<email>:refresh_token`
+    /// then covers gmail + drive + analytics even when each driver consents with its own narrow
+    /// scope set — and threads `state` (CSRF) and the `redirect_uri` (loopback `localhost`). The
+    /// user opens this URL; on approval Google redirects to `redirect_uri?code=...&state=...`.
     ///
     /// # Errors
     /// [`AuthError::Invalid`] if the base auth endpoint cannot be parsed as a URL.
@@ -121,6 +124,7 @@ impl OAuthClient {
             .append_pair("scope", &self.scopes.join(" "))
             .append_pair("access_type", "offline")
             .append_pair("prompt", "consent")
+            .append_pair("include_granted_scopes", "true")
             .append_pair("state", state);
         Ok(url.into())
     }

@@ -7,7 +7,8 @@
 //!
 //! ## What this crate provides
 //! - [`OAuthClient`] — the thin OAuth2 endpoints client: [`OAuthClient::build_auth_url`]
-//!   (`access_type=offline` + `prompt=consent` so a refresh token is reliably returned),
+//!   (`access_type=offline` + `prompt=consent` so a refresh token is reliably returned, plus
+//!   `include_granted_scopes=true` so per-driver consents accumulate into one shared token),
 //!   [`OAuthClient::exchange_code`], [`OAuthClient::refresh_access_token`],
 //!   [`OAuthClient::fetch_profile_email`]. **Scope-agnostic**: the consuming driver passes its
 //!   minimum scope set (least privilege).
