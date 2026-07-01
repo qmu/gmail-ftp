@@ -36,6 +36,30 @@ use qfs_driver_sql::{QuerySpec, SqlDriver};
 use qfs_exec::ReadDriver;
 use qfs_pushdown::{PushedQuery, ScanNode};
 
+/// Run a BLOCKING cloud read OFF the async executor's thread (EPIC `20260630203030`). Every cloud
+/// read facet's client drives the shared reqwest transport via its own `block_on`; calling that from
+/// within the async read executor nests tokio runtimes and PANICS ("Cannot start a runtime from
+/// within a runtime"). Execute the closure on a DEDICATED OS thread that carries no tokio context
+/// (via [`std::thread::scope`], so it may borrow the client + scan by reference), and reduce a panic
+/// on that thread to a structured, secret-free [`CfsError`] rather than tearing down the process.
+/// (Objstore has an equivalent inline guard in [`ObjReadDriver::scan`]; this is the shared form for
+/// the gmail/gdrive/ga/github/slack facets, which all reach the same transport when run LIVE.)
+fn read_off_runtime<F>(
+    err_path: &str,
+    panic_reason: &'static str,
+    read: F,
+) -> Result<RowBatch, CfsError>
+where
+    F: FnOnce() -> Result<RowBatch, CfsError> + Send,
+{
+    std::thread::scope(|s| s.spawn(read).join()).unwrap_or_else(|_| {
+        Err(CfsError::InvalidPath {
+            path: err_path.to_string(),
+            reason: panic_reason,
+        })
+    })
+}
+
 /// The GitHub read facet: adapts [`qfs_driver_github::read_rows`] (the pure-then-I/O
 /// path→plan→fetch→decode composition) to qfs-exec's async [`ReadDriver`] seam. Owns the
 /// credentialed [`GitHubClient`] the shared builder constructed; no vendor type crosses the seam —
@@ -58,13 +82,16 @@ impl ReadDriver for GitHubReadDriver {
         // The ScanNode carries the full addressed VFS path (t28 pushdown threading) + the pushed
         // predicate; the driver's read_rows owns the parse → ReadPlan → list → decode composition.
         let predicate = scan.pushed.filter.as_ref();
-        qfs_driver_github::read_rows(self.client.as_ref(), &scan.path, predicate).map_err(|e| {
-            // A networked read failure (auth/transport/API/decode/path) becomes a structured,
-            // secret-free CfsError carrying the driver's stable code — never empty rows.
-            CfsError::InvalidPath {
-                path: scan.path.clone(),
-                reason: e.code(),
-            }
+        // Off the async runtime: the client's reqwest transport drives its own `block_on` (t203030).
+        read_off_runtime(&scan.path, "github_read_panicked", || {
+            qfs_driver_github::read_rows(self.client.as_ref(), &scan.path, predicate).map_err(|e| {
+                // A networked read failure (auth/transport/API/decode/path) becomes a structured,
+                // secret-free CfsError carrying the driver's stable code — never empty rows.
+                CfsError::InvalidPath {
+                    path: scan.path.clone(),
+                    reason: e.code(),
+                }
+            })
         })
     }
 }
@@ -87,11 +114,13 @@ impl SlackReadDriver {
 impl ReadDriver for SlackReadDriver {
     async fn scan(&self, scan: &ScanNode) -> Result<RowBatch, CfsError> {
         let predicate = scan.pushed.filter.as_ref();
-        qfs_driver_slack::read_rows(self.client.as_ref(), &scan.path, predicate).map_err(|e| {
-            CfsError::InvalidPath {
-                path: scan.path.clone(),
-                reason: e.code(),
-            }
+        read_off_runtime(&scan.path, "slack_read_panicked", || {
+            qfs_driver_slack::read_rows(self.client.as_ref(), &scan.path, predicate).map_err(|e| {
+                CfsError::InvalidPath {
+                    path: scan.path.clone(),
+                    reason: e.code(),
+                }
+            })
         })
     }
 }
@@ -374,15 +403,19 @@ impl GmailReadDriver {
 impl ReadDriver for GmailReadDriver {
     async fn scan(&self, scan: &ScanNode) -> Result<RowBatch, CfsError> {
         let predicate = scan.pushed.filter.as_ref();
-        qfs_driver_gmail::read_rows(
-            self.client.as_ref(),
-            &scan.path,
-            predicate,
-            scan.pushed.limit,
-        )
-        .map_err(|e| CfsError::InvalidPath {
-            path: scan.path.clone(),
-            reason: e.code(),
+        // Off the async runtime: the credentialed GmailClient drives the shared reqwest transport's
+        // own `block_on`, which would nest tokio runtimes on the executor thread (t203030).
+        read_off_runtime(&scan.path, "gmail_read_panicked", || {
+            qfs_driver_gmail::read_rows(
+                self.client.as_ref(),
+                &scan.path,
+                predicate,
+                scan.pushed.limit,
+            )
+            .map_err(|e| CfsError::InvalidPath {
+                path: scan.path.clone(),
+                reason: e.code(),
+            })
         })
     }
 }
@@ -409,11 +442,13 @@ impl DriveReadDriver {
 impl ReadDriver for DriveReadDriver {
     async fn scan(&self, scan: &ScanNode) -> Result<RowBatch, CfsError> {
         let predicate = scan.pushed.filter.as_ref();
-        qfs_driver_gdrive::read_rows(self.client.as_ref(), &scan.path, predicate).map_err(|e| {
-            CfsError::InvalidPath {
-                path: scan.path.clone(),
-                reason: e.code(),
-            }
+        read_off_runtime(&scan.path, "gdrive_read_panicked", || {
+            qfs_driver_gdrive::read_rows(self.client.as_ref(), &scan.path, predicate).map_err(|e| {
+                CfsError::InvalidPath {
+                    path: scan.path.clone(),
+                    reason: e.code(),
+                }
+            })
         })
     }
 }
@@ -459,27 +494,31 @@ fn ga_query_spec_from_pushed(pushed: &PushedQuery) -> GaQuerySpec {
 impl ReadDriver for GaReadDriver {
     async fn scan(&self, scan: &ScanNode) -> Result<RowBatch, CfsError> {
         let spec = ga_query_spec_from_pushed(&scan.pushed);
-        let path = Path::new(&scan.path);
-        let (rows, schema, residual) =
-            self.driver
-                .execute_query(&path, &spec)
-                .map_err(|e| CfsError::InvalidPath {
-                    path: scan.path.clone(),
-                    reason: e.code(),
-                })?;
-        let batch = RowBatch::new(schema, rows);
-        let mut batch = match residual {
-            Some(predicate) => qfs_exec::apply_residual(batch, &predicate),
-            None => batch,
-        };
-        // Enforce the pushed `LIMIT` after the residual re-filter (GA's `compile` emits a native
-        // `limit` only when nothing is residual, mirroring the SQL facet — see its `scan`).
-        if let Some(limit) = scan.pushed.limit {
-            batch
-                .rows
-                .truncate(usize::try_from(limit).unwrap_or(usize::MAX));
-        }
-        Ok(batch)
+        // Off the async runtime: the GA client drives the shared reqwest transport's own `block_on`
+        // (the GA4 `runReport` call), which would nest tokio runtimes on the executor thread (t203030).
+        read_off_runtime(&scan.path, "ga_read_panicked", || {
+            let path = Path::new(&scan.path);
+            let (rows, schema, residual) =
+                self.driver
+                    .execute_query(&path, &spec)
+                    .map_err(|e| CfsError::InvalidPath {
+                        path: scan.path.clone(),
+                        reason: e.code(),
+                    })?;
+            let batch = RowBatch::new(schema, rows);
+            let mut batch = match residual {
+                Some(predicate) => qfs_exec::apply_residual(batch, &predicate),
+                None => batch,
+            };
+            // Enforce the pushed `LIMIT` after the residual re-filter (GA's `compile` emits a native
+            // `limit` only when nothing is residual, mirroring the SQL facet — see its `scan`).
+            if let Some(limit) = scan.pushed.limit {
+                batch
+                    .rows
+                    .truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+            }
+            Ok(batch)
+        })
     }
 }
 
