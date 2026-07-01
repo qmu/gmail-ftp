@@ -603,6 +603,18 @@ impl<'r> Resolver<'r> {
             .map(|(driver, _)| driver)
             // Fall back to an exact mount match for drivers mounted under a literal name.
             .or_else(|| self.mounts.resolve(&mount).ok())
+            // Fall back to a driver whose CANONICAL id() matches the namespace (t100030). A `CALL`
+            // routes by driver IDENTITY, and id() stays canonical (the keystone decision) even when
+            // `CONNECT` mounts the driver under a MULTI-SEGMENT defined path (`/work/orders`) rather
+            // than its canonical single-segment name — so `CALL postgres.foo()` finds the postgres
+            // driver wherever it was mounted, not only at `/postgres`. Deterministic (mount order);
+            // when two connections share a driver id the first-mounted answers the bare-id CALL.
+            .or_else(|| {
+                self.mounts
+                    .drivers()
+                    .find(|d| d.id().as_str() == namespace)
+                    .map(std::sync::Arc::clone)
+            })
     }
 
     /// Gate an effect statement's verb against the target node's capabilities (RFD §5).

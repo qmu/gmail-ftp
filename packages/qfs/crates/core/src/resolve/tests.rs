@@ -26,6 +26,9 @@ impl PlanApplier for NoopApplier {
 /// mount, its procedures, its prelude aliases, and the capabilities of its single node.
 struct TestDriver {
     mount: &'static str,
+    /// An optional CANONICAL id() distinct from the mount — models a driver CONNECTed under a
+    /// user-chosen (multi-segment) defined path while keeping its canonical plan identity (t100030).
+    id: Option<&'static str>,
     procs: Vec<ProcSig>,
     prelude: Vec<AliasFn>,
     caps: Capabilities,
@@ -37,12 +40,18 @@ impl TestDriver {
     fn new(mount: &'static str) -> Self {
         Self {
             mount,
+            id: None,
             procs: Vec::new(),
             prelude: Vec::new(),
             caps: Capabilities::none(),
             pushdown: PushdownProfile::None,
             applier: NoopApplier,
         }
+    }
+    /// Pin a canonical id() that differs from the mount (the `/work/orders` → `postgres` case).
+    fn with_id(mut self, id: &'static str) -> Self {
+        self.id = Some(id);
+        self
     }
     fn with_procs(mut self, procs: Vec<ProcSig>) -> Self {
         self.procs = procs;
@@ -61,6 +70,14 @@ impl TestDriver {
 impl Driver for TestDriver {
     fn mount(&self) -> &str {
         self.mount
+    }
+    fn id(&self) -> DriverId {
+        // Canonical id when pinned (a defined path decouples id() from the mount); else the
+        // default derives it from the mount (strip the leading `/`).
+        match self.id {
+            Some(id) => DriverId::new(id),
+            None => DriverId::new(self.mount.strip_prefix('/').unwrap_or(self.mount)),
+        }
     }
     fn describe(&self, _p: &Path) -> Result<NodeDesc, CfsError> {
         Ok(NodeDesc::new(Archetype::AppendLog, Schema::empty()))
@@ -140,6 +157,33 @@ fn call_namespaces_are_isolated() {
     assert_eq!(github[0].qualified, "github.merge");
     assert_ne!(git[0].driver, github[0].driver);
     assert_ne!(git[0].qualified, github[0].qualified);
+}
+
+/// t100030: a driver CONNECTed under a MULTI-SEGMENT defined path (`/work/orders`) keeps its
+/// CANONICAL id() (`postgres`), so a `CALL postgres.<proc>()` routes by driver IDENTITY — proving
+/// `resolve_driver_namespace` no longer assumes the driver is mounted at its single-segment name.
+#[test]
+fn call_routes_by_canonical_id_under_a_multi_segment_defined_path() {
+    let mut reg = MountRegistry::new();
+    reg.register(Arc::new(
+        TestDriver::new("/work/orders")
+            .with_id("postgres")
+            .with_procs(vec![ProcSig::new("refresh")])
+            .with_caps(Capabilities::none().select()),
+    ))
+    .unwrap();
+    let stmt = parse_statement("/work/orders |> CALL postgres.refresh()").expect("parse");
+    let calls = Resolver::new(&reg).resolve_statement(&stmt).unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].qualified, "postgres.refresh");
+    assert_eq!(calls[0].driver, DriverId::new("postgres"));
+    // The bare mount name (`orders`) is NOT the driver id — routing is by canonical identity.
+    let miss = Resolver::new(&reg)
+        .resolve_statement(
+            &parse_statement("/work/orders |> CALL orders.refresh()").expect("parse"),
+        )
+        .unwrap_err();
+    assert!(matches!(miss, ResolveError::UnknownDriver { .. }));
 }
 
 #[test]

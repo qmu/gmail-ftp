@@ -29,6 +29,9 @@ impl PlanApplier for PanicApplier {
 /// aliases, and per-node capabilities. No I/O, no creds.
 struct TestDriver {
     mount: &'static str,
+    /// An optional CANONICAL id() distinct from the mount — models a driver CONNECTed under a
+    /// user-chosen (multi-segment) defined path while keeping its canonical plan identity (t100030).
+    id: Option<&'static str>,
     procs: Vec<ProcSig>,
     prelude: Vec<AliasFn>,
     caps: Capabilities,
@@ -41,6 +44,7 @@ impl TestDriver {
     fn new(mount: &'static str) -> Self {
         Self {
             mount,
+            id: None,
             procs: Vec::new(),
             prelude: Vec::new(),
             caps: Capabilities::none(),
@@ -48,6 +52,11 @@ impl TestDriver {
             pushdown: PushdownProfile::None,
             applier: PanicApplier,
         }
+    }
+    /// Pin a canonical id() that differs from the mount (the `/work/orders` → `postgres` case).
+    fn with_id(mut self, id: &'static str) -> Self {
+        self.id = Some(id);
+        self
     }
     fn with_procs(mut self, procs: Vec<ProcSig>) -> Self {
         self.procs = procs;
@@ -70,6 +79,14 @@ impl TestDriver {
 impl Driver for TestDriver {
     fn mount(&self) -> &str {
         self.mount
+    }
+    fn id(&self) -> DriverId {
+        // Canonical id when pinned (a defined path decouples id() from the mount); else the default
+        // derives it from the mount (strip the leading `/`).
+        match self.id {
+            Some(id) => DriverId::new(id),
+            None => DriverId::new(self.mount.strip_prefix('/').unwrap_or(self.mount)),
+        }
     }
     fn describe(&self, _p: &Path) -> Result<NodeDesc, CfsError> {
         Ok(NodeDesc::new(
@@ -234,6 +251,35 @@ fn insert_from_query_emits_a_read_dependency() {
     assert!(plan.nodes().iter().any(|n| n.kind == EffectKind::Insert));
     assert_eq!(plan.deps().len(), 1, "the Insert depends on the Read");
     plan.validate().expect("valid DAG with one edge");
+}
+
+/// t100030: a driver CONNECTed at a MULTI-SEGMENT defined path (`/work/orders`) with a CANONICAL
+/// id() (`postgres`) — the write plan's Target is REBUILT as `/<id>/<sub>` (`/postgres/rows`), the
+/// per-driver path the driver's own parser expects, NOT the user mount. This is the reconstruction
+/// the `/ga` alias proved for a single segment, now exercised for a multi-segment user path (the
+/// route → reconstruct coverage the epic calls for).
+#[test]
+fn effect_target_reconstructs_canonical_id_under_a_multi_segment_defined_path() {
+    let mut reg = MountRegistry::new();
+    reg.register(Arc::new(
+        TestDriver::new("/work/orders")
+            .with_id("postgres")
+            .with_caps(Capabilities::none().select().insert())
+            .with_schema(Schema::new(vec![Column::new("id", ColumnType::Int, false)])),
+    ))
+    .unwrap();
+    let stmt = parse_statement("INSERT INTO /work/orders/rows VALUES (1)").expect("parse");
+    let plan = Evaluator::new(&reg)
+        .eval(&stmt)
+        .unwrap()
+        .as_plan()
+        .cloned()
+        .unwrap();
+    let node = &plan.nodes()[0];
+    assert_eq!(node.kind, EffectKind::Insert);
+    // Routed by the multi-segment mount, but the driver-facing Target is canonical.
+    assert_eq!(node.target.driver, DriverId::new("postgres"));
+    assert_eq!(node.target.path.as_str(), "/postgres/rows");
 }
 
 // ---- Irreversible flagging ----

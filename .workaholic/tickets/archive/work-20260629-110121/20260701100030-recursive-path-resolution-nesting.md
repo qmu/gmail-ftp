@@ -4,8 +4,8 @@ author: a@qmu.jp
 type: enhancement
 layer: [Domain]
 effort:
-commit_hash:
-category: Added
+commit_hash: 4f7a6b0
+category: Changed
 depends_on: [20260701100010-design-defined-path-model-grammar.md, 20260701100020-defined-path-declaration-grammar-config.md]
 ---
 
