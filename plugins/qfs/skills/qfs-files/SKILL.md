@@ -145,8 +145,10 @@ PREVIEW: 1 effect(s)
 
 ::: warning Cloud stores need a connection
 A `/drive`, `/s3`, or `/r2` **read** needs credentials — e.g. an `/s3` list returns *connect AWS
-credentials to read S3 — run `qfs connection add s3`*. **Drive reads are coming soon** (path→id
-resolution is still being wired). A `/drive` write previews today, but `/s3` and `/r2` writes are
-not implemented yet: `upsert into /s3/…` / `remove /s3/…` return `unsupported_verb` (`supported: []`).
-Use `/local` for runnable end-to-end blob recipes today.
+credentials to read S3 — run `qfs connection add s3`*. `/drive` reads **and** writes are wired and
+live-verified: the path→id walk, byte download, and Google-native export on the read side, and
+`upsert` / `update` / `remove` on the write side (previewed by default, applied with `--commit`).
+`/s3` and `/r2` **writes** are not implemented yet: `upsert into /s3/…` / `remove /s3/…` return
+`unsupported_verb` (`supported: []`). Use `/local` for a runnable end-to-end blob recipe with no
+cloud connection.
 :::
