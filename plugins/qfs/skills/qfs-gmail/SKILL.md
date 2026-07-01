@@ -1,6 +1,6 @@
 ---
-skill_name: qfs-gmail
-skill_description: Use when a task needs to read or triage Gmail through qfs — search, read, summarize, draft, send, relabel, or trash mail via the /mail path and its pipe-SQL queries. Covers connecting a Google account and the label, message, thread, attachment, and draft surface.
+name: qfs-gmail
+description: Use when a task needs to read or triage Gmail through qfs — search, read, summarize, draft, send, relabel, or trash mail via the /mail path and its pipe-SQL queries. Covers connecting a Google account and the label, message, thread, attachment, and draft surface.
 ---
 
 # Cookbook: Gmail

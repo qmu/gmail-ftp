@@ -1,6 +1,6 @@
 ---
-skill_name: qfs-code
-skill_description: Use when a task needs git, GitHub, or Slack through qfs — versioned file reads and commits over /git, pull requests and issues over /github, and channels and messages over /slack.
+name: qfs-code
+description: Use when a task needs git, GitHub, or Slack through qfs — versioned file reads and commits over /git, pull requests and issues over /github, and channels and messages over /slack.
 ---
 
 # Cookbook: Code — git, GitHub, Slack

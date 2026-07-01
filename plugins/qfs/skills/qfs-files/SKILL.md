@@ -1,6 +1,6 @@
 ---
-skill_name: qfs-files
-skill_description: Use when a task needs to read, write, or convert files through qfs — local files, Google Drive, and S3/R2 object storage under /local, /drive, /s3, /r2, plus codec format conversion (CSV, JSON, and more).
+name: qfs-files
+description: Use when a task needs to read, write, or convert files through qfs — local files, Google Drive, and S3/R2 object storage under /local, /drive, /s3, /r2, plus codec format conversion (CSV, JSON, and more).
 ---
 
 # Cookbook: Files & storage

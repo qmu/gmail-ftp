@@ -1,6 +1,6 @@
 ---
-skill_name: qfs-databases
-skill_description: Use when a task needs to query or modify a SQL database through qfs — filter, aggregate, join, update, and set operations over /sql/<conn>/<table> relational tables (SQLite, Postgres, MySQL).
+name: qfs-databases
+description: Use when a task needs to query or modify a SQL database through qfs — filter, aggregate, join, update, and set operations over /sql/<conn>/<table> relational tables (SQLite, Postgres, MySQL).
 ---
 
 # Cookbook: Databases

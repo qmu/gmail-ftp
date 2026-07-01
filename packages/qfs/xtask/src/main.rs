@@ -19,6 +19,8 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod gen_skills;
+
 /// The native release targets the `dist` matrix builds (RFD §1/§9): static Linux (musl) +
 /// macOS, both arches. musl static cross-link is CI-only (no local cross-linker — t01/A2).
 const NATIVE_TARGETS: &[&str] = &[
@@ -44,6 +46,12 @@ fn main() -> ExitCode {
             // workspace), not in the workspace dir that `dist` writes its artifacts to.
             let docs_root = qfs::docs::find_repo_root(&repo_root);
             cmd_gen_docs(&docs_root, check)
+        }
+        Some("gen-skills") => {
+            let check = args.iter().any(|a| a == "--check");
+            // Skills + cookbook articles live at the git repo root, like the generated docs.
+            let root = qfs::docs::find_repo_root(&repo_root);
+            cmd_gen_skills(&root, check)
         }
         Some("dist") => {
             // Optional selection so each CI runner builds only the artifact it can:
@@ -74,9 +82,43 @@ fn print_help() {
     eprintln!(
         "qfs xtask — build tooling\n\n\
          USAGE:\n\
-         \x20 cargo xtask gen-docs [--check]   render docs/*.md from the binary's registries\n\
-         \x20 cargo xtask dist                 build release artifacts (CI-only; see ADR-0007)\n"
+         \x20 cargo xtask gen-docs [--check]     render docs/*.md from the binary's registries\n\
+         \x20 cargo xtask gen-skills [--check]   render Agent Skills from docs/cookbook/*.md\n\
+         \x20 cargo xtask dist                   build release artifacts (CI-only; see ADR-0007)\n"
     );
+}
+
+/// `gen-skills`: render (or, with `--check`, verify) the Claude Code Agent Skills generated from the
+/// cookbook articles. Disk-safe; the anti-drift QA command (the `gen-docs` sibling).
+fn cmd_gen_skills(repo_root: &Path, check: bool) -> ExitCode {
+    match gen_skills::gen_skills(repo_root, check) {
+        Ok(out) if check && out.drift.is_empty() => {
+            println!("gen-skills --check: skills are in sync.");
+            ExitCode::SUCCESS
+        }
+        Ok(out) if check => {
+            eprintln!("gen-skills --check: DRIFT — these skills are out of date or unregistered:");
+            for d in &out.drift {
+                eprintln!("  - {d}");
+            }
+            eprintln!("Run `cargo xtask gen-skills` (and register any new skill) then commit.");
+            ExitCode::FAILURE
+        }
+        Ok(out) => {
+            for p in &out.written {
+                println!("wrote {}", p.display());
+            }
+            // A write can still surface a registration gap (a new skill not yet in the marketplace).
+            for d in &out.drift {
+                eprintln!("note: {d}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("gen-skills: I/O error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `gen-docs`: render (or, with `--check`, verify) the reference docs. Disk-safe; the local

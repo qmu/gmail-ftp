@@ -1,6 +1,6 @@
 ---
-skill_name: qfs-automation
-skill_description: Use when a task needs the qfs SERVER side — scheduled jobs, triggers, HTTP endpoints, and cached views created with CREATE bindings over queries you already write.
+name: qfs-automation
+description: Use when a task needs the qfs SERVER side — scheduled jobs, triggers, HTTP endpoints, and cached views created with CREATE bindings over queries you already write.
 ---
 
 # Cookbook: Automation (the server)

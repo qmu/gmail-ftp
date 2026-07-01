@@ -1,6 +1,6 @@
 ---
-skill_name: qfs-cross-service
-skill_description: Use when a task spans MORE THAN ONE service in a single qfs query — joining a database to GitHub, a file to a table, or federating several services with one JOIN or UNION over their paths.
+name: qfs-cross-service
+description: Use when a task spans MORE THAN ONE service in a single qfs query — joining a database to GitHub, a file to a table, or federating several services with one JOIN or UNION over their paths.
 ---
 
 # Cookbook: Cross-service

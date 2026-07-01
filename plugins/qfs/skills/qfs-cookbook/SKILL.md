@@ -1,6 +1,6 @@
 ---
-skill_name: qfs-cookbook
-skill_description: Use for an overview of what qfs can do and which qfs cookbook skill fits a task — reading, searching, transforming, or writing across mail, databases, files, code, and automation with one pipe-SQL language. Routes to the per-topic skills.
+name: qfs-cookbook
+description: Use for an overview of what qfs can do and which qfs cookbook skill fits a task — reading, searching, transforming, or writing across mail, databases, files, code, and automation with one pipe-SQL language. Routes to the per-topic skills.
 ---
 
 # Cookbook

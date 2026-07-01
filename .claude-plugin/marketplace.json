@@ -18,7 +18,14 @@
       "source": "./plugins/qfs",
       "category": "development",
       "skills": [
-        "./skills/qfs"
+        "./skills/qfs",
+        "./skills/qfs-cookbook",
+        "./skills/qfs-gmail",
+        "./skills/qfs-databases",
+        "./skills/qfs-files",
+        "./skills/qfs-cross-service",
+        "./skills/qfs-code",
+        "./skills/qfs-automation"
       ]
     }
   ]
