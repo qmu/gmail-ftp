@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: enhancement
 layer: [Domain, Infrastructure, UX]
 effort:
-commit_hash:
+commit_hash: 81d1a30
 category: Changed
 depends_on: [20260701100010-design-defined-path-model-grammar.md, 20260701100020-defined-path-declaration-grammar-config.md, 20260701100030-recursive-path-resolution-nesting.md]
 ---

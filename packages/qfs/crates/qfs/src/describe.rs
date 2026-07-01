@@ -24,6 +24,15 @@
 //! / D1-catalog for describe to resolve a concrete node (a *registration* requirement, not a
 //! credential one), so their describe is covered by the `qfs-skill` golden corpus instead — where
 //! the harness builds the registry with a fixture catalog. This is the documented fallback.
+//!
+//! ## Driver TYPES + CONNECT-ed paths (t100040, the defined-path model)
+//! This registry serves two purposes and so registers two things: the available driver **types**
+//! (the cred-free catalogue above — the source of `docs/drivers.md` and the "what can I CONNECT?"
+//! reference, always present) AND the developer's **CONNECT-ed defined paths** (each `path_binding`
+//! row, mounted at its user path via [`register_defined_paths`]). A fresh binary with no bindings
+//! shows only the type catalogue, so the generated docs are unaffected. The PLANNING registry
+//! (`shell.rs`) registers ONLY the minimal system set + the bindings — nothing third-party is
+//! pre-mounted for *use*; describe is the broader catalogue-plus-connections surface.
 
 use std::sync::Arc;
 
@@ -48,6 +57,95 @@ pub(crate) fn cred_free_cf_registry() -> qfs_driver_cf::CfRegistry {
         )
         .with_kv("ns", Arc::new(MockCfBackend::new()))
         .with_queue("q", Arc::new(MockCfBackend::new()))
+}
+
+/// Build the **cred-free** driver instance for a canonical driver id — the planning + describe
+/// facet of a CONNECT-ed third-party driver (t100040). Mock / empty clients only: the planner and
+/// `describe` only ever touch the pure introspective half (`describe`/`capabilities`/`pushdown`),
+/// never `applier`, so no credential is resolved and no I/O happens. The driver's `mount()` / `id()`
+/// stay CANONICAL (e.g. `/mail`, `mail`); a binding mounts this instance at the user path via
+/// `register_alias`, and the `/<id>/<sub>` reconstruction (t100030) keeps the driver's own parser
+/// working under the user path.
+///
+/// Returns `None` for a driver id with no cred-free constructor here — notably `sql`/`git`, whose
+/// MULTI-connection planning driver is built from the declared-connection seam (`crate::sql` /
+/// `crate::git`), not a single mock instance; those keep their existing config-gated registration.
+#[must_use]
+pub(crate) fn cred_free_driver(driver_id: &str) -> Option<Arc<dyn qfs_core::Driver>> {
+    let driver: Arc<dyn qfs_core::Driver> = match driver_id {
+        "gmail" => Arc::new(qfs_driver_gmail::GmailDriver::new(Arc::new(
+            qfs_driver_gmail::MockGmailClient::new(),
+        ))),
+        "gdrive" => Arc::new(qfs_driver_gdrive::GDriveDriver::new(Arc::new(
+            qfs_driver_gdrive::MockDriveClient::default(),
+        ))),
+        "google-analytics" | "ga" => Arc::new(qfs_driver_ga::GaDriver::new(Arc::new(
+            qfs_driver_ga::MockGaClient::default(),
+        ))),
+        "github" => Arc::new(qfs_driver_github::GitHubDriver::new(Arc::new(
+            qfs_driver_github::MockGitHubClient::default(),
+        ))),
+        "slack" => Arc::new(qfs_driver_slack::SlackDriver::new(Arc::new(
+            qfs_driver_slack::MockSlackClient::default(),
+        ))),
+        "s3" => Arc::new(qfs_driver_objstore::S3Driver::new(
+            crate::objstore::planning_registry(qfs_driver_objstore::Scheme::S3),
+        )),
+        "r2" => Arc::new(qfs_driver_objstore::R2Driver::new(
+            crate::objstore::planning_registry(qfs_driver_objstore::Scheme::R2),
+        )),
+        "cf" => Arc::new(qfs_driver_cf::CfDriver::new(cred_free_cf_registry())),
+        "fs" => Arc::new(qfs_driver_fs::FsDriver::new(qfs_driver_fs::FsRoots::new())),
+        "claude" => Arc::new(qfs_driver_claude::ClaudeDriver::new()),
+        "rest" | "http" => {
+            let json = qfs_core::CodecRegistry::with_builtins()
+                .resolve("json")
+                .ok()?;
+            Arc::new(qfs_driver_http::RestDriver::new(
+                qfs_driver_http::RestApiConfig::new("http://localhost", Vec::new()),
+                json,
+                Arc::new(qfs_driver_http::MockHttpClient::new()),
+                Arc::new(qfs_secrets::InMemoryStore::new()),
+            ))
+        }
+        _ => return None,
+    };
+    Some(driver)
+}
+
+/// Load the persisted defined-path bindings (best-effort, cred-free): the `path_binding` rows the
+/// registration loop mounts. Returns an empty list when no Project DB resolves (a fresh binary has
+/// no third-party mounts — nothing is pre-mounted, exactly the CONNECT model).
+fn load_bindings() -> Vec<crate::path_binding::PathBindingRow> {
+    match crate::store::open_project_db() {
+        Ok(Some(proj)) => {
+            let conn = proj.into_db().into_connection();
+            crate::path_binding::db_list_bindings(&conn).unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Register every CONNECT-ed defined path from the project DB `path_binding` registry into `reg`
+/// (t100040). A FULL connect mounts the cred-free driver for its `driver_id` at the user path; an
+/// ALIAS mounts the SAME driver its target already resolves to. NOTHING is pre-mounted — a
+/// third-party path resolves ONLY after a CONNECT. Fail-open per binding (an unknown driver id or a
+/// dangling alias is skipped, never a panic) so one bad row cannot sink the whole registry.
+pub(crate) fn register_defined_paths(reg: &mut MountRegistry) {
+    let bindings = load_bindings();
+    // Full connects first, so an alias's target mount already exists when the alias is processed.
+    for b in bindings.iter().filter(|b| b.alias_of.is_none()) {
+        if let Some(driver) = b.driver_id.as_deref().and_then(cred_free_driver) {
+            let _ = reg.register_alias(&b.path, driver);
+        }
+    }
+    for b in bindings.iter().filter(|b| b.alias_of.is_some()) {
+        if let Some(target) = &b.alias_of {
+            if let Some((driver, _)) = reg.resolve_path(target) {
+                let _ = reg.register_alias(&b.path, driver);
+            }
+        }
+    }
 }
 
 pub fn describe_registry() -> MountRegistry {
@@ -152,6 +250,11 @@ pub fn describe_registry() -> MountRegistry {
             Arc::new(qfs_secrets::InMemoryStore::new()),
         )));
     }
+    // t100040: ALSO surface the developer's CONNECT-ed defined paths, so `qfs describe` shows both
+    // the available driver TYPES (the catalogue above, cred-free, the source of `docs/drivers.md`)
+    // AND the paths this deployment has actually connected. A fresh binary with no bindings adds
+    // nothing here (the catalogue stays the reference), so the generated docs are unaffected.
+    register_defined_paths(&mut reg);
     reg
 }
 
