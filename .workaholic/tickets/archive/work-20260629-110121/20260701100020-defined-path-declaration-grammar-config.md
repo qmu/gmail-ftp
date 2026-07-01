@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: enhancement
 layer: [Domain, Infrastructure]
 effort:
-commit_hash:
+commit_hash: c9c0604
 category: Added
 depends_on: [20260701100010-design-defined-path-model-grammar.md]
 ---

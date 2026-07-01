@@ -466,6 +466,132 @@ fn ddl_connection_gmail_needs_no_locator() {
     assert_eq!(c.secret_ref.as_deref(), Some("vault:gmail/work"));
 }
 
+// ---- CONNECT / DISCONNECT — defined-path bindings (EPIC 20260701100000) -----
+
+/// Pull the desugared `EffectStmt` out of a CONNECT/DISCONNECT parse.
+fn effect_of(stmt: Statement) -> EffectStmt {
+    match stmt {
+        Statement::Effect(e) => e,
+        other => panic!("expected an Effect (the CONNECT desugar), got {other:?}"),
+    }
+}
+
+/// The canonical `/a/b/c` path of an effect target.
+fn target_path(e: &EffectStmt) -> String {
+    let mut s = String::new();
+    for seg in &e.target.segments {
+        s.push('/');
+        s.push_str(&seg.name);
+    }
+    s
+}
+
+/// Read a named column's string value from a single-row `VALUES` body (`None` for a NULL cell).
+fn values_cell(e: &EffectStmt, col: &str) -> Option<String> {
+    let EffectBody::Values(v) = &e.body else {
+        panic!("expected a VALUES body")
+    };
+    let cols = v.columns.as_ref().expect("explicit columns");
+    let idx = cols.iter().position(|c| c == col).expect("column present");
+    match &v.rows[0][idx] {
+        Expr::Lit(Literal::Str(s)) => Some(s.clone()),
+        Expr::Lit(Literal::Null) => None,
+        other => panic!("unexpected cell {other:?}"),
+    }
+}
+
+#[test]
+fn connect_full_desugars_to_a_sys_paths_upsert() {
+    // The headline form: bind `/work/orders` to a postgres connection with an AT locator + a SECRET
+    // reference. CONNECT is SUGAR over `UPSERT INTO /sys/paths` — no new Statement variant.
+    let e = effect_of(parse_ok(
+        "CONNECT /work/orders TO postgres AT 'postgres://db/orders' SECRET 'env:PG_PASS'",
+    ));
+    assert_eq!(e.verb, EffectVerb::Insert);
+    assert_eq!(target_path(&e), "/sys/paths");
+    assert_eq!(values_cell(&e, "path").as_deref(), Some("/work/orders"));
+    assert_eq!(values_cell(&e, "driver").as_deref(), Some("postgres"));
+    assert_eq!(
+        values_cell(&e, "at").as_deref(),
+        Some("postgres://db/orders")
+    );
+    assert_eq!(
+        values_cell(&e, "secret_ref").as_deref(),
+        Some("env:PG_PASS")
+    );
+    assert_eq!(values_cell(&e, "alias_of"), None);
+}
+
+#[test]
+fn connect_multi_segment_path_binds() {
+    // A recursive/nested defined path (`/team/finance/ledger`) is just a longer `path` value.
+    let e = effect_of(parse_ok(
+        "CONNECT /team/finance/ledger TO sqlite AT '/data/l.db'",
+    ));
+    assert_eq!(
+        values_cell(&e, "path").as_deref(),
+        Some("/team/finance/ledger")
+    );
+    assert_eq!(values_cell(&e, "driver").as_deref(), Some("sqlite"));
+    assert_eq!(values_cell(&e, "secret_ref"), None);
+}
+
+#[test]
+fn connect_secret_before_at_is_order_independent() {
+    // AT/SECRET are collected in any order (the sugar-shape clause loop).
+    let e = effect_of(parse_ok("CONNECT /m TO gmail SECRET 'vault:gmail/work'"));
+    assert_eq!(values_cell(&e, "driver").as_deref(), Some("gmail"));
+    assert_eq!(values_cell(&e, "at"), None);
+    assert_eq!(
+        values_cell(&e, "secret_ref").as_deref(),
+        Some("vault:gmail/work")
+    );
+}
+
+#[test]
+fn connect_alias_reuses_a_connection() {
+    // `TO /existing-path` (a leading-slash target) is the ALIAS arm: no driver/secret, an alias_of.
+    let e = effect_of(parse_ok("CONNECT /db TO /work/orders"));
+    assert_eq!(e.verb, EffectVerb::Insert);
+    assert_eq!(target_path(&e), "/sys/paths");
+    assert_eq!(values_cell(&e, "path").as_deref(), Some("/db"));
+    assert_eq!(values_cell(&e, "alias_of").as_deref(), Some("/work/orders"));
+    assert_eq!(values_cell(&e, "driver"), None);
+}
+
+#[test]
+fn disconnect_desugars_to_a_sys_paths_remove() {
+    // `DISCONNECT /<path>` → `REMOVE /sys/paths/<path>` (the user path rides as trailing segments).
+    let e = effect_of(parse_ok("DISCONNECT /work/orders"));
+    assert_eq!(e.verb, EffectVerb::Remove);
+    assert_eq!(target_path(&e), "/sys/paths/work/orders");
+    assert!(matches!(
+        e.body,
+        EffectBody::SetWhere { ref set, filter: None } if set.is_empty()
+    ));
+}
+
+#[test]
+fn connect_without_a_target_is_a_crisp_error() {
+    // Committed after the verb: `CONNECT /x` with no `TO …` is a hard parse error, not a silent
+    // fallthrough to a pipeline named `connect`.
+    assert!(parse_statement("CONNECT /x").is_err());
+    assert!(parse_statement("CONNECT").is_err());
+    assert!(parse_statement("DISCONNECT").is_err());
+}
+
+#[test]
+fn connect_and_disconnect_add_no_frozen_keyword() {
+    // The additive-by-contextual-ident contract (the t31 AT lesson): CONNECT/DISCONNECT/TO are NOT
+    // in the frozen keyword set — they are `word(...)` idents, exactly like CONNECTION/SECRET/AT.
+    for w in ["connect", "disconnect", "to"] {
+        assert!(
+            !KEYWORDS.contains(&w),
+            "`{w}` must NOT be a frozen keyword (it is a contextual ident)"
+        );
+    }
+}
+
 #[test]
 fn ddl_trigger_do_plan() {
     // The DO clause holds an effect-plan (a statement). A trigger that archives a

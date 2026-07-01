@@ -418,6 +418,102 @@ fn run_inner(action: &ConnectionAction) -> Result<String, String> {
                 "active connection for {driver} set to {connection}"
             ))
         }
+        // t100020 (the CONNECT model): bind a defined PATH to a driver + credential reference (or an
+        // alias). Direct Project-DB I/O — the twin of the `CONNECT` statement. No passphrase: the
+        // binding is metadata + a secret REFERENCE, never a value.
+        ConnectionAction::Connect {
+            path,
+            driver,
+            at,
+            secret_ref,
+            alias_of,
+        } => run_connect(
+            path,
+            driver.as_deref(),
+            at.as_deref(),
+            secret_ref.as_deref(),
+            alias_of.as_deref(),
+        ),
+        ConnectionAction::Disconnect { path } => {
+            let conn = open_project_conn()?;
+            let n = crate::path_binding::db_remove_binding(&conn, path)
+                .map_err(|e| format!("removing the defined path: {e}"))?;
+            Ok(if n == 0 {
+                format!("{path} was not connected (idempotent)")
+            } else {
+                format!("disconnected {path}")
+            })
+        }
+        ConnectionAction::ListPaths => {
+            let conn = open_project_conn()?;
+            let rows = crate::path_binding::db_list_bindings(&conn)
+                .map_err(|e| format!("listing defined paths: {e}"))?;
+            for r in &rows {
+                // Selectors + metadata only — the `secret_ref` is a REFERENCE (env:/vault:), never a
+                // value. An alias renders its target; a full connect its driver (+ optional locator).
+                if let Some(target) = &r.alias_of {
+                    println!("{}\t-> {target}\t(alias)", r.path);
+                } else {
+                    let driver = r.driver_id.as_deref().unwrap_or("?");
+                    let at = r
+                        .at_locator
+                        .as_deref()
+                        .map_or(String::new(), |a| format!("\tat {a}"));
+                    let secret = r
+                        .secret_ref
+                        .as_deref()
+                        .map_or(String::new(), |s| format!("\tsecret {s}"));
+                    println!("{}\t{driver}{at}{secret}", r.path);
+                }
+            }
+            Ok(if rows.is_empty() {
+                "no defined paths (use `qfs connect`)".into()
+            } else {
+                format!("{} defined path(s)", rows.len())
+            })
+        }
+    }
+}
+
+/// Bind a defined path (`qfs connect`): validate the arms (exactly one of `driver` / `alias_of`),
+/// then UPSERT the binding into the Project DB `path_binding` table. A `vault:`/`env:` secret is
+/// stored as a REFERENCE only (resolved at use time) — nothing secret touches argv or the row.
+fn run_connect(
+    path: &str,
+    driver: Option<&str>,
+    at: Option<&str>,
+    secret_ref: Option<&str>,
+    alias_of: Option<&str>,
+) -> Result<String, String> {
+    if !path.starts_with('/') {
+        return Err(format!("a defined path must be absolute, got `{path}`"));
+    }
+    let conn = open_project_conn()?;
+    match (driver, alias_of) {
+        (Some(_), Some(_)) => {
+            Err("give either --driver (full connect) or --alias-of (alias), not both".into())
+        }
+        (None, None) => {
+            Err("a full connect needs --driver (or --alias-of <path> for an alias)".into())
+        }
+        (Some(driver), None) => {
+            crate::path_binding::db_upsert_binding(&conn, path, driver, at, secret_ref)
+                .map_err(|e| format!("connecting {path}: {e}"))?;
+            Ok(format!("connected {path} -> {driver}"))
+        }
+        (None, Some(target)) => {
+            crate::path_binding::db_upsert_alias(&conn, path, target).map_err(|e| {
+                // A foreign-key failure means the alias target is not a defined path (fail-closed).
+                if matches!(&e, rusqlite::Error::SqliteFailure(err, _)
+                    if err.code == rusqlite::ErrorCode::ConstraintViolation)
+                {
+                    format!("the alias target `{target}` is not a defined path — connect it first")
+                } else {
+                    format!("aliasing {path}: {e}")
+                }
+            })?;
+            Ok(format!("connected {path} -> {target} (alias)"))
+        }
     }
 }
 

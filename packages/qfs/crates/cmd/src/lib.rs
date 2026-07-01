@@ -129,6 +129,31 @@ pub enum ConnectionAction {
     /// `connection import-env` — print the `CREATE CONNECTION` declarations equivalent to the
     /// current `QFS_SQL_*` / `QFS_GIT_*` env vars (the migration off the deprecated convention).
     ImportEnv,
+    /// `connect <path> …` — bind a defined PATH to a driver + credential (a full connect), or to
+    /// an existing path (an alias). The direct-DB-I/O twin of the `CONNECT` statement (EPIC
+    /// 20260701100000 / t100020); writes the Project DB `path_binding` table (no passphrase — the
+    /// `secret_ref` is a REFERENCE, never a value). Exactly one of `driver` / `alias_of` is set.
+    Connect {
+        /// The user-defined path (the mount point), e.g. `/work/orders`.
+        path: String,
+        /// The driver id for a full connect (mutually exclusive with `alias_of`).
+        driver: Option<String>,
+        /// The non-secret `AT` locator (full connect only).
+        at: Option<String>,
+        /// The secret REFERENCE (`env:VAR` / `vault:driver/connection`) — never a value.
+        secret_ref: Option<String>,
+        /// The target defined path for an ALIAS (mutually exclusive with `driver`).
+        alias_of: Option<String>,
+    },
+    /// `disconnect <path>` — remove a defined path (idempotent; aliases cascade). The direct-DB-I/O
+    /// twin of the `DISCONNECT` statement (t100020).
+    Disconnect {
+        /// The user-defined path to remove.
+        path: String,
+    },
+    /// `connection paths` — list the defined-path bindings (the `path_binding` registry): metadata
+    /// only (path, driver, alias target, secret REFERENCE), never a secret value (t100020).
+    ListPaths,
 }
 
 /// The injected **connection launcher**: the binary supplies the credential-store I/O (it depends on
@@ -303,6 +328,34 @@ enum Command {
         #[command(subcommand)]
         verb: ConnectionVerb,
     },
+    /// Bind a defined PATH to a driver + credential — a "defined path" that mounts a connection
+    /// (EPIC 20260701100000 / t100020). The CLI twin of the `CONNECT` statement; writes the Project
+    /// DB `path_binding` registry (the single source of truth — no `connections.qfs` file).
+    ///
+    /// A full connect names a `--driver` (with optional `--at` locator + `--secret` REFERENCE);
+    /// an alias names `--alias-of <existing-path>` instead. The secret is a REFERENCE
+    /// (`env:VAR` / `vault:driver/connection`), never a value — nothing secret rides in argv.
+    Connect {
+        /// The user-defined path (the mount point), e.g. `/work/orders`.
+        path: String,
+        /// The driver id for a full connect (e.g. `postgres`). Mutually exclusive with `--alias-of`.
+        #[arg(long = "driver", value_name = "DRIVER")]
+        driver: Option<String>,
+        /// The non-secret `AT` locator (full connect only), e.g. `postgres://db/orders`.
+        #[arg(long = "at", value_name = "LOCATOR")]
+        at: Option<String>,
+        /// The secret REFERENCE (`env:VAR` / `vault:driver/connection`) — never a value.
+        #[arg(long = "secret", value_name = "REF")]
+        secret: Option<String>,
+        /// Bind as an ALIAS of this existing defined path. Mutually exclusive with `--driver`.
+        #[arg(long = "alias-of", value_name = "PATH")]
+        alias_of: Option<String>,
+    },
+    /// Remove a defined path (idempotent; aliases cascade). The CLI twin of `DISCONNECT` (t100020).
+    Disconnect {
+        /// The user-defined path to remove, e.g. `/work/orders`.
+        path: String,
+    },
     /// Manage local identity: sign up (email + password) and look yourself up (t45, roadmap M1).
     ///
     /// AUTHENTICATION ONLY (decision §4.1: identity is not authorization). A signed-up user can do
@@ -434,6 +487,9 @@ enum ConnectionVerb {
     /// secret; writes the declarations to stdout for you to paste into a `connections.qfs`.
     #[command(name = "import-env")]
     ImportEnv,
+    /// List the defined-path bindings (the `path_binding` registry, t100020): metadata only —
+    /// the path, its driver / alias target, and the secret REFERENCE, never a secret value.
+    Paths,
 }
 
 /// `qfs identity <verb>` — the local-identity verbs (t45). Maps onto the injected
@@ -633,6 +689,29 @@ where
         Some(Command::Connection { verb }) => {
             tracing::debug!(target: "qfs::cmd", "dispatch connection via launcher");
             return connection(&connection_action(&verb));
+        }
+        // `connect` / `disconnect` (t100020): the CLI twin of the CONNECT/DISCONNECT statements —
+        // dispatched through the SAME connection launcher (the binary owns the Project-DB binding
+        // I/O). Returns the exit code directly.
+        Some(Command::Connect {
+            path,
+            driver,
+            at,
+            secret,
+            alias_of,
+        }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch connect via launcher");
+            return connection(&ConnectionAction::Connect {
+                path,
+                driver,
+                at,
+                secret_ref: secret,
+                alias_of,
+            });
+        }
+        Some(Command::Disconnect { path }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch disconnect via launcher");
+            return connection(&ConnectionAction::Disconnect { path });
         }
         // `identity` is dispatched through the injected launcher (the binary owns the System-DB
         // identity store; qfs-cmd stays off the concrete backend). Returns the exit code directly.
@@ -871,6 +950,7 @@ fn connection_action(verb: &ConnectionVerb) -> ConnectionAction {
         },
         ConnectionVerb::Rekey => ConnectionAction::Rekey,
         ConnectionVerb::ImportEnv => ConnectionAction::ImportEnv,
+        ConnectionVerb::Paths => ConnectionAction::ListPaths,
     }
 }
 

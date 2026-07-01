@@ -58,6 +58,29 @@ pub trait SysBackend: Send + Sync {
     /// [`SysError::Backend`] on an I/O failure, or [`SysError::MalformedEffect`] if the row does
     /// not carry a non-empty `team_id`, `tier`, and `status`.
     fn set_billing(&self, row: &RowBatch) -> Result<u64, SysError>;
+
+    /// Apply a single-row `INSERT/UPSERT INTO /sys/paths` (t100020, the `CONNECT` model) to the
+    /// **Project DB** `path_binding` table — an **upsert on `path`** (re-connecting a path replaces
+    /// its binding). A row carrying an `alias_of` is an ALIAS (reuse another defined path's
+    /// connection); otherwise it is a FULL connect binding `(driver, at, secret_ref)`. Returns the
+    /// affected row count (1 on success). This is the desugar target of the `CONNECT` statement.
+    ///
+    /// SELECTORS + METADATA only — the `secret_ref` is a REFERENCE resolved at use time, never a
+    /// value; the implementor persists no secret material here.
+    ///
+    /// # Errors
+    /// [`SysError::Backend`] on an I/O failure (e.g. an alias whose target does not exist —
+    /// fail-closed), or [`SysError::MalformedEffect`] if the row does not carry a non-empty `path`
+    /// (or an alias missing its target / a full connect missing its driver).
+    fn upsert_binding(&self, row: &RowBatch) -> Result<u64, SysError>;
+
+    /// Apply a `REMOVE /sys/paths/<path>` (t100020) to the **Project DB** `path_binding` table:
+    /// remove the defined `path` (its aliases cascade). Idempotent (removing an absent path affects
+    /// 0 rows). Returns the affected row count. This is the desugar target of `DISCONNECT`.
+    ///
+    /// # Errors
+    /// [`SysError::Backend`] on an I/O failure.
+    fn remove_binding(&self, path: &str) -> Result<u64, SysError>;
 }
 
 /// A structured, **secret-free** error from the `/sys` backend (RFD §5, AI-consumable). Names a

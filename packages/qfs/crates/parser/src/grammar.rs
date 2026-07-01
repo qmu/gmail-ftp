@@ -969,6 +969,181 @@ fn returning_clause(input: &mut Stream<'_>) -> ModalResult<Vec<Projection>> {
     preceded(kw(Keyword::Returning), projection_list).parse_next(input)
 }
 
+// ---- CONNECT / DISCONNECT — defined-path bindings (EPIC 20260701100000) -----
+//
+// A `CONNECT /<path> TO <driver> [AT '<loc>'] [SECRET '<ref>']` binds a user-chosen PATH to a
+// driver + credential; `CONNECT /<path> TO /<existing>` is an ALIAS (reuse a connection);
+// `DISCONNECT /<path>` removes a binding. `CONNECT`/`DISCONNECT` are **contextual idents** (like
+// `CONNECTION`/`SECRET`/`AT`) — NO new frozen keyword (the t31 `AT` lesson).
+//
+// They are **SUGAR** over a write to the `/sys/paths` administration node (the defined-path binding
+// registry, persisted in the Project DB) — exactly as `CREATE JOB` is sugar over `INSERT INTO
+// /server/jobs`. Desugaring here (in the parser, to the existing `Statement::Effect`) means the
+// whole effect→preview→commit machinery, the capability gate, and the CLOSED-CORE `Statement` set
+// are reused UNCHANGED: no new `Statement` variant, no new `EffectKind`. A full/alias CONNECT is an
+// `UPSERT INTO /sys/paths` (upsert on `path`); a DISCONNECT is a `REMOVE /sys/paths/<path>`.
+
+/// The `/sys/paths` binding-registry columns, in the order the desugar emits them (the sys applier
+/// reads them by NAME, so the order is internal). A defined path stores selectors + metadata only —
+/// `secret_ref` is a REFERENCE (`env:`/`vault:`), never a secret value.
+const PATH_BINDING_COLUMNS: [&str; 5] = ["path", "driver", "at", "secret_ref", "alias_of"];
+
+/// A plain (unversioned, non-glob) path segment — the shape the synthetic `/sys/paths` target uses.
+fn plain_segment(name: &str) -> PathSegment {
+    PathSegment {
+        name: name.to_string(),
+        version: None,
+        glob: false,
+    }
+}
+
+/// Render a parsed defined [`PathExpr`] to its canonical `/a/b/c` string (the value stored in the
+/// binding's `path` column). Segments only — version/glob/`AS OF` coordinates are not part of a
+/// mount identity.
+fn canonical_path(path: &PathExpr) -> String {
+    let mut out = String::new();
+    for seg in &path.segments {
+        out.push('/');
+        out.push_str(&seg.name);
+    }
+    out
+}
+
+/// Build the single-row `VALUES (path, driver, at, secret_ref, alias_of)` the `/sys/paths` upsert
+/// carries. Absent optional fields are `NULL` (an alias has no driver/at/secret; a full connect has
+/// no alias target).
+fn binding_values(
+    path: &str,
+    driver: Option<&str>,
+    at: Option<&str>,
+    secret_ref: Option<&str>,
+    alias_of: Option<&str>,
+) -> Values {
+    let lit = |v: Option<&str>| {
+        v.map_or(Expr::Lit(Literal::Null), |s| {
+            Expr::Lit(Literal::Str(s.to_string()))
+        })
+    };
+    Values {
+        columns: Some(
+            PATH_BINDING_COLUMNS
+                .iter()
+                .map(|c| (*c).to_string())
+                .collect(),
+        ),
+        rows: vec![vec![
+            Expr::Lit(Literal::Str(path.to_string())),
+            lit(driver),
+            lit(at),
+            lit(secret_ref),
+            lit(alias_of),
+        ]],
+    }
+}
+
+/// Wrap a binding row into the `INSERT INTO /sys/paths …` effect. Like the other gated `/sys`
+/// writes (`/sys/settings`, `/sys/billing`), the SURFACE verb is `INSERT` and the backend applies
+/// **upsert-on-`path`** semantics (re-connecting a path replaces its binding) — an `INSERT` is
+/// reversible, so a CONNECT auto-applies under the default safety mode (only DISCONNECT's `REMOVE`
+/// needs an irreversible ack).
+fn upsert_sys_paths(values: Values, span: Span) -> Statement {
+    Statement::Effect(EffectStmt {
+        verb: EffectVerb::Insert,
+        target: PathExpr {
+            segments: vec![plain_segment("sys"), plain_segment("paths")],
+            as_of: None,
+            span,
+        },
+        body: EffectBody::Values(values),
+        returning: None,
+    })
+}
+
+/// `CONNECT /<path> TO ( <driver> [AT '…'] [SECRET '…'] | /<existing-path> )` — the defined-path
+/// declaration. Disambiguated by what follows `TO`: a leading-`/` path is an ALIAS (reuse the
+/// connection); a bare driver ident is a FULL connect. Desugars to an `UPSERT INTO /sys/paths`.
+fn connect_stmt(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    let _ = word("CONNECT").parse_next(input)?;
+    // Committed after the verb: a malformed CONNECT is a crisp error, never a silent fallthrough.
+    let user = cut_err(path_expr).parse_next(input)?;
+    if user.segments.is_empty() {
+        // `CONNECT /` names no path.
+        return Err(ErrMode::Cut(ContextError::new()));
+    }
+    let user_path = canonical_path(&user);
+    let span = user.span;
+    let _ = cut_err(word("TO")).parse_next(input)?;
+    // ALIAS arm: a leading-`/` target path (a `Token::Path`) reusing an existing connection.
+    if let Some(target) = opt(path_expr).parse_next(input)? {
+        if target.segments.is_empty() {
+            return Err(ErrMode::Cut(ContextError::new()));
+        }
+        let target_path = canonical_path(&target);
+        let values = binding_values(&user_path, None, None, None, Some(&target_path));
+        return Ok(upsert_sys_paths(values, span));
+    }
+    // FULL connect: a bare driver ident, then optional `AT '<loc>'` / `SECRET '<ref>'` in any order.
+    let driver = cut_err(ident).parse_next(input)?.node;
+    let (at, secret) = connect_secret_clauses(input)?;
+    let values = binding_values(
+        &user_path,
+        Some(&driver),
+        at.as_deref(),
+        secret.as_deref(),
+        None,
+    );
+    Ok(upsert_sys_paths(values, span))
+}
+
+/// The optional `AT '<locator>'` / `SECRET '<ref>'` tail of a full `CONNECT`, collected in any order
+/// (the sugar shape, like the `CREATE CONNECTION` clause loop). Reuses the shared connection-clause
+/// parsers so the `AT`/`SECRET` contextual idents are recognised identically.
+fn connect_secret_clauses(input: &mut Stream<'_>) -> ModalResult<(Option<String>, Option<String>)> {
+    let mut at = None;
+    let mut secret = None;
+    loop {
+        if at.is_none() {
+            if let Some(v) = opt(conn_at_clause).parse_next(input)? {
+                at = Some(v);
+                continue;
+            }
+        }
+        if secret.is_none() {
+            if let Some(v) = opt(conn_secret_clause).parse_next(input)? {
+                secret = Some(v);
+                continue;
+            }
+        }
+        break;
+    }
+    Ok((at, secret))
+}
+
+/// `DISCONNECT /<path>` — remove a defined path. Desugars to `REMOVE /sys/paths/<path>` (the user
+/// path rides as the segments after `paths`, so a multi-segment defined path removes cleanly).
+fn disconnect_stmt(input: &mut Stream<'_>) -> ModalResult<Statement> {
+    let _ = word("DISCONNECT").parse_next(input)?;
+    let user = cut_err(path_expr).parse_next(input)?;
+    if user.segments.is_empty() {
+        return Err(ErrMode::Cut(ContextError::new()));
+    }
+    let mut segments = vec![plain_segment("sys"), plain_segment("paths")];
+    segments.extend(user.segments.iter().cloned());
+    Ok(Statement::Effect(EffectStmt {
+        verb: EffectVerb::Remove,
+        target: PathExpr {
+            segments,
+            as_of: None,
+            span: user.span,
+        },
+        body: EffectBody::SetWhere {
+            set: Vec::new(),
+            filter: None,
+        },
+        returning: None,
+    }))
+}
+
 // ---- writes as pipeline stages (decision Q, t72) --------------------------
 
 /// The head of a terminal **pipe-stage write** (decision Q, t72): the write verb plus its
@@ -1511,6 +1686,11 @@ fn inner_statement(input: &mut Stream<'_>) -> ModalResult<Statement> {
         // A `TRANSACTION { … }` block (M6, t62): a distinct leading keyword, so order-independent.
         transaction_block,
         server_ddl.map(Statement::Ddl),
+        // CONNECT/DISCONNECT (EPIC 20260701100000): defined-path bindings, contextual-ident verbs
+        // that desugar to a `/sys/paths` effect. Probed before the generic effect/pipeline forms so
+        // the `connect`/`disconnect` lead idents are consumed as verbs, not a bare source name.
+        connect_stmt,
+        disconnect_stmt,
         // Verb-leading effect (`INSERT INTO …`, the source-less `VALUES` literal form among
         // them) wins first; a source-leading pipeline then either reads (`Statement::Query`)
         // or terminates in a write stage and lowers to the same `Statement::Effect` (t72).

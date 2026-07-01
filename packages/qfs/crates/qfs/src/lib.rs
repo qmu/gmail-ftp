@@ -42,6 +42,7 @@ pub mod job;
 pub mod mcp;
 pub mod oauth;
 pub mod objstore;
+pub mod path_binding;
 pub mod read_facets;
 pub mod secret_ref;
 pub mod secret_store;

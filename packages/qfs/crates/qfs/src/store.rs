@@ -144,8 +144,8 @@ mod tests {
         let proj = open_project_db().unwrap().expect("config home resolves");
         // All project migrations applied (skeleton + t43 secret store + t54 consent ledger +
         // t81 shared-connection registry + t79 rotation/revocation columns + t80 per-recipient E2E
-        // wrap + t66 brokered team-connection registry).
-        assert_eq!(qfs_store::applied_migrations(proj.db()).unwrap().len(), 7);
+        // wrap + t66 brokered team-connection registry + t100020 path-binding registry).
+        assert_eq!(qfs_store::applied_migrations(proj.db()).unwrap().len(), 8);
         match prev_xdg {
             Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
             None => std::env::remove_var("XDG_CONFIG_HOME"),

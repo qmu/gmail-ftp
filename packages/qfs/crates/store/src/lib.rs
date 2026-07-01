@@ -412,6 +412,19 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
         name: "project_broker_connection",
         sql: include_str!("schema/project_broker_connections.sql"),
     },
+    // EPIC 20260701100000 / t100020 (the `CONNECT` defined-path model): the DEFINED-PATH binding
+    // registry (`path_binding`) — a user-chosen PATH bound to a driver + credential reference (a
+    // "defined path" that MOUNTS a connection), or an ALIAS row reusing another path's connection.
+    // The project DB is the SINGLE SOURCE OF TRUTH (no `connections.qfs` file). Selectors + metadata
+    // only; the secret is a REFERENCE resolved at use time (env / vault → `secret_store`, migration
+    // #2), never a value. Appended as a NEW version (#8) — migrations #1–#7 stay frozen (the checksum
+    // guard forbids editing a shipped migration). The passphrase-free read/write that fills these
+    // columns lives in the binary (`crates/qfs/src/path_binding.rs`); this declares the shape.
+    Migration {
+        version: 8,
+        name: "project_path_binding",
+        sql: include_str!("schema/project_path_bindings.sql"),
+    },
 ];
 
 /// Structured, secret-free persistence errors (AI-consumable; a DB path is infra, not a secret, but
@@ -713,8 +726,40 @@ mod tests {
         assert!(table_exists(proj.db(), "e2e_secret"));
         // t66 migration #7: the brokered team-connection registry (M9).
         assert!(table_exists(proj.db(), "broker_connection"));
-        // All seven project migrations are recorded.
-        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 7);
+        // t100020 migration #8: the defined-path binding registry (the CONNECT model).
+        assert!(table_exists(proj.db(), "path_binding"));
+        // All eight project migrations are recorded.
+        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn project_path_binding_migration_v8_applies_idempotently() {
+        // t100020 (the CONNECT defined-path model): migration #8 is idempotent — applying the
+        // Project set twice creates the `path_binding` table once and re-verifies it (checksum) the
+        // second time. The table is metadata-only: it carries NO secret/token/ciphertext/nonce
+        // column (the secret is a REFERENCE resolved at use time, never a value).
+        let mut db = Db::open(&MemorySource).unwrap();
+        let applied = migrate(&mut db, PROJECT_MIGRATIONS).unwrap();
+        assert!(applied.contains(&8), "v8 applied on the first migrate");
+        // A relaunch re-applies nothing (the v8 body is re-verified by checksum, not re-run).
+        assert!(migrate(&mut db, PROJECT_MIGRATIONS).unwrap().is_empty());
+        assert!(table_exists(&db, "path_binding"));
+        let cols: Vec<String> = {
+            let mut stmt = db
+                .conn()
+                .prepare("SELECT name FROM pragma_table_info('path_binding')")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(
+            !cols.iter().any(|c| c.contains("secret_value")
+                || c.contains("ciphertext")
+                || c.contains("nonce")),
+            "the binding registry must carry no secret VALUE column, got {cols:?}"
+        );
     }
 
     #[test]
