@@ -5,6 +5,46 @@ searching, downloading, drafting, sending, and trashing — through its one unif
 This page maps every FTP command to its qfs equivalent. The read/search commands here are verified
 against a real Google account; the write commands are shown as they preview and commit.
 
+## Install the Claude Code plugin (replaces `gmail-ftp@` / `gdrive-ftp@`)
+
+If you drive gmail-ftp / gdrive-ftp from **Claude Code** — they install as Claude plugins from the
+`qmu/gmail-ftp` and `qmu/gdrive-ftp` marketplaces — qfs ships one plugin that replaces both. It
+bundles the qfs *skills* (the describe→preview→commit how-to an agent loads on demand), and those
+skills drive the `qfs` CLI. Add the marketplace and install it:
+
+```
+/plugin marketplace add qmu/qfs
+/plugin install qfs@qfs
+```
+
+Then retire the two FTP plugins and reload:
+
+```
+/plugin uninstall gmail-ftp@gmail-ftp
+/plugin uninstall gdrive-ftp@gdrive-ftp
+/reload-plugins
+```
+
+Both steps land in `~/.claude/settings.json` — the qfs marketplace and plugin added, the two FTP
+entries removed:
+
+```jsonc
+{
+  "extraKnownMarketplaces": {
+    "qfs": { "source": { "source": "github", "repo": "qmu/qfs" } }
+  },
+  "enabledPlugins": {
+    "qfs@qfs": true
+  }
+}
+```
+
+The plugin carries knowledge, not credentials: its skills shell out to the `qfs` binary, so
+[install the CLI](/guide/installation) and finish the one-time Setup below. The agent inherits qfs's
+safety model unchanged — every write previews first, and the two irreversible actions (sending a
+draft, trashing) still need an explicit `--commit-irreversible`, so an agent can't `send` or trash
+by accident (see **PREVIEW → commit, and the irreversible gate** below).
+
 ## Setup (once)
 
 The full walkthrough — OAuth app, sign-in, consent, and the token-import shortcut — is in the
