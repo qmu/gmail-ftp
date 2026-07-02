@@ -4,8 +4,8 @@ author: a@qmu.jp
 type: enhancement
 layer: [DB, Domain]
 effort:
-commit_hash:
-category: Changed
+commit_hash: 9555d9e
+category: Added
 depends_on: []
 ---
 

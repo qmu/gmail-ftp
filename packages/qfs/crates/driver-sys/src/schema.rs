@@ -172,6 +172,10 @@ pub fn sys_node_schema(node: SysNode) -> Schema {
             col("at", ColumnType::Text, true),
             col("secret_ref", ColumnType::Text, true),
             col("alias_of", ColumnType::Text, true),
+            // ADR 0008 — the mount coordinate: which qfs host owns the mount (`local` = the
+            // implicit embedded host) and the service-account LABEL it binds (never a token).
+            col("host", ColumnType::Text, false),
+            col("account", ColumnType::Text, true),
             col("created_at", ColumnType::Text, true),
         ]),
         // The policy grants — the path façade over the policy model. `allow` is the granted verb

@@ -425,6 +425,19 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
         name: "project_path_binding",
         sql: include_str!("schema/project_path_bindings.sql"),
     },
+    // EPIC 20260702120000 / ADR 0008 (the multi-host account model): the MOUNT COORDINATE columns
+    // on `path_binding` — `host` (which qfs host owns the mount; `'local'` is the implicit embedded
+    // host, ADR §1) and `account` (the service-account LABEL the mount binds, e.g. a Google email;
+    // never a token). The mount carrying the full (host, driver, account) coordinate is what
+    // replaces the `active_account` selection (retired by the mount-bound-accounts ticket,
+    // 20260702120050). Appended as a NEW version (#9) — migrations #1–#8 stay frozen (the checksum
+    // guard forbids editing a shipped migration). The passphrase-free read/write that fills these
+    // columns lives in the binary (`crates/qfs/src/path_binding.rs`); this declares the shape.
+    Migration {
+        version: 9,
+        name: "project_mount_coordinate",
+        sql: include_str!("schema/project_mount_coordinate.sql"),
+    },
 ];
 
 /// Structured, secret-free persistence errors (AI-consumable; a DB path is infra, not a secret, but
@@ -728,8 +741,11 @@ mod tests {
         assert!(table_exists(proj.db(), "broker_connection"));
         // t100020 migration #8: the defined-path binding registry (the CONNECT model).
         assert!(table_exists(proj.db(), "path_binding"));
-        // All eight project migrations are recorded.
-        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 8);
+        // ADR 0008 migration #9: the mount coordinate — host (default 'local') + account label.
+        assert!(column_exists(proj.db(), "path_binding", "host"));
+        assert!(column_exists(proj.db(), "path_binding", "account"));
+        // All nine project migrations are recorded.
+        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 9);
     }
 
     #[test]

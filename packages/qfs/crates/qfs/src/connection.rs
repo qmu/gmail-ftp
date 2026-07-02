@@ -91,9 +91,11 @@ fn resolve_store_passphrase(conn: &Connection) -> Result<Secret, String> {
         return Ok(Secret::from(cached.expose().to_vec()));
     }
     if !crate::tty::is_interactive() {
-        return Err("QFS_PASSPHRASE is not set — export it (or run qfs in a terminal to be \
+        return Err(
+            "QFS_PASSPHRASE is not set — export it (or run qfs in a terminal to be \
                     prompted) to unlock the encrypted credential store"
-            .into());
+                .into(),
+        );
     }
     let entered = if store_initialized(conn) {
         crate::tty::prompt_secret("QFS passphrase (unlocks your local credential store): ")?
@@ -120,14 +122,36 @@ fn open_store() -> Result<SqliteSecrets, String> {
         .map_err(|e| format!("opening the credential store: {e}"))
 }
 
+/// Non-interactive passphrase resolution for the best-effort paths: `QFS_PASSPHRASE`, else a
+/// passphrase already prompted earlier in this process ([`PROMPTED_PASSPHRASE`]), else `None`.
+/// **Never prompts** — see [`open_store_for_commit`] for why.
+fn quiet_store_passphrase() -> Option<Secret> {
+    match std::env::var("QFS_PASSPHRASE") {
+        Ok(pass) if !pass.is_empty() => return Some(Secret::from(pass)),
+        _ => {}
+    }
+    PROMPTED_PASSPHRASE
+        .get()
+        .map(|cached| Secret::from(cached.expose().to_vec()))
+}
+
 /// Open the credential store for the **commit resolver** (read path): the same envelope-encrypted
-/// SQLite store `connection add` writes to, when `QFS_PASSPHRASE` + the Project DB are both available.
+/// SQLite store `connection add` writes to, when the passphrase + the Project DB are both available.
 /// Returns `None` (best-effort, never an error) when the store cannot be unlocked — the commit
 /// registry then falls back to the env-var store, and a missing credential surfaces lazily as a
 /// clear per-leg auth error rather than a panic. Never logs the passphrase.
+///
+/// **Never prompts.** The commit registry is built for every `qfs run` — including a
+/// credential-free PREVIEW — and once per cloud driver, so an interactive prompt here would
+/// interrogate the operator for a passphrase the command may not even need (and block a
+/// non-human PTY forever). Only the explicit credential-management paths ([`open_store`]:
+/// `connection add`/`list`/`remove`/…) may prompt; this path reuses their cached entry or the
+/// env var, else falls back quietly.
 #[must_use]
 pub fn open_store_for_commit() -> Option<SqliteSecrets> {
-    open_store().ok()
+    let conn = open_project_conn().ok()?;
+    let pass = quiet_store_passphrase()?;
+    SqliteSecrets::open_or_init(conn, &pass).ok()
 }
 
 /// The persisted active connection name for `driver`, read from the Project DB's `active_account`
@@ -483,12 +507,16 @@ fn run_inner(action: &ConnectionAction) -> Result<String, String> {
             at,
             secret_ref,
             alias_of,
+            host,
+            account,
         } => run_connect(
             path,
             driver.as_deref(),
             at.as_deref(),
             secret_ref.as_deref(),
             alias_of.as_deref(),
+            host.as_deref(),
+            account.as_deref(),
         ),
         ConnectionAction::Disconnect { path } => {
             let conn = open_project_conn()?;
@@ -534,12 +562,15 @@ fn run_inner(action: &ConnectionAction) -> Result<String, String> {
 /// Bind a defined path (`qfs connect`): validate the arms (exactly one of `driver` / `alias_of`),
 /// then UPSERT the binding into the Project DB `path_binding` table. A `vault:`/`env:` secret is
 /// stored as a REFERENCE only (resolved at use time) — nothing secret touches argv or the row.
+#[allow(clippy::too_many_arguments)]
 fn run_connect(
     path: &str,
     driver: Option<&str>,
     at: Option<&str>,
     secret_ref: Option<&str>,
     alias_of: Option<&str>,
+    host: Option<&str>,
+    account: Option<&str>,
 ) -> Result<String, String> {
     if !path.starts_with('/') {
         return Err(format!("a defined path must be absolute, got `{path}`"));
@@ -553,9 +584,14 @@ fn run_connect(
             Err("a full connect needs --driver (or --alias-of <path> for an alias)".into())
         }
         (Some(driver), None) => {
-            crate::path_binding::db_upsert_binding(&conn, path, driver, at, secret_ref)
-                .map_err(|e| format!("connecting {path}: {e}"))?;
-            Ok(format!("connected {path} -> {driver}"))
+            // ADR 0008: the mount carries the (host, driver, account) coordinate — an omitted
+            // --host is the implicit `local` host (defaulted in the binding I/O).
+            crate::path_binding::db_upsert_binding(
+                &conn, path, driver, at, secret_ref, host, account,
+            )
+            .map_err(|e| format!("connecting {path}: {e}"))?;
+            let acct = account.map_or(String::new(), |a| format!(" ({a})"));
+            Ok(format!("connected {path} -> {driver}{acct}"))
         }
         (None, Some(target)) => {
             crate::path_binding::db_upsert_alias(&conn, path, target).map_err(|e| {
@@ -595,7 +631,10 @@ mod tests {
             .unwrap()
             .into_db()
             .into_connection();
-        assert!(!store_initialized(&conn), "a fresh store is not initialized");
+        assert!(
+            !store_initialized(&conn),
+            "a fresh store is not initialized"
+        );
 
         // The first real open writes secret_meta id=1; emulate exactly that row (bytes are opaque to
         // the presence check) and confirm the flag flips.
@@ -604,7 +643,10 @@ mod tests {
             rusqlite::params![vec![0u8; 4], vec![0u8; 4]],
         )
         .unwrap();
-        assert!(store_initialized(&conn), "an established store is initialized");
+        assert!(
+            store_initialized(&conn),
+            "an established store is initialized"
+        );
     }
 
     /// The active-connection selection now round-trips through the Project DB's `active_account`

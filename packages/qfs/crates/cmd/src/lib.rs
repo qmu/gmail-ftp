@@ -144,6 +144,11 @@ pub enum ConnectionAction {
         secret_ref: Option<String>,
         /// The target defined path for an ALIAS (mutually exclusive with `driver`).
         alias_of: Option<String>,
+        /// Which qfs host owns the mount (ADR 0008 §1); `None` = the implicit `local` host.
+        host: Option<String>,
+        /// The service-account LABEL the mount binds (ADR 0008 §4 — the mount carries the
+        /// account, e.g. a Google email). A selector, never a token.
+        account: Option<String>,
     },
     /// `disconnect <path>` — remove a defined path (idempotent; aliases cascade). The direct-DB-I/O
     /// twin of the `DISCONNECT` statement (t100020).
@@ -350,6 +355,12 @@ enum Command {
         /// Bind as an ALIAS of this existing defined path. Mutually exclusive with `--driver`.
         #[arg(long = "alias-of", value_name = "PATH")]
         alias_of: Option<String>,
+        /// Which qfs host owns the mount (ADR 0008); omitted = the implicit `local` host.
+        #[arg(long = "host", value_name = "HOST")]
+        host: Option<String>,
+        /// The service-account label the mount binds (e.g. a Google email) — never a token.
+        #[arg(long = "account", value_name = "LABEL")]
+        account: Option<String>,
     },
     /// Remove a defined path (idempotent; aliases cascade). The CLI twin of `DISCONNECT` (t100020).
     Disconnect {
@@ -699,6 +710,8 @@ where
             at,
             secret,
             alias_of,
+            host,
+            account,
         }) => {
             tracing::debug!(target: "qfs::cmd", "dispatch connect via launcher");
             return connection(&ConnectionAction::Connect {
@@ -707,6 +720,8 @@ where
                 at,
                 secret_ref: secret,
                 alias_of,
+                host,
+                account,
             });
         }
         Some(Command::Disconnect { path }) => {
