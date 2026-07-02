@@ -56,11 +56,6 @@ pub const GOOGLE_CLIENT_SECRET_ENV: &str = "QFS_GOOGLE_CLIENT_SECRET";
 /// account whose `google:<email>:refresh_token` the token source uses). Falls back to the active
 /// `google` connection selection.
 pub const GOOGLE_ACCOUNT_ENV: &str = "QFS_GOOGLE_ACCOUNT";
-/// Opt-in flag (any value) that switches `qfs connection add gmail|gdrive|ga <name>` from the
-/// out-of-band stdin refresh-token path to the interactive loopback browser consent flow
-/// ([`run_google_consent`] — the documented seam).
-pub const GOOGLE_CONSENT_ENV: &str = "QFS_GOOGLE_CONSENT";
-
 /// How long the loopback consent listener waits for the redirect before giving up. A human who
 /// never approves yields a timeout rather than hanging forever.
 const CONSENT_TIMEOUT: Duration = Duration::from_secs(180);
@@ -154,21 +149,6 @@ fn all_google_scopes() -> Vec<String> {
     ]
 }
 
-/// The per-driver least-privilege scope set a single Google driver's consent requests. Used by the
-/// [`run_google_consent`] seam so `connection add gmail` asks for only the Gmail scopes, etc. An
-/// unknown driver yields an empty set (it requests nothing).
-fn consent_scopes(driver: &str) -> Vec<String> {
-    match driver {
-        "gmail" => vec![
-            qfs_driver_gmail::GMAIL_MODIFY_SCOPE.to_string(),
-            qfs_driver_gmail::GMAIL_COMPOSE_SCOPE.to_string(),
-        ],
-        "gdrive" => vec![qfs_driver_gdrive::DRIVE_SCOPE.to_string()],
-        "ga" => vec![qfs_driver_ga::ANALYTICS_READONLY_SCOPE.to_string()],
-        _ => Vec::new(),
-    }
-}
-
 /// Resolve the active Google **account email**: the explicit [`GOOGLE_ACCOUNT_ENV`] override first
 /// (the agent/CI path), else the active `google` connection selection. `None` (fail closed) when no
 /// account is selected — without an account email there is no refresh token to mint from, so the
@@ -243,7 +223,7 @@ pub fn live_google_stack() -> Option<GoogleStack> {
 /// # Errors
 /// [`AuthError`] if the OAuth app credentials are absent, or for any step of the flow (bind, build
 /// URL, denied/timeout, token exchange, profile lookup, store).
-pub fn run_google_consent(driver: &str, store: Arc<dyn Secrets>) -> Result<String, AuthError> {
+pub fn run_google_consent(store: Arc<dyn Secrets>) -> Result<String, AuthError> {
     let (client_id, client_secret) = google_app_config().ok_or_else(|| AuthError::Invalid {
         reason: format!(
             "{GOOGLE_CLIENT_ID_ENV} / {GOOGLE_CLIENT_SECRET_ENV} must be set to a registered \
@@ -253,7 +233,7 @@ pub fn run_google_consent(driver: &str, store: Arc<dyn Secrets>) -> Result<Strin
     let oauth = OAuthClient::new(
         client_id,
         client_secret,
-        consent_scopes(driver),
+        all_google_scopes(),
         crate::transport::google_transport(),
     );
     // The CLI prints the consent URL; the human opens it and approves. (A headless caller could
@@ -343,15 +323,5 @@ mod tests {
             !scopes.iter().any(|s| s == "https://mail.google.com/"),
             "the broad full-mailbox scope must never be requested"
         );
-    }
-
-    /// Per-driver consent requests only that driver's scopes (least privilege); an unknown driver
-    /// requests nothing.
-    #[test]
-    fn per_driver_consent_scopes_are_narrow() {
-        assert_eq!(consent_scopes("gmail").len(), 2);
-        assert_eq!(consent_scopes("gdrive").len(), 1);
-        assert_eq!(consent_scopes("ga").len(), 1);
-        assert!(consent_scopes("github").is_empty());
     }
 }

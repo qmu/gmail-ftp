@@ -12,7 +12,8 @@
 //! [`qfs_cmd::ShellLauncher`]. The shell LOGIC itself lives in `qfs-exec`; this only wires it.
 
 use qfs::{
-    commit, connection, describe, identity, init, invite, job, serve, shell, store, vault, version,
+    account, commit, connection, describe, identity, init, invite, job, serve, shell, store, vault,
+    version,
 };
 
 fn main() {
@@ -67,6 +68,9 @@ fn main() {
         // password: OS-delegated auth, unusable placeholder hash) + the vault creation through the
         // guardian flow, injected here (qfs-cmd stays off the concrete backends).
         &init::run_init,
+        // ADR 0008 §3 `qfs app` / `qfs account`: the per-layer verbs over the vault + consent
+        // ledger + the live Google consent seam, injected here (qfs-cmd stays off the backends).
+        &account::run_account,
         // ADR 0008 §5 `qfs vault slots/enroll/revoke`: the KeyGuardian slot I/O + the OS-keyring
         // guardian, injected here (the binary owns the envelope store and the keyring dep; qfs-cmd
         // stays off both). Key material never crosses this seam — the action carries selectors only.

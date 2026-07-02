@@ -200,6 +200,50 @@ pub struct InitAction {
 /// process exit code.
 pub type InitLauncher<'a> = dyn Fn(&InitAction) -> i32 + 'a;
 
+/// A parsed `qfs app <verb>` / `qfs account <verb>` request, handed to the binary-injected
+/// [`AccountLauncher`] (ADR 0008 §3 — the per-layer verbs that dissolve the `connection`
+/// grab-bag). Both nouns ride ONE launcher: apps (OAuth client registrations) and accounts
+/// (service tokens + consent) are the same vault's I/O. Selectors + labels only — a token is
+/// read from stdin or an echo-off TTY prompt by the launcher, never carried here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccountAction {
+    /// `app add <provider>` — seal the operator's OAuth app credentials (stdin).
+    AppAdd {
+        /// The provider whose app is being registered (today: `google`).
+        provider: String,
+    },
+    /// `app list` — the registered OAuth apps (provider + created_at; never a secret).
+    AppList,
+    /// `app remove <provider>` — delete the app registration.
+    AppRemove {
+        /// The provider whose app registration is removed.
+        provider: String,
+    },
+    /// `account add <provider> [label]` — authorize a service account: Google runs the browser
+    /// consent on a TTY (or imports a piped refresh token with the email as the label); other
+    /// cloud providers seal a piped/prompted token under the label.
+    Add {
+        /// The cloud provider (`google`, `github`, `slack`, `objstore`, `cf`).
+        provider: String,
+        /// The account label (a Google email; a connection name elsewhere). Optional on a TTY.
+        label: Option<String>,
+    },
+    /// `account list` — the authorized service accounts (metadata only).
+    List,
+    /// `account remove <provider> <label>` — delete the token AND its consent record.
+    Remove {
+        /// The provider of the account being removed.
+        provider: String,
+        /// The account label (a Google email; a connection name elsewhere).
+        label: String,
+    },
+}
+
+/// The injected **app/account launcher** (ADR 0008 §3): the binary supplies the vault + consent
+/// I/O and the live Google consent seam (`qfs-secrets`/`qfs-store`/`qfs-google-auth`, which
+/// `qfs-cmd` may not depend on). Returns the process exit code.
+pub type AccountLauncher<'a> = dyn Fn(&AccountAction) -> i32 + 'a;
+
 /// A parsed `qfs vault <verb>` request, handed to the binary-injected [`VaultLauncher`]
 /// (ADR 0008 §5 — KeyGuardian). Selectors + metadata only: no passphrase, no KEK, no wrap bytes
 /// ever ride here — the launcher owns every byte of key material.
@@ -412,6 +456,18 @@ enum Command {
         /// The operator email. Omit it on a terminal to be prompted.
         email: Option<String>,
     },
+    /// Manage OAuth app registrations (ADR 0008): the client credentials YOUR apps authenticate
+    /// with (today: Google's credentials.json). `cat credentials.json | qfs app add google`.
+    App {
+        #[command(subcommand)]
+        verb: AppVerb,
+    },
+    /// Manage service accounts (ADR 0008): authorize an external account (browser consent on a
+    /// terminal; a piped token in automation), list them, or remove one with its consent.
+    Account {
+        #[command(subcommand)]
+        verb: AccountVerb,
+    },
     /// Manage the vault's key slots (ADR 0008 — KeyGuardian): list them, enroll the OS keychain
     /// so this host unlocks without a passphrase, or revoke a slot. The passphrase slot is
     /// enrolled automatically when the store is first created.
@@ -555,6 +611,47 @@ enum ConnectionVerb {
     Paths,
 }
 
+/// `qfs app <verb>` — the OAuth-app registration verbs (ADR 0008 §3). Maps onto the injected
+/// [`AccountLauncher`]; credentials arrive on stdin, never argv.
+#[derive(Subcommand, Debug)]
+enum AppVerb {
+    /// Register a provider's OAuth app from stdin: `cat credentials.json | qfs app add google`.
+    Add {
+        /// The provider (today: `google`).
+        provider: String,
+    },
+    /// List the registered OAuth apps (provider + created_at — never a secret).
+    List,
+    /// Remove a provider's app registration (account tokens stay).
+    Remove {
+        /// The provider whose registration is removed.
+        provider: String,
+    },
+}
+
+/// `qfs account <verb>` — the service-account verbs (ADR 0008 §3). Maps onto the injected
+/// [`AccountLauncher`]; tokens arrive on stdin or an echo-off prompt, never argv.
+#[derive(Subcommand, Debug)]
+enum AccountVerb {
+    /// Authorize an account: `qfs account add google` (browser consent on a terminal), or pipe a
+    /// token — `printf %s "$REFRESH_TOKEN" | qfs account add google you@example.com`.
+    Add {
+        /// The cloud provider (`google`, `github`, `slack`, `objstore`, `cf`).
+        provider: String,
+        /// The account label (a Google email; a connection name elsewhere). Optional on a TTY.
+        label: Option<String>,
+    },
+    /// List the authorized service accounts (metadata only — never a token).
+    List,
+    /// Remove an account: deletes its token AND its consent record.
+    Remove {
+        /// The provider of the account.
+        provider: String,
+        /// The account label (a Google email; a connection name elsewhere).
+        label: String,
+    },
+}
+
 /// `qfs vault <verb>` — the KeyGuardian slot verbs (ADR 0008 §5). Maps onto the injected
 /// [`VaultLauncher`]; no key material ever parses out of argv.
 #[derive(Subcommand, Debug)]
@@ -649,6 +746,7 @@ pub fn run<I, T>(
     connection: &ConnectionLauncher,
     identity: &IdentityLauncher,
     init: &InitLauncher,
+    account: &AccountLauncher,
     vault: &VaultLauncher,
     invite: &InviteLauncher,
     job: &JobLauncher,
@@ -807,6 +905,16 @@ where
         Some(Command::Init { email }) => {
             tracing::debug!(target: "qfs::cmd", "dispatch init via launcher");
             return init(&InitAction { email });
+        }
+        // `app` / `account` (ADR 0008 §3) dispatch through ONE injected launcher (the binary owns
+        // the vault + consent I/O and the Google consent seam). Returns the exit code.
+        Some(Command::App { verb }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch app via launcher");
+            return account(&app_action(&verb));
+        }
+        Some(Command::Account { verb }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch account via launcher");
+            return account(&account_action_verb(&verb));
         }
         // `vault` (ADR 0008 §5) is dispatched through the injected launcher (the binary owns the
         // slot I/O + the OS-keyring guardian; qfs-cmd stays off both). Returns the exit code.
@@ -1052,6 +1160,36 @@ fn connection_action(verb: &ConnectionVerb) -> ConnectionAction {
 /// Map the clap-parsed [`IdentityVerb`] to the public [`IdentityAction`] handed to the injected
 /// [`IdentityLauncher`]. Pure (handles only); the password is never carried — the launcher reads it
 /// from STDIN, never from argv (which would leak into history / `ps`).
+/// Map the clap-parsed [`AppVerb`] to the public [`AccountAction`] app arms. Pure (selectors
+/// only); credentials never ride argv.
+fn app_action(verb: &AppVerb) -> AccountAction {
+    match verb {
+        AppVerb::Add { provider } => AccountAction::AppAdd {
+            provider: provider.clone(),
+        },
+        AppVerb::List => AccountAction::AppList,
+        AppVerb::Remove { provider } => AccountAction::AppRemove {
+            provider: provider.clone(),
+        },
+    }
+}
+
+/// Map the clap-parsed [`AccountVerb`] to the public [`AccountAction`] account arms. Pure
+/// (selectors/labels only); tokens never ride argv.
+fn account_action_verb(verb: &AccountVerb) -> AccountAction {
+    match verb {
+        AccountVerb::Add { provider, label } => AccountAction::Add {
+            provider: provider.clone(),
+            label: label.clone(),
+        },
+        AccountVerb::List => AccountAction::List,
+        AccountVerb::Remove { provider, label } => AccountAction::Remove {
+            provider: provider.clone(),
+            label: label.clone(),
+        },
+    }
+}
+
 /// Map the clap-parsed [`VaultVerb`] to the public [`VaultAction`] handed to the injected
 /// [`VaultLauncher`]. Pure (selectors only); key material never parses out of argv.
 fn vault_action(verb: &VaultVerb) -> VaultAction {
@@ -1286,6 +1424,12 @@ mod tests {
         14
     }
 
+    /// A stub app/account launcher returning a distinct sentinel, so a test can assert both nouns
+    /// dispatch into the ONE injected launcher (the real vault/consent I/O lives in the binary).
+    fn stub_account(_action: &AccountAction) -> i32 {
+        15
+    }
+
     /// A stub job launcher: echoes a fixed code (the real boot→build→gate→apply path lives in the
     /// binary crate; here we only assert the clap dispatch + request plumbing).
     fn stub_job(_req: &JobRequest) -> i32 {
@@ -1324,12 +1468,69 @@ mod tests {
             &stub_connection,
             &stub_identity,
             &stub_init,
+            &stub_account,
             &stub_vault,
             &stub_invite,
             &stub_job,
             &noop_apply,
             &stub_run_ctx,
         )
+    }
+
+    #[test]
+    fn app_and_account_verbs_dispatch_through_one_launcher() {
+        // ADR 0008 §3: both nouns ride the single injected AccountLauncher; selectors only.
+        let seen: std::cell::RefCell<Vec<AccountAction>> = std::cell::RefCell::new(Vec::new());
+        let launcher = |action: &AccountAction| {
+            seen.borrow_mut().push(action.clone());
+            15
+        };
+        for args in [
+            vec!["qfs", "app", "add", "google"],
+            vec!["qfs", "app", "list"],
+            vec!["qfs", "account", "add", "google", "you@example.com"],
+            vec!["qfs", "account", "list"],
+            vec!["qfs", "account", "remove", "github", "work"],
+        ] {
+            let code = run(
+                args,
+                &noop_shell,
+                &|_cfg| 0,
+                &empty_describe,
+                &stub_skill,
+                &stub_connection,
+                &stub_identity,
+                &stub_init,
+                &launcher,
+                &stub_vault,
+                &stub_invite,
+                &stub_job,
+                &noop_apply,
+                &stub_run_ctx,
+            );
+            assert_eq!(code, 15);
+        }
+        let seen = seen.borrow();
+        assert_eq!(
+            seen[0],
+            AccountAction::AppAdd {
+                provider: "google".into()
+            }
+        );
+        assert_eq!(
+            seen[2],
+            AccountAction::Add {
+                provider: "google".into(),
+                label: Some("you@example.com".into())
+            }
+        );
+        assert_eq!(
+            seen[4],
+            AccountAction::Remove {
+                provider: "github".into(),
+                label: "work".into()
+            }
+        );
     }
 
     #[test]
@@ -1350,6 +1551,7 @@ mod tests {
             &stub_connection,
             &stub_identity,
             &stub_init,
+            &stub_account,
             &launcher,
             &stub_invite,
             &stub_job,
@@ -1392,6 +1594,7 @@ mod tests {
             &stub_connection,
             &stub_identity,
             &stub_init,
+            &stub_account,
             &stub_vault,
             &stub_invite,
             &launcher,
@@ -1424,6 +1627,7 @@ mod tests {
             &stub_connection,
             &stub_identity,
             &stub_init,
+            &stub_account,
             &stub_vault,
             &stub_invite,
             &launcher2,
@@ -1474,6 +1678,7 @@ mod tests {
             &stub_connection,
             &stub_identity,
             &stub_init,
+            &stub_account,
             &stub_vault,
             &stub_invite,
             &stub_job,
@@ -1528,6 +1733,7 @@ mod tests {
             &stub_connection,
             &stub_identity,
             &stub_init,
+            &stub_account,
             &stub_vault,
             &stub_invite,
             &stub_job,
@@ -1637,6 +1843,7 @@ mod tests {
             &stub_connection,
             &stub_identity,
             &launcher,
+            &stub_account,
             &stub_vault,
             &stub_invite,
             &stub_job,
@@ -1723,6 +1930,7 @@ mod tests {
                 &stub_connection,
                 &stub_identity,
                 &stub_init,
+                &stub_account,
                 &stub_vault,
                 &stub_invite,
                 &stub_job,
@@ -1742,6 +1950,7 @@ mod tests {
                 &stub_connection,
                 &stub_identity,
                 &stub_init,
+                &stub_account,
                 &stub_vault,
                 &stub_invite,
                 &stub_job,

@@ -4,8 +4,8 @@ author: a@qmu.jp
 type: enhancement
 layer: [UX, Domain]
 effort:
-commit_hash:
-category: Changed
+commit_hash: 83a37da
+category: Added
 depends_on: [20260702120030-qfs-init-one-operator.md]
 ---
 

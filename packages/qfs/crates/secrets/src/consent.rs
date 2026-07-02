@@ -59,11 +59,11 @@ pub enum ConsentError {
         driver: String,
     },
     /// The operator is signed in, but no consent has been recorded for this `(driver, connection)`.
-    /// Actionable: `qfs connection add <driver> <connection>` to grant consent (and provision the
+    /// Actionable: `qfs account add <provider>` to authorize the account (and provision the
     /// token) before the driver can bind.
     #[error(
         "cloud driver '{driver}' has no recorded consent for connection '{connection}' — run \
-         `qfs connection add {driver} {connection}` to grant access before using it"
+         `qfs account add <provider>` to authorize the account before using it"
     )]
     ConsentRequired {
         /// The cloud driver that was refused (metadata, never a secret).
@@ -168,7 +168,7 @@ mod tests {
         // Names the exact connection that lacks consent + the remedy.
         assert!(err.to_string().contains("gmail"));
         assert!(err.to_string().contains("work"));
-        assert!(err.to_string().contains("connection add"));
+        assert!(err.to_string().contains("account add"));
     }
 
     #[test]
