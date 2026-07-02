@@ -89,6 +89,8 @@ You can re-wrap the store's data-key under a **new** passphrase without re-addin
 printf %s "$NEW_PASSPHRASE" | qfs connection rekey   # old passphrase stops unlocking; logins survive
 ```
 
-See [Connections & credentials](/guide/connections) for the full model (the encrypted store,
-rotating and revoking individual secrets) and [Connect a service](/guide/connect) for the exact
-per-service `connection add` steps once the store is unlocked.
+See [The account model](/guide/account-model) for how the passphrase, the credential store,
+connections, and service accounts fit together; [Connections & credentials](/guide/connections) for
+the full operational model (rotating and revoking individual secrets); and
+[Connect a service](/guide/connect) for the exact per-service `connection add` steps once the store
+is unlocked.

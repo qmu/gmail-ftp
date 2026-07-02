@@ -73,6 +73,7 @@ export default defineConfig({
         text: 'Using qfs',
         items: [
           { text: 'How qfs works', link: '/guide/concepts' },
+          { text: 'The account model', link: '/guide/account-model' },
           { text: 'CLI reference', link: '/guide/cli' },
           { text: 'Interactive shell', link: '/guide/shell' },
           { text: 'Connections & credentials', link: '/guide/connections' },

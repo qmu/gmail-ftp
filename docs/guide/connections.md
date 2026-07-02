@@ -12,7 +12,8 @@ offline. You need one to **read rows** from a source or **commit** a change to i
 ::: tip Just want the steps for one service?
 [Connect a service](/guide/connect) is the per-source how-to (Gmail/Drive, GitHub/Slack, S3/R2,
 SQL/git). This page is the model behind it — the encrypted store, the passphrase, and rotating or
-revoking secrets.
+revoking secrets. For how connections relate to your operator identity and the external service
+accounts, see [The account model](/guide/account-model).
 :::
 
 ## Two kinds of connection

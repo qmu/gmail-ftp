@@ -63,5 +63,7 @@ The single operator is the foundation for teams: invites (`qfs invite create` / 
 people into identities that share connections, and per-operator authorization arrives with that. See
 the [roadmap](/roadmap). Today, one operator per host is the model.
 
-See **[The QFS passphrase](/guide/passphrase)** for the other setup gate, and
-**[Connect a service](/guide/connect)** for the exact per-service steps once you're signed in.
+See **[The QFS passphrase](/guide/passphrase)** for the other setup gate,
+**[The account model](/guide/account-model)** for how the operator identity, connections, and service
+accounts fit together, and **[Connect a service](/guide/connect)** for the exact per-service steps
+once you're signed in.
