@@ -92,8 +92,9 @@ qfs account add <provider> <label>
   (S3/R2), `cf` (local `/sql`/`/git` sources need no account — see above)
 - `<label>` is your name for it — a Google email, or `work`, `personal`, `prod`, …
 
-On a terminal, `qfs account add google` runs the **live browser consent** (register your OAuth app
-first: `cat credentials.json | qfs app add google`). For every other provider — and for automation —
+On a terminal, `qfs account add google` runs the **live paste-back browser consent** — open the
+printed URL in your LOCAL browser, approve, and paste the redirect URL back; it works over plain
+SSH (register your OAuth app first: `cat credentials.json | qfs app add google`). For every other provider — and for automation —
 the credential **value is read from stdin**: pipe it in, never pass it on argv (argv is visible in
 the process table and your shell history). qfs seals the secret and **never prints it back**. The
 account *label* is just metadata (safe to show); the credential itself is write-only from your

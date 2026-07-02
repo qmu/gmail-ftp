@@ -89,7 +89,8 @@ you choose where each path lives:
 qfs init you@example.com                        # ready the machine (once)
 cat credentials.json | qfs app add google       # your OAuth app's client credentials (once)
 
-# Interactive browser consent — one consent covers Gmail, Drive, and Analytics:
+# Paste-back browser consent — open the printed URL in your LOCAL browser, paste the
+# redirect URL back (works over plain SSH); one consent covers Gmail, Drive, and Analytics:
 qfs account add google
 
 qfs connect /mail  --driver gmail  --account you@gmail.com   # mount Gmail at /mail

@@ -94,10 +94,14 @@ fn resolve_store_passphrase(conn: &Connection) -> Result<Secret, String> {
     if let Some(cached) = PROMPTED_PASSPHRASE.get() {
         return Ok(Secret::from(cached.expose().to_vec()));
     }
-    if !crate::tty::is_interactive() {
+    // Gate on the CONTROLLING terminal, not stdin: the pipe-a-secret commands (`app add`,
+    // `account add`) carry the credential on stdin by design, and the prompt below reads the
+    // passphrase from /dev/tty — a piped stdin must not disable it (the v0.0.14 regression).
+    if !crate::tty::can_prompt_secret() {
         return Err(
-            "QFS_PASSPHRASE is not set — export it (or run qfs in a terminal to be \
-                    prompted) to unlock the encrypted credential store"
+            "QFS_PASSPHRASE is not set and no terminal is available to prompt — export it \
+                    (`read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE`) to unlock the encrypted \
+                    credential store"
                 .into(),
         );
     }

@@ -1,7 +1,7 @@
 //! `qfs-google-auth` — the **shared Google OAuth2 + multi-account auth base** (RFD-0001
 //! §5/§10, t19): the substrate the Gmail (t20), Drive (t21), and Analytics (t41) drivers
-//! authenticate through. One Google "Desktop" OAuth client, a loopback consent flow, token
-//! exchange + transparent refresh, per-account refresh-token storage via the t27 credential
+//! authenticate through. One Google "Desktop" OAuth client, a terminal paste-back consent flow,
+//! token exchange + transparent refresh, per-account refresh-token storage via the t27 credential
 //! store, and a reusable authenticated API client — all over the t18 thin HTTP seam, with
 //! **no heavy vendor SDK** (RFD §171, owned DTOs only).
 //!
@@ -12,9 +12,10 @@
 //!   [`OAuthClient::exchange_code`], [`OAuthClient::refresh_access_token`],
 //!   [`OAuthClient::fetch_profile_email`]. **Scope-agnostic**: the consuming driver passes its
 //!   minimum scope set (least privilege).
-//! - [`authorize`] (native-only) — the loopback consent flow: binds `127.0.0.1:0`, advertises
-//!   the redirect URI as **`http://localhost:<port>`** (the load-bearing detail — Desktop
-//!   clients stall on silent consent with the loopback IP), captures `code`, persists the
+//! - [`authorize`] (native-only) — the paste-back consent flow: advertises the redirect URI as
+//!   the portless **`http://localhost`** (host `localhost`, never the loopback IP — the
+//!   load-bearing detail; and NO listener — the user pastes the redirect URL their browser
+//!   lands on back into the terminal), validates `state`, exchanges the `code`, persists the
 //!   refresh token under `google:<email>:refresh_token`.
 //! - [`TokenSource`] + [`StoredTokenSource`] — the reusable bearer provider the drivers depend
 //!   on; loads the refresh token from the store, caches the access token until just before
@@ -78,7 +79,7 @@ pub use http::{
     TransportError, SENSITIVE_HEADERS,
 };
 pub use oauth::{
-    OAuthClient, AUTH_ENDPOINT, LOOPBACK_REDIRECT_HOST, TOKEN_ENDPOINT, USERINFO_ENDPOINT,
+    OAuthClient, AUTH_ENDPOINT, PASTE_REDIRECT_URI, TOKEN_ENDPOINT, USERINFO_ENDPOINT,
 };
 pub use source::{
     decode_account_email, refresh_token_key, BorrowedToken, StoredTokenSource, TokenSource,
@@ -87,7 +88,7 @@ pub use source::{
 pub use token::{AccessToken, Clock, GoogleAccount, ManualClock, SystemClock, DEFAULT_EXPIRY_SKEW};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use authorize::{authorize, ConsentOpener};
+pub use authorize::{authorize, ConsentPrompt};
 
 #[cfg(test)]
 mod tests;

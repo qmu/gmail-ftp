@@ -4,12 +4,13 @@
 //! seam only (`reqwest` stays confined to `qfs-driver-http`, behind the consuming driver's
 //! adapter).
 //!
-//! ## The load-bearing loopback detail (RFD §10, the hard part)
+//! ## The load-bearing redirect detail (RFD §10, the hard part)
 //! The redirect URI host is **`localhost`**, never `127.0.0.1`. Desktop OAuth clients stall on
-//! Google's silent-consent path when the redirect host is the loopback *IP*; advertising
-//! `http://localhost:<port>` (while binding the loopback interface) completes reliably. The
-//! [`OAuthClient::redirect_uri`] helper encodes this, and a unit test asserts the generated
-//! redirect URI / auth URL carry `localhost`, not the IP.
+//! Google's silent-consent path when the redirect host is the loopback *IP*; `http://localhost`
+//! completes reliably. The paste-back flow ([`crate::authorize`]) advertises the portless
+//! [`PASTE_REDIRECT_URI`] — nothing ever listens at it; the user pastes the redirect their
+//! browser lands on back into the terminal — and a unit test asserts the auth URL carries
+//! `localhost`, not the IP.
 //!
 //! ## Secret discipline (RFD §10)
 //! `client_secret`, the authorization `code`, the refresh token, and the minted access token
@@ -34,11 +35,13 @@ pub const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 /// Google's OIDC userinfo endpoint (profile email lookup).
 pub const USERINFO_ENDPOINT: &str = "https://www.googleapis.com/oauth2/v3/userinfo";
 
-/// The loopback redirect **host** — `localhost`, NOT `127.0.0.1`. This is the load-bearing
-/// detail: Desktop OAuth clients stall on silent consent when the redirect host is the
-/// loopback IP, so the advertised redirect URI must use this hostname even though the listener
-/// binds the `127.0.0.1` interface. Pinned as a constant so a test can assert it.
-pub const LOOPBACK_REDIRECT_HOST: &str = "localhost";
+/// The paste-back consent redirect URI — `http://localhost`, portless, with NO listener behind
+/// it. The host is `localhost`, NOT `127.0.0.1` (the load-bearing detail: Desktop OAuth clients
+/// stall on silent consent when the redirect host is the loopback IP). The user's browser lands
+/// on this URL after approving — it fails to load, by design — and the user pastes it back into
+/// the terminal. The token exchange must send this SAME value as `redirect_uri` (Google checks
+/// equality, not reachability). Pinned as a constant so a test can assert it.
+pub const PASTE_REDIRECT_URI: &str = "http://localhost";
 
 /// The thin Google OAuth2 endpoints client. Holds the desktop client credentials and the
 /// caller-supplied scope set (this crate is **scope-agnostic** — Gmail/Drive/Analytics each
@@ -94,22 +97,14 @@ impl OAuthClient {
         &self.client_id
     }
 
-    /// The advertised loopback redirect URI for `port` — host **`localhost`** (never the
-    /// loopback IP; see the module docs). This is the exact string sent as `redirect_uri` in
-    /// the auth URL and the token exchange; the two must match for Google to accept the code.
-    #[must_use]
-    pub fn redirect_uri(port: u16) -> String {
-        format!("http://{LOOPBACK_REDIRECT_HOST}:{port}")
-    }
-
-    /// Build the consent/authorization URL for the loopback flow. Sets
+    /// Build the consent/authorization URL for the paste-back flow. Sets
     /// `access_type=offline` + `prompt=consent` so Google **reliably** returns a refresh token
     /// (it otherwise omits it on re-consent), `include_granted_scopes=true` so a later consent
     /// **accumulates** onto scopes the user already granted this client (Google's incremental
     /// authorization) instead of replacing them — the single shared `google:<email>:refresh_token`
     /// then covers gmail + drive + analytics even when each driver consents with its own narrow
-    /// scope set — and threads `state` (CSRF) and the `redirect_uri` (loopback `localhost`). The
-    /// user opens this URL; on approval Google redirects to `redirect_uri?code=...&state=...`.
+    /// scope set — and threads `state` (CSRF) and the `redirect_uri` ([`PASTE_REDIRECT_URI`]).
+    /// The user opens this URL; on approval Google redirects to `redirect_uri?code=...&state=...`.
     ///
     /// # Errors
     /// [`AuthError::Invalid`] if the base auth endpoint cannot be parsed as a URL.
@@ -129,10 +124,10 @@ impl OAuthClient {
         Ok(url.into())
     }
 
-    /// Exchange an authorization `code` (from the loopback redirect) for tokens, returning the
+    /// Exchange an authorization `code` (from the pasted redirect) for tokens, returning the
     /// minted [`AccessToken`] and the long-lived refresh token. `redirect_uri` must equal the
-    /// one in the auth URL (the loopback `localhost:<port>`). `now_nanos` anchors expiry on the
-    /// caller's clock timeline.
+    /// one in the auth URL ([`PASTE_REDIRECT_URI`]). `now_nanos` anchors expiry on the caller's
+    /// clock timeline.
     ///
     /// # Errors
     /// - [`AuthError::Network`] on transport failure.

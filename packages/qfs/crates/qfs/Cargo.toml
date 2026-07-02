@@ -1,6 +1,6 @@
 [package]
 name = "qfs"
-version = "0.0.14"
+version = "0.0.15"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -241,6 +241,10 @@ keyring = { version = "3", default-features = false, features = ["apple-native",
 # never touches it and keeps the stdin/env path. rpassword handles terminal-state + signal restore
 # (safer than a hand-rolled termios dance); it wraps the libc already in our tree.
 rpassword = "7"
+# The paste-back Google consent (src/tty.rs): the OSC 52 clipboard escape carries the consent URL
+# to the user's LOCAL terminal clipboard base64-encoded — the one copy channel that works across
+# SSH (shelling out to xclip/pbcopy would target this host, not the user's machine).
+base64 = "0.22"
 
 [dev-dependencies]
 # Temp-dir fixtures for the shell's end-to-end local read tests (never touches user files).

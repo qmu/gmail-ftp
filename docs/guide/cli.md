@@ -107,11 +107,13 @@ qfs app remove google    # account tokens stay
 ## `qfs account` — service accounts
 
 Authorize an external account (providers: `google`, `github`, `slack`, `objstore`, `cf`). On a
-terminal `qfs account add google` runs the live browser consent; automation pipes the token on
-**stdin**, never argv:
+terminal `qfs account add google` runs the live paste-back browser consent — open the printed URL
+in your **local** browser, approve, and paste the `http://localhost/...` redirect URL back (works
+over plain SSH; no listener, no port-forward); automation pipes the token on **stdin**, never
+argv:
 
 ```sh
-qfs account add google                                        # browser consent on a TTY
+qfs account add google                                        # paste-back browser consent on a TTY
 printf %s "$REFRESH_TOKEN" | qfs account add google you@gmail.com   # automation; email = label
 printf %s "$GH_TOKEN" | qfs account add github work
 qfs account list                          # labels + metadata only, never tokens

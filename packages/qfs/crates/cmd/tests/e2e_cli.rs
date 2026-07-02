@@ -719,6 +719,146 @@ fn tty_default_is_table_via_pty() {
     );
 }
 
+#[test]
+fn piped_stdin_secret_entry_prompts_passphrase_on_dev_tty() {
+    // The v0.0.14 first-run regression: `cat credentials.json | qfs app add google` on a terminal
+    // refused to prompt for the passphrase because the gate keyed off stdin — which carries the
+    // piped CREDENTIAL by design. The passphrase prompt reads /dev/tty (rpassword's default), so
+    // with a controlling pty it must prompt and seal, even with a pipe on stdin.
+    //
+    // Harness: util-linux `script -qec` gives the child a controlling pty; `script`'s OWN stdin is
+    // forwarded to that pty, so the passphrase entries ("pp\npp\n" — choose + confirm on a fresh
+    // store) arrive on /dev/tty while the app credentials arrive on the child's piped stdin.
+    let Ok(script) = which("script") else {
+        eprintln!("SKIP piped_stdin_secret_entry: `script` (util-linux) not on PATH");
+        return;
+    };
+    let bsd_script = Command::new(&script)
+        .args(["-qec", "true", "/dev/null"])
+        .output()
+        .map(|p| {
+            let err = String::from_utf8_lossy(&p.stderr);
+            err.contains("illegal option") || err.contains("usage:")
+        })
+        .unwrap_or(true);
+    if bsd_script {
+        eprintln!("SKIP piped_stdin_secret_entry: `script` is BSD/macOS (no util-linux -c)");
+        return;
+    }
+
+    // A FRESH config home dedicated to this test (the store is created by the prompt itself).
+    let home = std::env::temp_dir().join(format!("qfs-e2e-ptyhome-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create pty test home");
+
+    // Inside the pty: sign up the operator (init reads the passphrase from the SAME pty), then
+    // pipe app credentials into `app add google` with QFS_PASSPHRASE deliberately unset.
+    let cmd = format!(
+        "unset QFS_PASSPHRASE; export XDG_CONFIG_HOME={home}; \
+         {qfs} init op@example.com && \
+         printf %s '{{\"client_id\":\"id.example\",\"client_secret\":\"s3cr3t\"}}' \
+           | {qfs} app add google",
+        home = home.display(),
+        qfs = qfs_bin().display(),
+    );
+    let mut child = Command::new(script)
+        .args(["-qec", &cmd, "/dev/null"])
+        .env("RUST_LOG", "off")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn script");
+    // Four entries arrive on the pty: init's choose+confirm, then app add's unlock prompt reuses
+    // the store (fresh process → prompts once). Feed generously; extra lines are harmless.
+    child
+        .stdin
+        .take()
+        .expect("script stdin")
+        .write_all(b"pty-pass\npty-pass\npty-pass\n")
+        .expect("feed passphrase entries");
+    let out = child.wait_with_output().expect("wait script");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("registered the google OAuth app"),
+        "piped-stdin `app add google` must prompt on /dev/tty and seal the app credentials; \
+         transcript:\n{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn paste_back_consent_prints_url_and_rejects_wrong_state_before_exchange() {
+    // The paste-back Google consent (20260703030000): over a pty, `qfs account add google`
+    // prints the consent URL (NO listener is bound — the flow works over plain SSH), reads the
+    // pasted redirect from /dev/tty, and rejects a wrong `state` BEFORE any token exchange.
+    // Hermetic: the flow dies at the CSRF check, so no network is ever touched.
+    let Ok(script) = which("script") else {
+        eprintln!("SKIP paste_back_consent: `script` (util-linux) not on PATH");
+        return;
+    };
+    let bsd_script = Command::new(&script)
+        .args(["-qec", "true", "/dev/null"])
+        .output()
+        .map(|p| {
+            let err = String::from_utf8_lossy(&p.stderr);
+            err.contains("illegal option") || err.contains("usage:")
+        })
+        .unwrap_or(true);
+    if bsd_script {
+        eprintln!("SKIP paste_back_consent: `script` is BSD/macOS (no util-linux -c)");
+        return;
+    }
+
+    // A FRESH config home; the passphrase and the OAuth app come from env so the only pty
+    // reads are the consent interaction's own (the copy/open choice + the paste).
+    let home = std::env::temp_dir().join(format!("qfs-e2e-consenthome-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create consent test home");
+    let cmd = format!(
+        "export XDG_CONFIG_HOME={home} QFS_PASSPHRASE=pty-pass \
+           QFS_GOOGLE_CLIENT_ID=id.example QFS_GOOGLE_CLIENT_SECRET=s3cr3t; \
+         {qfs} init op@example.com && {qfs} account add google",
+        home = home.display(),
+        qfs = qfs_bin().display(),
+    );
+    let mut child = Command::new(script)
+        .args(["-qec", &cmd, "/dev/null"])
+        .env("RUST_LOG", "off")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn script");
+    // Two answers arrive on the pty: plain Enter for the copy/open choice (manual copy), then a
+    // pasted redirect whose state can never match the fresh one the flow just generated.
+    child
+        .stdin
+        .take()
+        .expect("script stdin")
+        .write_all(b"\nhttp://localhost/?state=WRONG&code=SOMECODE\n")
+        .expect("feed consent answers");
+    let out = child.wait_with_output().expect("wait script");
+    let transcript = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        transcript.contains("accounts.google.com/o/oauth2/v2/auth"),
+        "the consent URL must be printed for the user's LOCAL browser; transcript:\n{transcript}"
+    );
+    assert!(
+        transcript.contains("state mismatch"),
+        "a wrong-state paste must be rejected before any exchange; transcript:\n{transcript}"
+    );
+    assert!(
+        !transcript.contains("authorized google account"),
+        "a rejected paste must never authorize; transcript:\n{transcript}"
+    );
+    assert!(
+        !out.status.success(),
+        "the rejected consent must exit non-zero"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// Resolve an executable on PATH (tiny `which`, no extra dep).
 fn which(bin: &str) -> Result<std::path::PathBuf, ()> {
     let path = std::env::var_os("PATH").ok_or(())?;

@@ -500,8 +500,9 @@ enum Command {
         #[command(subcommand)]
         verb: AppVerb,
     },
-    /// Manage service accounts (ADR 0008): authorize an external account (browser consent on a
-    /// terminal; a piped token in automation), list them, or remove one with its consent.
+    /// Manage service accounts (ADR 0008): authorize an external account (paste-back browser
+    /// consent on a terminal; a piped token in automation), list them, or remove one with its
+    /// consent.
     Account {
         #[command(subcommand)]
         verb: AccountVerb,
@@ -627,8 +628,9 @@ enum AppVerb {
 /// [`AccountLauncher`]; tokens arrive on stdin or an echo-off prompt, never argv.
 #[derive(Subcommand, Debug)]
 enum AccountVerb {
-    /// Authorize an account: `qfs account add google` (browser consent on a terminal), or pipe a
-    /// token — `printf %s "$REFRESH_TOKEN" | qfs account add google you@example.com`.
+    /// Authorize an account: `qfs account add google` (paste-back browser consent on a terminal
+    /// — authorize in your LOCAL browser, paste the redirect URL back; works over plain SSH), or
+    /// pipe a token — `printf %s "$REFRESH_TOKEN" | qfs account add google you@example.com`.
     Add {
         /// The cloud provider (`google`, `github`, `slack`, `objstore`, `cf`).
         provider: String,

@@ -252,7 +252,8 @@ account, mount the path:
 qfs init you@example.com                     # once per machine: create the encrypted vault
                                              # (choosing its passphrase) + register the operator
 cat credentials.json | qfs app add google    # your Google OAuth app's client credentials
-qfs account add google                       # browser consent; the token is sealed, never printed
+qfs account add google                       # paste-back browser consent; the token is sealed,
+                                             # never printed (see the Gmail cookbook Setup)
 qfs connect /mail --driver gmail --account you@gmail.com   # /mail now exists
 qfs run "/mail/inbox |> select date, subject"              # real messages
 ```
@@ -264,6 +265,14 @@ process table + shell history) and mount it the same way:
 printf %s "$GH_TOKEN" | qfs account add github work   # credential VALUE via stdin
 qfs connect /github --driver github --account work
 qfs account list                                      # labels + metadata only, never secrets
+```
+
+On a terminal, each command prompts for the vault passphrase (the one you chose at `qfs init`) on
+the controlling terminal — piping a secret on stdin does not disable the prompt. With **no**
+terminal (cron, CI, a non-interactive SSH command), export the passphrase for the session instead:
+
+```sh
+read -rs QFS_PASSPHRASE && export QFS_PASSPHRASE
 ```
 
 See [Connect a service](/guide/connect) for the exact steps per source (Gmail/Drive, GitHub/Slack,

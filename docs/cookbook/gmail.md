@@ -70,7 +70,7 @@ You connect Gmail once. The happy path is four commands:
 ```sh
 qfs init you@example.com                                   # 1. the operator + the vault
 cat credentials.json | qfs app add google                  # 2. your OAuth app
-qfs account add google                                     # 3. authorize (browser consent)
+qfs account add google                                     # 3. authorize (paste-back consent)
 qfs connect /mail --driver gmail --account you@gmail.com   # 4. mount it at /mail
 ```
 
@@ -111,8 +111,13 @@ CI and agents can instead export `QFS_GOOGLE_CLIENT_ID` and `QFS_GOOGLE_CLIENT_S
 Pick **one** path. Either way, **one authorization serves Gmail, Google Drive, and Google
 Analytics** — the account is stored once, under your email as its label.
 
-**A — Fresh browser consent (recommended).** On a terminal, one command opens a Google consent
-screen; approve it and qfs seals the refresh token and records your consent:
+**A — Fresh browser consent (recommended).** On a terminal, one command prints a Google consent
+URL. Open it in your **local** browser (press `c` to copy it to your local clipboard — this works
+across SSH and tmux), approve, and your browser lands on a `http://localhost/...` URL that fails
+to load — that's expected: nothing listens there. Paste that entire URL (or just its `code=`
+value) back into the terminal, and qfs seals the refresh token and records your consent. Because
+the redirect never needs to reach the qfs host, this works the same on your laptop or over plain
+SSH — no port-forward:
 
 ```sh
 qfs account add google

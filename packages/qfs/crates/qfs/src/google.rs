@@ -34,14 +34,14 @@
 //! N mounts. [`GOOGLE_ACCOUNT_ENV`] survives only as the explicit CI/agent override.
 //!
 //! ## The live consent flow is a documented SEAM
-//! [`run_google_consent`] wires the real `qfs_google_auth::authorize` loopback browser flow (build
-//! auth URL → open consent → capture the redirect code → exchange → persist the refresh token). The
-//! browser open + the human approval are interactive and **not hermetically testable**, so this is
-//! plumbing wired but left a documented seam — it is reached only from the opt-in
-//! `QFS_GOOGLE_CONSENT` path in [`crate::connection`], never from a tested code path.
+//! [`run_google_consent`] wires the real `qfs_google_auth::authorize` paste-back consent flow
+//! (build the auth URL → show it, with `c` = OSC 52 copy-across-SSH and `o` = open a local
+//! browser → read the pasted redirect URL back from the controlling terminal → validate `state`
+//! → exchange → persist the refresh token). The browser approval + the paste are human acts and
+//! **not hermetically testable** here; the machinery around them is tested in `qfs-google-auth`
+//! (a scripted [`qfs_google_auth::ConsentPrompt`]) and `crate::tty` (the OSC 52 escape shape).
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use qfs_google_auth::{AuthError, GoogleApiClient, OAuthClient, StoredTokenSource, TokenSource};
 use qfs_secrets::{EnvStore, Secret, Secrets};
@@ -57,10 +57,6 @@ pub const GOOGLE_CLIENT_SECRET_ENV: &str = "QFS_GOOGLE_CLIENT_SECRET";
 /// off the mount's `path_binding.account`; there is no selection state). Checked before the mount,
 /// only when set and non-empty.
 pub const GOOGLE_ACCOUNT_ENV: &str = "QFS_GOOGLE_ACCOUNT";
-/// How long the loopback consent listener waits for the redirect before giving up. A human who
-/// never approves yields a timeout rather than hanging forever.
-const CONSENT_TIMEOUT: Duration = Duration::from_secs(180);
-
 /// The composed, account-bound Google API client the three driver clients share. Built once per
 /// commit from the resolved app config + account email; cloned (`Arc`) into the gmail/drive/ga
 /// clients so one transport + one token cache serves the whole Google stack.
@@ -219,25 +215,29 @@ pub fn google_stack_for_account(email: &str) -> Option<GoogleStack> {
     Some(GoogleStack { api })
 }
 
-/// **Documented SEAM — the live loopback browser consent flow.** Run `qfs_google_auth::authorize`
-/// for `driver`: build the OAuth client over the real transport + the supplied store, advertise the
-/// `http://localhost:<port>` loopback redirect, open the consent URL, capture the redirect code,
-/// exchange it for tokens, and persist the refresh token under `google:<email>:refresh_token`
-/// (shared across gmail/gdrive/ga). Returns the authorized account email.
+/// **Documented SEAM — the live paste-back browser consent flow.** Run
+/// `qfs_google_auth::authorize`: build the OAuth client over the real transport + the supplied
+/// store, build the consent URL with the portless `http://localhost` redirect (no listener —
+/// the user authorizes in their LOCAL browser, even over plain SSH, and pastes the redirect URL
+/// back), validate `state`, exchange the code, and persist the refresh token under
+/// `google:<email>:refresh_token` (shared across gmail/gdrive/ga). Returns the authorized
+/// account email.
 ///
-/// The browser open + the human approval are interactive and **not hermetically testable**, so this
-/// is plumbing wired but never exercised by a test: it is reached only from the opt-in
-/// `QFS_GOOGLE_CONSENT` branch in [`crate::connection`]. The default `qfs account add` path still
-/// provisions a refresh token out of band (from stdin), so green never depends on this round-trip.
+/// The browser approval + the paste are human acts and **not hermetically testable** here: the
+/// flow machinery is tested in `qfs-google-auth` behind a scripted prompt, and the terminal
+/// interaction lives in [`crate::tty::consent_paste_prompt`]. The `qfs account add google` path
+/// with a piped stdin still provisions a refresh token out of band, so green never depends on
+/// this round-trip.
 ///
 /// # Errors
-/// [`AuthError`] if the OAuth app credentials are absent, or for any step of the flow (bind, build
-/// URL, denied/timeout, token exchange, profile lookup, store).
+/// [`AuthError`] if the OAuth app credentials are absent, or for any step of the flow (build
+/// URL, nothing pasted, denied, state mismatch, token exchange, profile lookup, store).
 pub fn run_google_consent(store: Arc<dyn Secrets>) -> Result<String, AuthError> {
     let (client_id, client_secret) = google_app_config().ok_or_else(|| AuthError::Invalid {
         reason: format!(
-            "{GOOGLE_CLIENT_ID_ENV} / {GOOGLE_CLIENT_SECRET_ENV} must be set to a registered \
-             Google Desktop OAuth app before running consent"
+            "no Google OAuth app is registered — `cat credentials.json | qfs app add google` \
+             (or set {GOOGLE_CLIENT_ID_ENV} / {GOOGLE_CLIENT_SECRET_ENV}) before authorizing an \
+             account"
         ),
     })?;
     let oauth = OAuthClient::new(
@@ -246,14 +246,12 @@ pub fn run_google_consent(store: Arc<dyn Secrets>) -> Result<String, AuthError> 
         all_google_scopes(),
         crate::transport::google_transport(),
     );
-    // The CLI prints the consent URL; the human opens it and approves. (A headless caller could
-    // inject an opener that drives the redirect — the test seam — but the live flow is interactive.)
-    let opener: Box<qfs_google_auth::ConsentOpener> = Box::new(|url: &str| {
-        println!("Open this URL to authorize qfs, then return to the terminal:\n{url}");
-        Ok(())
+    // The terminal interaction (print the URL, OSC 52 copy, read the pasted redirect from the
+    // controlling terminal) lives in crate::tty; a test injects a scripted prompt instead.
+    let prompt: Box<qfs_google_auth::ConsentPrompt> = Box::new(|url: &str| {
+        crate::tty::consent_paste_prompt(url).map_err(|reason| AuthError::Invalid { reason })
     });
-    let account =
-        qfs_google_auth::authorize(&oauth, &store, &*opener, now_nanos(), CONSENT_TIMEOUT)?;
+    let account = qfs_google_auth::authorize(&oauth, &store, &*prompt, now_nanos())?;
     Ok(account.email)
 }
 
