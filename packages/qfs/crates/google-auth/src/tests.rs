@@ -46,33 +46,32 @@ fn oauth_with(mock: MockExchange, scopes: Vec<String>) -> (OAuthClient, Arc<Mock
 
 // ---- Auth URL / redirect-uri shape (the localhost gotcha) -------------------------------
 
-/// THE load-bearing detail: the advertised redirect URI host is `localhost`, NOT `127.0.0.1`.
+/// THE load-bearing detail: the paste-back redirect URI is the portless `http://localhost`,
+/// NOT `127.0.0.1` (silent-consent stall) and NOT port-qualified (no listener exists).
 #[test]
-fn redirect_uri_host_is_localhost_not_ip() {
-    let uri = OAuthClient::redirect_uri(54321);
-    assert_eq!(uri, "http://localhost:54321");
-    assert!(uri.contains("localhost"));
+fn paste_redirect_uri_is_portless_localhost_not_ip() {
+    assert_eq!(PASTE_REDIRECT_URI, "http://localhost");
     assert!(
-        !uri.contains("127.0.0.1"),
-        "redirect URI must not use the loopback IP (silent-consent stall): {uri}"
+        !PASTE_REDIRECT_URI.contains("127.0.0.1"),
+        "redirect URI must not use the loopback IP (silent-consent stall): {PASTE_REDIRECT_URI}"
     );
-    assert_eq!(LOOPBACK_REDIRECT_HOST, "localhost");
 }
 
-/// The auth URL carries the loopback `localhost` redirect, the offline/consent params that
-/// guarantee a refresh token, the caller's scopes, and the state.
+/// The auth URL carries the portless `localhost` paste-back redirect, the offline/consent
+/// params that guarantee a refresh token, the caller's scopes, and the state.
 #[test]
 fn auth_url_carries_localhost_offline_consent_and_scopes() {
     let (oauth, _mock) = oauth_with(
         MockExchange::new(),
         vec!["https://www.googleapis.com/auth/gmail.readonly".to_string()],
     );
-    let redirect = OAuthClient::redirect_uri(40000);
-    let url = oauth.build_auth_url(&redirect, "STATE-XYZ").unwrap();
+    let url = oauth
+        .build_auth_url(PASTE_REDIRECT_URI, "STATE-XYZ")
+        .unwrap();
 
     assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
-    // Redirect uses localhost, not the IP — assert on the encoded form.
-    assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A40000"));
+    // Redirect uses portless localhost, not the IP — assert on the encoded form.
+    assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost&"));
     assert!(!url.contains("127.0.0.1"));
     assert!(url.contains("access_type=offline"));
     assert!(url.contains("prompt=consent"));
@@ -97,9 +96,10 @@ fn exchange_code_posts_correct_form_and_captures_tokens() {
         3600,
     )));
     let (oauth, mock) = oauth_with(mock, vec!["scope.a".to_string()]);
-    let redirect = OAuthClient::redirect_uri(8080);
 
-    let (access, refresh) = oauth.exchange_code("auth-code-123", &redirect, 0).unwrap();
+    let (access, refresh) = oauth
+        .exchange_code("auth-code-123", PASTE_REDIRECT_URI, 0)
+        .unwrap();
     assert_eq!(access.bearer(), Some("access-AAA"));
     assert_eq!(refresh.expose_str(), Some("refresh-RRR"));
 
@@ -115,7 +115,7 @@ fn exchange_code_posts_correct_form_and_captures_tokens() {
     let body = String::from_utf8(req.body.clone().unwrap()).unwrap();
     assert!(body.contains("grant_type=authorization_code"));
     assert!(body.contains("code=auth-code-123"));
-    assert!(body.contains("redirect_uri=http%3A%2F%2Flocalhost%3A8080"));
+    assert!(body.contains("redirect_uri=http%3A%2F%2Flocalhost"));
     assert!(body.contains("client_id=client-id-123"));
     // The client_secret IS sent on the wire (correct) ...
     assert!(body.contains("client_secret="));
@@ -127,9 +127,7 @@ fn exchange_code_posts_correct_form_and_captures_tokens() {
 fn exchange_without_refresh_token_is_invalid() {
     let mock = MockExchange::new().with_response(ok_json(token_body("access-AAA", None, 3600)));
     let (oauth, _mock) = oauth_with(mock, vec![]);
-    let err = oauth
-        .exchange_code("c", &OAuthClient::redirect_uri(1), 0)
-        .unwrap_err();
+    let err = oauth.exchange_code("c", PASTE_REDIRECT_URI, 0).unwrap_err();
     assert_eq!(err.code(), "auth_invalid");
 }
 
@@ -405,9 +403,7 @@ fn scopes_are_caller_supplied_and_flow_into_the_auth_url() {
     ];
     let (oauth, _m) = oauth_with(MockExchange::new(), gmail_scopes.clone());
     assert_eq!(oauth.scopes(), gmail_scopes.as_slice());
-    let url = oauth
-        .build_auth_url(&OAuthClient::redirect_uri(1), "s")
-        .unwrap();
+    let url = oauth.build_auth_url(PASTE_REDIRECT_URI, "s").unwrap();
     assert!(url.contains("gmail.readonly"));
     assert!(url.contains("gmail.send"));
 
@@ -426,26 +422,95 @@ fn scopes_are_caller_supplied_and_flow_into_the_auth_url() {
     assert_eq!(deny.code(), "scope_denied");
 }
 
-// ---- Redirect parsing / state validation (models the interactive consent) ---------------
+// ---- Pasted-redirect parsing / state validation (models the interactive consent) --------
 
-/// A valid redirect with a matching state yields the code; a mismatched state is rejected
-/// (CSRF guard); a denial is a typed Denied.
+/// The pasted full redirect URL with a matching state yields the code; a wrong OR missing
+/// state is rejected before any exchange (CSRF guard); a denial is a typed Denied; a bare
+/// pasted code is accepted as-is; an empty paste is a typed Invalid.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn redirect_parsing_validates_state_and_extracts_code() {
-    use crate::authorize::parse_redirect_request;
-    let req = "GET /?code=THE-CODE&state=GOOD HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    assert_eq!(parse_redirect_request(req, "GOOD").unwrap(), "THE-CODE");
+fn pasted_redirect_validates_state_and_extracts_code() {
+    use crate::authorize::code_from_pasted_redirect;
+
+    // The full redirect URL the browser lands on (with surrounding whitespace from the paste).
+    let url = "  http://localhost/?state=GOOD&code=THE-CODE \n";
+    assert_eq!(code_from_pasted_redirect(url, "GOOD").unwrap(), "THE-CODE");
 
     // Wrong state -> StateMismatch, code never returned.
-    let err = parse_redirect_request(req, "EXPECTED-OTHER").unwrap_err();
+    let err = code_from_pasted_redirect(url, "EXPECTED-OTHER").unwrap_err();
     assert_eq!(err.code(), "auth_state_mismatch");
 
-    // User declined -> Denied.
-    let denied = "GET /?error=access_denied&state=GOOD HTTP/1.1\r\n\r\n";
+    // A URL carrying a code but NO state at all is rejected the same way.
+    let stateless = "http://localhost/?code=THE-CODE";
     assert_eq!(
-        parse_redirect_request(denied, "GOOD").unwrap_err().code(),
+        code_from_pasted_redirect(stateless, "GOOD")
+            .unwrap_err()
+            .code(),
+        "auth_state_mismatch"
+    );
+
+    // User declined -> Denied.
+    let denied = "http://localhost/?error=access_denied&state=GOOD";
+    assert_eq!(
+        code_from_pasted_redirect(denied, "GOOD")
+            .unwrap_err()
+            .code(),
         "auth_denied"
+    );
+
+    // The bare code= value (not a URL) is accepted as-is, trimmed.
+    assert_eq!(
+        code_from_pasted_redirect(" 4/0AbCdEfG \n", "GOOD").unwrap(),
+        "4/0AbCdEfG"
+    );
+
+    // An empty paste is a typed Invalid, never an exchange attempt.
+    assert_eq!(
+        code_from_pasted_redirect("   \n", "GOOD")
+            .unwrap_err()
+            .code(),
+        "auth_invalid"
+    );
+}
+
+/// The whole paste-back authorize flow, hermetically: the injected prompt plays the human —
+/// it reads the `state` out of the consent URL and answers with the redirect URL a browser
+/// would land on — and the flow exchanges the code, keys the account by the profile email,
+/// and persists the refresh token under `google:<email>:refresh_token`.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn paste_back_authorize_persists_the_refresh_token_under_the_profile_email() {
+    let mock = MockExchange::new()
+        .with_response(ok_json(token_body("access-AAA", Some("refresh-RRR"), 3600)))
+        .with_response(ok_json(userinfo_body("alice@example.com")));
+    let (oauth, mock) = oauth_with(mock, vec!["scope.a".to_string()]);
+    let store: Arc<dyn Secrets> = Arc::new(InMemoryStore::new());
+
+    let prompt: Box<ConsentPrompt> = Box::new(|auth_url: &str| {
+        // The scripted human: approve in a browser, land on the redirect, paste it back.
+        let url = url::Url::parse(auth_url).unwrap();
+        let state = url
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .map(|(_, v)| v.into_owned())
+            .unwrap();
+        Ok(format!("http://localhost/?state={state}&code=AUTH-CODE"))
+    });
+
+    let account = authorize(&oauth, &store, &*prompt, 0).unwrap();
+    assert_eq!(account.email, "alice@example.com");
+
+    // The exchange carried the pasted code and the SAME portless redirect_uri as the auth URL.
+    let body = String::from_utf8(mock.recorded()[0].body.clone().unwrap()).unwrap();
+    assert!(body.contains("code=AUTH-CODE"));
+    assert!(body.contains("redirect_uri=http%3A%2F%2Flocalhost"));
+
+    // The refresh token is persisted under the profile-email account key.
+    let key = refresh_token_key("alice@example.com").unwrap();
+    assert_eq!(
+        store.get(&key).unwrap().expose_str(),
+        Some("refresh-RRR"),
+        "the refresh token must be sealed under google:<email>:refresh_token"
     );
 }
 

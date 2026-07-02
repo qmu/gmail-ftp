@@ -1,91 +1,77 @@
-//! The interactive **loopback authorization** flow (RFD-0001 §10) — native-only.
+//! The interactive **paste-back authorization** flow (RFD-0001 §10) — native-only.
 //!
-//! `authorize` runs the OAuth2 desktop-app consent flow: it binds an ephemeral loopback
-//! [`TcpListener`] on `127.0.0.1:0`, derives the bound port, advertises the redirect URI as
-//! **`http://localhost:<port>`** (the load-bearing `localhost`-not-`127.0.0.1` detail — see
-//! [`crate::oauth`]), opens the consent URL, serves exactly one redirect request, validates
-//! `state`, extracts `code`, exchanges it for tokens, looks up the profile email, persists the
-//! refresh token under `google:<email>:refresh_token`, and returns the [`GoogleAccount`].
+//! `authorize` runs the OAuth2 desktop-app consent flow entirely over the terminal, the way
+//! gmail-ftp does: build the consent URL with `redirect_uri=http://localhost` (no port — and
+//! **no listener**), show it to the human, let them approve in **any** browser (their laptop's,
+//! over SSH — the redirect never needs to reach this host), then read back the
+//! `http://localhost/?state=…&code=…` URL their browser lands on (or the bare `code=` value),
+//! validate `state`, exchange the code for tokens, look up the profile email, persist the
+//! refresh token under `google:<email>:refresh_token`, and return the [`GoogleAccount`].
+//!
+//! ## Why paste-back, not a loopback listener
+//! A loopback `TcpListener` can only receive the redirect when the approving browser runs on
+//! THIS host. The primary qfs environment is SSH-to-a-server: the browser is on the user's own
+//! machine, its `http://localhost/...` redirect lands on *their* loopback, and no listener here
+//! ever sees it. Paste-back works in both worlds — Google checks that the token request's
+//! `redirect_uri` EQUALS the consent URL's, not that anything answered at it — so it is THE
+//! flow, with no listener variant to fall back to.
 //!
 //! ## wasm note
-//! This whole module is `cfg(not(target_arch = "wasm32"))`: Workers have no loopback listener
-//! and provision refresh tokens out of band, using only [`crate::source::StoredTokenSource`].
-//! Keeping `authorize` feature-gated lets the refresh-only path compile to `wasm32`.
+//! This whole module is `cfg(not(target_arch = "wasm32"))`: Workers provision refresh tokens
+//! out of band, using only [`crate::source::StoredTokenSource`]. Keeping `authorize`
+//! feature-gated lets the refresh-only path compile to `wasm32`.
 //!
 //! ## Consent itself is interactive
-//! Opening the browser + the human approving is interactive and out of scope for automated
-//! tests; the pieces *around* it — auth-URL shape, redirect parsing, `state` validation, token
-//! exchange, profile keying, refresh-token persistence — are the non-interactive machinery the
-//! test suite exercises against a mock HTTP client. [`parse_redirect_request`] and
-//! [`new_state`] are exposed (crate-internal) so those tests cover the listener's parsing
-//! without standing up a socket.
+//! Approving in a browser and pasting the redirect back is a human act, out of scope for
+//! automated tests; everything *around* it — auth-URL shape, pasted-input parsing, `state`
+//! validation, token exchange, profile keying, refresh-token persistence — is exercised
+//! hermetically by injecting a [`ConsentPrompt`] that answers with a scripted paste.
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::sync::Arc;
-use std::time::Duration;
 
 use qfs_secrets::Secrets;
 
 use crate::error::AuthError;
-use crate::oauth::OAuthClient;
+use crate::oauth::{OAuthClient, PASTE_REDIRECT_URI};
 use crate::source::refresh_token_key;
 use crate::token::GoogleAccount;
 
-/// The "you may close this tab" page served back to the browser after the redirect is captured.
-const SUCCESS_PAGE: &str =
-    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n\
-     <html><body><h2>Authorization complete</h2>\
-     <p>You may close this tab and return to the terminal.</p></body></html>";
+/// The interaction seam: present the consent URL to the human and return the line they paste
+/// back — the full `http://localhost/?state=…&code=…` redirect URL or the bare `code=` value.
+/// The CLI implements this over the controlling terminal; a test injects a scripted answer.
+pub type ConsentPrompt = dyn Fn(&str) -> Result<String, AuthError> + Send + Sync;
 
-/// How a consent URL is shown to the user. The default opens nothing automatically (the CLI
-/// prints the URL); a test/headless caller injects a closure that drives the redirect.
-pub type ConsentOpener = dyn Fn(&str) -> Result<(), AuthError> + Send + Sync;
-
-/// Run the full loopback authorization flow and persist the resulting refresh token.
+/// Run the full paste-back authorization flow and persist the resulting refresh token.
 ///
-/// Steps: bind loopback → advertise `http://localhost:<port>` → build the auth URL with a fresh
-/// `state` → invoke `open_consent` (prints/opens the URL) → accept one redirect → validate
-/// `state` → extract `code` → exchange for tokens → fetch the profile email → persist the
-/// refresh token under `google:<email>:refresh_token` → return the [`GoogleAccount`].
+/// Steps: build the auth URL with `redirect_uri=http://localhost` + a fresh `state` → invoke
+/// `prompt` (shows the URL, returns the pasted redirect) → validate `state` → extract `code` →
+/// exchange for tokens → fetch the profile email → persist the refresh token under
+/// `google:<email>:refresh_token` → return the [`GoogleAccount`].
 ///
-/// `timeout` bounds the wait for the redirect (a human who never approves yields
-/// [`AuthError::Timeout`] rather than hanging forever).
+/// There is no timeout: the flow blocks on the human's paste, exactly like any terminal prompt;
+/// interrupting the process abandons the single-use `state` harmlessly.
 ///
 /// # Errors
-/// [`AuthError`] for any step: `Invalid` (cannot bind / build URL), `Denied` (user declined),
-/// `Timeout`, `StateMismatch`, `Network`/`TokenRefresh` (exchange), `ProfileLookup`, `Store`.
+/// [`AuthError`] for any step: `Invalid` (cannot build the URL / nothing pasted), `Denied`
+/// (user declined), `StateMismatch`, `Network`/`TokenRefresh` (exchange), `ProfileLookup`,
+/// `Store`.
 pub fn authorize(
     oauth: &OAuthClient,
     store: &Arc<dyn Secrets>,
-    open_consent: &ConsentOpener,
+    prompt: &ConsentPrompt,
     now_nanos: u128,
-    timeout: Duration,
 ) -> Result<GoogleAccount, AuthError> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|_| AuthError::Invalid {
-        reason: "could not bind a loopback listener for the OAuth redirect".to_string(),
-    })?;
-    let port = listener
-        .local_addr()
-        .map_err(|_| AuthError::Invalid {
-            reason: "could not read the bound loopback port".to_string(),
-        })?
-        .port();
-    // The load-bearing detail: advertise `localhost`, not `127.0.0.1`.
-    let redirect_uri = OAuthClient::redirect_uri(port);
     let state = new_state();
-    let auth_url = oauth.build_auth_url(&redirect_uri, &state)?;
-    tracing::debug!(
-        port,
-        "bound loopback listener; advertising localhost redirect"
-    );
+    let auth_url = oauth.build_auth_url(PASTE_REDIRECT_URI, &state)?;
 
-    open_consent(&auth_url)?;
+    let pasted = prompt(&auth_url)?;
+    let code = code_from_pasted_redirect(&pasted, &state)?;
 
-    let code = accept_redirect(&listener, &state, timeout)?;
-    let (access, refresh) = oauth.exchange_code(&code, &redirect_uri, now_nanos)?;
+    // The token request must carry the SAME redirect_uri as the consent URL — Google checks
+    // equality, not reachability (nothing ever listened at http://localhost).
+    let (access, refresh) = oauth.exchange_code(&code, PASTE_REDIRECT_URI, now_nanos)?;
     let email = oauth.fetch_profile_email(&access)?;
 
     // Persist the refresh token under google:<email>:refresh_token. The Secret moves into the
@@ -100,83 +86,51 @@ pub fn authorize(
     Ok(GoogleAccount::new(email, stored))
 }
 
-/// Accept exactly one redirect on the listener, within `timeout`, returning the `code`.
-fn accept_redirect(
-    listener: &TcpListener,
-    expected_state: &str,
-    timeout: Duration,
-) -> Result<String, AuthError> {
-    listener
-        .set_nonblocking(false)
-        .map_err(|_| AuthError::Invalid {
-            reason: "could not configure the loopback listener".to_string(),
-        })?;
-    // A coarse overall deadline via the accept timeout: set the read timeout on the accepted
-    // stream. (The accept itself blocks; for the CLI a human is present, and the outer caller
-    // can bound the whole call. We still cap the per-connection read.)
-    let (mut stream, _addr) = listener.accept().map_err(|_| AuthError::Timeout)?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|_| AuthError::Invalid {
-            reason: "could not set the redirect read timeout".to_string(),
-        })?;
-
-    let mut buf = [0_u8; 4096];
-    let n = stream.read(&mut buf).map_err(|_| AuthError::Timeout)?;
-    let request = String::from_utf8_lossy(&buf[..n]);
-    let outcome = parse_redirect_request(&request, expected_state);
-
-    // Always answer the browser so the tab shows a clean page regardless of outcome.
-    let _ = stream.write_all(SUCCESS_PAGE.as_bytes());
-    let _ = stream.flush();
-
-    outcome
-}
-
-/// Parse the HTTP request line of a captured loopback redirect, validate `state`, and return
-/// the `code` — or a typed error (`Denied` on `error=access_denied`, `StateMismatch` on a
-/// `state` mismatch, `Invalid` on a malformed request). Pure and socket-free, so tests cover
-/// it directly.
-pub(crate) fn parse_redirect_request(
-    request: &str,
+/// Extract the authorization `code` from the line the user pasted back: the full redirect URL
+/// (`http://localhost/?state=…&code=…`), validated against the expected `state` (CSRF guard)
+/// and surfacing an `error=` denial — or, when the input does not parse as a URL carrying a
+/// code or an error, the trimmed input taken as the bare code. Pure, so tests cover it
+/// directly.
+pub(crate) fn code_from_pasted_redirect(
+    input: &str,
     expected_state: &str,
 ) -> Result<String, AuthError> {
-    // The request line is `GET /?code=...&state=... HTTP/1.1`.
-    let first_line = request.lines().next().unwrap_or("");
-    let target = first_line.split_whitespace().nth(1).unwrap_or("");
-    // Build an absolute URL so url's query parser applies.
-    let full = format!("http://localhost{target}");
-    let parsed = url::Url::parse(&full).map_err(|_| AuthError::Invalid {
-        reason: "malformed redirect request".to_string(),
-    })?;
-
-    let mut code: Option<String> = None;
-    let mut state: Option<String> = None;
-    let mut error: Option<String> = None;
-    for (k, v) in parsed.query_pairs() {
-        match k.as_ref() {
-            "code" => code = Some(v.into_owned()),
-            "state" => state = Some(v.into_owned()),
-            "error" => error = Some(v.into_owned()),
-            _ => {}
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(AuthError::Invalid {
+            reason: "nothing was pasted — expected the redirect URL or the code= value".to_string(),
+        });
+    }
+    if let Ok(parsed) = url::Url::parse(trimmed) {
+        let mut code: Option<String> = None;
+        let mut state: Option<String> = None;
+        let mut error: Option<String> = None;
+        for (k, v) in parsed.query_pairs() {
+            match k.as_ref() {
+                "code" => code = Some(v.into_owned()),
+                "state" => state = Some(v.into_owned()),
+                "error" => error = Some(v.into_owned()),
+                _ => {}
+            }
+        }
+        if let Some(err) = error {
+            // `access_denied` is the user declining; anything else is a protocol-level rejection.
+            if err == "access_denied" {
+                return Err(AuthError::Denied);
+            }
+            return Err(AuthError::TokenRefresh { reason: err });
+        }
+        if let Some(code) = code {
+            // Validate state BEFORE accepting the code (CSRF guard) — a URL-shaped paste that
+            // carries a code but a wrong/missing state is rejected, never exchanged.
+            match state.as_deref() {
+                Some(s) if s == expected_state => return Ok(code),
+                _ => return Err(AuthError::StateMismatch),
+            }
         }
     }
-
-    if let Some(err) = error {
-        // `access_denied` is the user declining; anything else is a protocol-level rejection.
-        if err == "access_denied" {
-            return Err(AuthError::Denied);
-        }
-        return Err(AuthError::TokenRefresh { reason: err });
-    }
-    // Validate state BEFORE accepting the code (CSRF guard).
-    match state.as_deref() {
-        Some(s) if s == expected_state => {}
-        _ => return Err(AuthError::StateMismatch),
-    }
-    code.ok_or(AuthError::Invalid {
-        reason: "redirect carried no authorization code".to_string(),
-    })
+    // Not a URL carrying a code or an error: the user pasted the bare code value.
+    Ok(trimmed.to_string())
 }
 
 /// Generate an unguessable `state` value (CSRF token) for one authorize attempt. Uses a

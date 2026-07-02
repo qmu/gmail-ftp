@@ -8,9 +8,10 @@
 //! - **`qfs account`** owns external **service accounts** — the token + the recorded consent.
 //!   For Google, ONE account-level authorization serves gmail + gdrive + ga (the shared
 //!   `google:<email>:refresh_token`, the scope union, and the ADR-0008 incremental-auth fix): a
-//!   terminal runs the live browser consent (the old `QFS_GOOGLE_CONSENT=1` opt-in is retired —
-//!   `qfs account add google` on a TTY *is* the opt-in), automation pipes a refresh token on
-//!   stdin with the email as the label. Other cloud providers (github/slack/objstore/cf) pipe or
+//!   terminal runs the live paste-back browser consent (print the URL, authorize in the LOCAL
+//!   browser — works over plain SSH, no listener — paste the redirect back; the old
+//!   `QFS_GOOGLE_CONSENT=1` opt-in is retired — `qfs account add google` on a TTY *is* the
+//!   opt-in), automation pipes a refresh token on stdin with the email as the label. Other cloud providers (github/slack/objstore/cf) pipe or
 //!   prompt their token per label.
 //!
 //! ## Consent keying (ADR 0008 §4 — mount-bound)
@@ -187,7 +188,8 @@ fn app_remove(provider: &str) -> Result<String, String> {
 }
 
 /// `qfs account add google [email]` — authorize a Google account. On a terminal with no piped
-/// token this runs the LIVE loopback browser consent (the documented non-hermetic seam — the old
+/// token this runs the LIVE paste-back browser consent (print the consent URL, authorize in the
+/// user's LOCAL browser, paste the redirect URL back — the documented non-hermetic seam; the old
 /// `QFS_GOOGLE_CONSENT` env opt-in is retired; invoking this verb on a TTY is the opt-in);
 /// automation pipes the refresh token with the email as the label.
 fn add_google(label: Option<&str>) -> Result<String, String> {
@@ -195,8 +197,8 @@ fn add_google(label: Option<&str>) -> Result<String, String> {
     let store = open_store()?;
 
     let email = if crate::tty::stdin_is_terminal() {
-        // Interactive: the real browser consent (requests the PROVIDER scope union — one
-        // authorization serves gmail+gdrive+ga; persists the refresh token + selects the account).
+        // Interactive: the real paste-back browser consent (requests the PROVIDER scope union —
+        // one authorization serves gmail+gdrive+ga; persists the refresh token under the email).
         let store_arc: Arc<dyn Secrets> = Arc::new(store);
         crate::google::run_google_consent(store_arc)
             .map_err(|e| format!("google consent failed: {e}"))?

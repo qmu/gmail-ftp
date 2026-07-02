@@ -105,3 +105,150 @@ pub fn prompt_line(prompt: &str) -> Result<String, String> {
         .map_err(|e| format!("reading from the terminal: {e}"))?;
     Ok(buf.trim_end_matches(['\n', '\r']).to_string())
 }
+
+// ---- The paste-back Google consent interaction (mirrors gmail-ftp) ------------------------
+
+/// Run the terminal side of the paste-back browser consent: print the consent URL, offer
+/// `c` = copy it to the user's LOCAL clipboard via the OSC 52 escape (the one channel that
+/// reaches a laptop across SSH + tmux) and `o` = best-effort open a browser on THIS host, then
+/// read back the `http://localhost/?state=…&code=…` redirect URL (or the bare `code=` value)
+/// the user pastes. All prompt text rides stderr; the answers are read from the controlling
+/// terminal (`/dev/tty`) so a piped stdin never swallows them. The pasted line goes back to
+/// `qfs_google_auth::authorize`, which validates `state` before any exchange.
+///
+/// # Errors
+/// A string message if the terminal cannot be read.
+pub fn consent_paste_prompt(auth_url: &str) -> Result<String, String> {
+    eprintln!("\nTo authorize qfs, open this URL in your LOCAL browser:\n\n{auth_url}\n");
+    let choice = prompt_tty_line(
+        "Press 'c' + Enter to copy the URL to your local clipboard, 'o' + Enter to open a \
+         browser on this host, or just Enter to copy it yourself: ",
+    )?;
+    match choice.trim().chars().next().map(|c| c.to_ascii_lowercase()) {
+        Some('c') => {
+            copy_to_clipboard(auth_url);
+            eprintln!("Copied to your local clipboard.");
+        }
+        Some('o') => open_browser(auth_url),
+        _ => {}
+    }
+    eprint!(
+        "\nAfter you authorize, the browser redirects to a http://localhost/... URL that fails \
+         to load.\nPaste that entire URL here (or just the code= value): "
+    );
+    let _ = std::io::stderr().flush();
+    // Skip stray blank lines (a leftover newline from the choice prompt) like gmail-ftp does.
+    loop {
+        let line = read_tty_line()?;
+        if !line.trim().is_empty() {
+            return Ok(line);
+        }
+    }
+}
+
+/// Prompt on stderr and read one echoed line from the controlling terminal. Unlike the
+/// paste read, an empty line is a valid answer (the "copy it yourself" fall-through).
+fn prompt_tty_line(prompt: &str) -> Result<String, String> {
+    eprint!("{prompt}");
+    let _ = std::io::stderr().flush();
+    read_tty_line()
+}
+
+/// Read one echoed line from the controlling terminal (`/dev/tty`), so a piped stdin never
+/// swallows the answer; with no controlling terminal, fall back to stdin. Reads byte-by-byte
+/// (a canonical-mode tty delivers at most one line per read; no read-ahead is buffered away).
+fn read_tty_line() -> Result<String, String> {
+    use std::io::Read;
+    #[cfg(unix)]
+    if let Ok(mut tty) = std::fs::File::open("/dev/tty") {
+        let mut line = Vec::new();
+        loop {
+            let mut b = [0_u8; 1];
+            let n = tty
+                .read(&mut b)
+                .map_err(|e| format!("reading from the terminal: {e}"))?;
+            if n == 0 || b[0] == b'\n' {
+                break;
+            }
+            line.push(b[0]);
+        }
+        let text = String::from_utf8_lossy(&line);
+        return Ok(text.trim_end_matches('\r').to_string());
+    }
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_line(&mut buf)
+        .map_err(|e| format!("reading from the terminal: {e}"))?;
+    Ok(buf.trim_end_matches(['\n', '\r']).to_string())
+}
+
+/// Put `text` on the user's LOCAL clipboard via the OSC 52 terminal escape, which the terminal
+/// emulator honors even across SSH — deliberately NOT xclip/pbcopy (those target this host, not
+/// the user's machine). Written to the controlling terminal so it works even when stderr is
+/// redirected; best-effort (the URL is also printed for manual copy).
+fn copy_to_clipboard(text: &str) {
+    let seq = clipboard_seq(text, std::env::var_os("TMUX").is_some());
+    #[cfg(unix)]
+    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+        let _ = tty.write_all(seq.as_bytes());
+        return;
+    }
+    let _ = std::io::stderr().write_all(seq.as_bytes());
+}
+
+/// Build the OSC 52 escape that sets the clipboard to `text` (base64-encoded per the spec).
+/// Inside tmux the sequence is wrapped in the DCS passthrough (DCS prefix, every ESC doubled,
+/// ST terminator) so it reaches the outer terminal instead of being swallowed. Pure, so tests
+/// cover both shapes directly.
+fn clipboard_seq(text: &str, in_tmux: bool) -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let seq = format!("\x1b]52;c;{b64}\x07");
+    if in_tmux {
+        format!("\x1bPtmux;{}\x1b\\", seq.replace('\x1b', "\x1b\x1b"))
+    } else {
+        seq
+    }
+}
+
+/// Best-effort open `url` in a browser on THIS host (`o`). Failure is silently ignored — the
+/// URL is printed for manual use, and on an SSH host there is usually no browser to open.
+fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    const OPENER: &str = "open";
+    #[cfg(not(target_os = "macos"))]
+    const OPENER: &str = "xdg-open";
+    let _ = std::process::Command::new(OPENER)
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clipboard_seq;
+    use base64::Engine as _;
+
+    /// The OSC 52 escape carries the base64 of the text between the `]52;c;` selector and the
+    /// BEL terminator.
+    #[test]
+    fn clipboard_seq_is_osc52_with_base64_payload() {
+        let url = "https://accounts.google.com/o/oauth2/v2/auth?client_id=x";
+        let seq = clipboard_seq(url, false);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(url.as_bytes());
+        assert_eq!(seq, format!("\x1b]52;c;{b64}\x07"));
+    }
+
+    /// Inside tmux the OSC 52 escape is wrapped in the DCS passthrough: DCS `tmux;` prefix,
+    /// every ESC doubled, ST terminator — so the escape reaches the OUTER terminal.
+    #[test]
+    fn clipboard_seq_wraps_in_tmux_dcs_passthrough() {
+        let seq = clipboard_seq("x", true);
+        assert!(seq.starts_with("\x1bPtmux;\x1b\x1b]52;c;"));
+        assert!(seq.ends_with("\x07\x1b\\"));
+        // The inner escape's ESC is doubled; only the DCS frame's own ESCs are single.
+        let inner = &seq["\x1bPtmux;".len()..seq.len() - "\x1b\\".len()];
+        assert!(!inner.replace("\x1b\x1b", "").contains('\x1b'));
+    }
+}

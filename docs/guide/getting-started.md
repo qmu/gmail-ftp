@@ -252,7 +252,8 @@ account, mount the path:
 qfs init you@example.com                     # once per machine: create the encrypted vault
                                              # (choosing its passphrase) + register the operator
 cat credentials.json | qfs app add google    # your Google OAuth app's client credentials
-qfs account add google                       # browser consent; the token is sealed, never printed
+qfs account add google                       # paste-back browser consent; the token is sealed,
+                                             # never printed (see the Gmail cookbook Setup)
 qfs connect /mail --driver gmail --account you@gmail.com   # /mail now exists
 qfs run "/mail/inbox |> select date, subject"              # real messages
 ```

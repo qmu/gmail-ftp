@@ -149,7 +149,7 @@ qfs run "insert into /mail/drafts values ('a@b.com','Hi','Body')" --commit
 #    fails closed (exit 3, kind: capability). The one-time setup:
 #      qfs init you@example.com                    # vault + operator identity
 #      cat credentials.json | qfs app add google   # your Google OAuth app
-#      qfs account add google                      # browser consent on a TTY
+#      qfs account add google                      # paste-back browser consent on a TTY
 #      qfs connect /mail --driver gmail --account you@gmail.com
 qfs run "/mail/inbox |> where subject LIKE '%invoice%' |> select subject, from"
 qfs run "/mail/drafts |> where id == 'draft-1' |> call mail.send" --commit --commit-irreversible

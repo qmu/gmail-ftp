@@ -59,7 +59,7 @@ sealed in the vault and its consent recorded. For Google, register your OAuth ap
 credentials first (`cat credentials.json | qfs app add google`); then authorize:
 
 ```sh
-qfs account add google                                    # live browser consent on a terminal
+qfs account add google                                    # paste-back browser consent on a terminal
 printf %s "$REFRESH_TOKEN" | qfs account add google you@gmail.com   # automation: token on stdin, email as the label
 printf %s "$GH_TOKEN"      | qfs account add github work            # other clouds: a token + your label
 ```
