@@ -462,6 +462,17 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
         name: "project_vault_key_slots",
         sql: include_str!("schema/project_vault_key_slots.sql"),
     },
+    // EPIC 20260702120000 / ADR 0008 §4 (ticket 20260702120050 — mount-bound accounts): DROP the
+    // `active_account` selection table. The mount's (host, driver, account) coordinate (migration
+    // #9) replaced selection state entirely — the bind path reads the account off the mount, so
+    // the table is dead. Appended as a NEW version (#11) — migrations #1–#10 stay frozen (the
+    // checksum guard forbids editing a shipped migration); migration #2's body still CREATEs the
+    // table on a fresh store and this version immediately drops it, keeping the ledger append-only.
+    Migration {
+        version: 11,
+        name: "project_drop_active_account",
+        sql: include_str!("schema/project_drop_active_account.sql"),
+    },
 ];
 
 /// Structured, secret-free persistence errors (AI-consumable; a DB path is infra, not a secret, but
@@ -749,10 +760,12 @@ mod tests {
         assert!(table_exists(proj.db(), "connections"));
         assert!(table_exists(proj.db(), "project_config"));
         assert!(table_exists(proj.db(), "project_state"));
-        // t43 migration #2: the envelope-encrypted credential store + active-account tables.
+        // t43 migration #2: the envelope-encrypted credential store tables. Its `active_account`
+        // selection table is created by #2 and DROPPED forward by #11 (ADR 0008 — the mount
+        // carries the account; selection state is abolished).
         assert!(table_exists(proj.db(), "secret_store"));
         assert!(table_exists(proj.db(), "secret_meta"));
-        assert!(table_exists(proj.db(), "active_account"));
+        assert!(!table_exists(proj.db(), "active_account"));
         // t54 migration #3: the cloud-connection consent ledger.
         assert!(table_exists(proj.db(), "connection_consent"));
         // t81 migration #4: the project/team-owned (shared) connection registry.
@@ -772,8 +785,8 @@ mod tests {
         assert!(column_exists(proj.db(), "path_binding", "account"));
         // ADR 0008 migration #10: the KeyGuardian vault-key slots.
         assert!(table_exists(proj.db(), "vault_key_slot"));
-        // All ten project migrations are recorded.
-        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 10);
+        // All eleven project migrations are recorded (#11 drops `active_account` forward).
+        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 11);
     }
 
     #[test]

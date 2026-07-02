@@ -74,7 +74,7 @@ impl Secrets for WorkerStore {
     fn list(&self, _driver: Option<&DriverId>) -> Result<Vec<ConnectionRecord>, SecretError> {
         // Worker bindings are not enumerable from inside the guest; listing is an
         // out-of-band (dashboard / API) concern. Return empty rather than error so a
-        // generic `qfs connection list` does not break on Workers.
+        // generic `qfs account list` does not break on Workers.
         Ok(Vec::new())
     }
 }

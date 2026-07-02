@@ -53,7 +53,7 @@ fn main() {
         // `qfs_skill::render(..)` — this NORMAL `qfs → qfs-skill` edge is what makes SKILL.md ship in
         // the artifact and be discoverable from the running binary.
         &qfs_skill::render,
-        // `qfs connection add/list/use/remove`: the real credential-store I/O, injected here (the
+        // `qfs connect`/`disconnect`/`connect --list`: the defined-path binding I/O, injected here (the
         // binary owns the envelope-encrypted SQLite store over the Project DB — t43; qfs-cmd stays
         // off the concrete backend). The secret is read from stdin, never argv; each value is
         // AEAD-sealed under a data-key wrapped by the `QFS_PASSPHRASE`-derived key.

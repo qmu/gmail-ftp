@@ -123,6 +123,9 @@ fn audit_events(
     outcome: &qfs_runtime::Outcome,
 ) -> Vec<qfs_store::audit::AuditEvent> {
     let ts = now_rfc3339();
+    // ADR 0008: the account an effect ran as is the MOUNT's account (there is no selection
+    // state). Loaded once per commit — best-effort and metadata-only, like the events themselves.
+    let mounts = crate::cloud_mounts::load_cloud_mounts();
     let mut events = Vec::new();
     for entry in &outcome.ledger {
         // A committed effect is one that APPLIED. An attempted irreversible effect is an
@@ -143,9 +146,13 @@ fn audit_events(
         let path = plan
             .node(entry.id)
             .map_or_else(String::new, |n| n.target.path.as_str().to_string());
-        // The connection the effect routed through: the active `<driver>/<name>` selection (t44),
-        // defaulting to `default`. The NAME only — never the secret material behind it.
-        let connection = crate::connection::active_connection(entry.driver.as_str())
+        // The account the effect ran as: the MOUNT's bound account (the ledger driver id IS the
+        // mount's segment id under ADR 0008), defaulting to `default` for local/config-driven
+        // drivers. The LABEL only — never the secret material behind it.
+        let connection = mounts
+            .iter()
+            .find(|m| m.remap().is_some_and(|r| r.outer_id() == entry.driver))
+            .and_then(|m| m.account.clone())
             .unwrap_or_else(|| "default".to_string());
 
         events.push(qfs_store::audit::AuditEvent {

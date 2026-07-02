@@ -12,7 +12,7 @@
 //! ## Config (no credentials) — fail closed by default
 //! The **non-secret** routing config is read from the process environment; the **secret access
 //! key** is resolved from the encrypted credential store (`crate::commit`), keyed by the driver id
-//! (`s3` / `r2`) and the active connection — exactly the secret `qfs connection add s3 <name>`
+//! (`s3` / `r2`) and the MOUNT's account label — exactly the secret `qfs account add s3 <label>`
 //! sealed (or the `QFS_SECRET_S3_<NAME>` env fallback the agent/CI path reads). With ANY required
 //! routing var absent the config is `None` and the driver is left UNREGISTERED — a `/s3` commit then
 //! fails closed ("no driver / not configured"), never a silent or faked write.

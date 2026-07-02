@@ -105,28 +105,13 @@ pub type DescribeProvider<'a> = dyn Fn() -> qfs_core::MountRegistry + 'a;
 /// edge adds zero transitive runtime weight. The argument is `include_examples`.
 pub type SkillProvider<'a> = dyn Fn(bool) -> String + 'a;
 
-/// A parsed `qfs connection <verb>` request, handed to the binary-injected [`ConnectionLauncher`]. The
-/// credential value itself is **never** carried here (it would leak into argv / history / `ps`);
-/// the launcher reads it from stdin/prompt. Driver + connection selectors are safe metadata.
+/// A parsed `qfs connect` / `qfs disconnect` request, handed to the binary-injected
+/// [`ConnectionLauncher`] (the connect layer — ADR 0008 §3; the credentialed `qfs connection`
+/// verb namespace is RETIRED: accounts live under `qfs account`, the store re-wrap under
+/// `qfs vault rekey`). No secret is ever carried here — the `secret_ref` is a REFERENCE.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionAction {
-    /// `connection add <driver> <connection>` — store (or replace) a credential.
-    Add { driver: String, connection: String },
-    /// `connection list [driver]` — list configured connections (metadata only).
-    List { driver: Option<String> },
-    /// `connection use <driver> <connection>` — set the persistent active connection.
-    Use { driver: String, connection: String },
-    /// `connection remove <driver> <connection>` — delete (idempotent).
-    Remove { driver: String, connection: String },
-    /// `connection rotate <driver> <connection>` — re-mint the secret (read from stdin) + clear
-    /// revocation (t79). The value is NEVER carried here; the launcher reads it from stdin.
-    Rotate { driver: String, connection: String },
-    /// `connection revoke <driver> <connection>` — mark the connection unresolvable (t79).
-    Revoke { driver: String, connection: String },
-    /// `connection rekey` — re-wrap the store's data-key under a new passphrase (t79). The new
-    /// passphrase is NEVER carried here; the launcher reads it from stdin (old = `QFS_PASSPHRASE`).
-    Rekey,
-    /// `connection import-env` — print the `CREATE CONNECTION` declarations equivalent to the
+    /// `connect --import-env` — print the `CREATE CONNECTION` declarations equivalent to the
     /// current `QFS_SQL_*` / `QFS_GIT_*` env vars (the migration off the deprecated convention).
     ImportEnv,
     /// `connect <path> …` — bind a defined PATH to a driver + credential (a full connect), or to
@@ -156,7 +141,7 @@ pub enum ConnectionAction {
         /// The user-defined path to remove.
         path: String,
     },
-    /// `connection paths` — list the defined-path bindings (the `path_binding` registry): metadata
+    /// `connect --list` — list the defined-path bindings (the `path_binding` registry): metadata
     /// only (path, driver, alias target, secret REFERENCE), never a secret value (t100020).
     ListPaths,
 }
@@ -260,6 +245,21 @@ pub enum AccountAction {
         /// The account label (a Google email; a connection name elsewhere).
         label: String,
     },
+    /// `account rotate <provider> <label>` — re-mint the account's secret (read from stdin) +
+    /// clear revocation (t79). The value is NEVER carried here; the launcher reads it from stdin.
+    Rotate {
+        /// The provider of the account being rotated.
+        provider: String,
+        /// The account label whose secret is re-minted.
+        label: String,
+    },
+    /// `account revoke <provider> <label>` — mark the account's credential unresolvable (t79).
+    Revoke {
+        /// The provider of the account being revoked.
+        provider: String,
+        /// The account label being revoked.
+        label: String,
+    },
 }
 
 /// The injected **app/account launcher** (ADR 0008 §3): the binary supplies the vault + consent
@@ -285,6 +285,10 @@ pub enum VaultAction {
         /// The slot id to revoke (see `vault slots`).
         slot_id: i64,
     },
+    /// `vault rekey` — re-wrap the store's data-key under a new passphrase (t79; the vault owns
+    /// the store's key material, ADR 0008 §5). The new passphrase is NEVER carried here; the
+    /// launcher reads it from stdin (the old one is `QFS_PASSPHRASE`).
+    Rekey,
 }
 
 /// The injected **vault launcher** (ADR 0008 §5): the binary supplies the slot I/O + the guardian
@@ -431,12 +435,6 @@ enum Command {
         /// Path to the `.qfs` server config.
         config: PathBuf,
     },
-    /// Manage stored credentials per driver/connection (t27, RFD-0001 §10). The connection
-    /// *name* is metadata (safe to print); the credential itself is never echoed.
-    Connection {
-        #[command(subcommand)]
-        verb: ConnectionVerb,
-    },
     /// Bind a defined PATH to a driver + credential — a "defined path" that mounts a connection
     /// (EPIC 20260701100000 / t100020). The CLI twin of the `CONNECT` statement; writes the Project
     /// DB `path_binding` registry (the single source of truth — no `connections.qfs` file).
@@ -444,9 +442,12 @@ enum Command {
     /// A full connect names a `--driver` (with optional `--at` locator + `--secret` REFERENCE);
     /// an alias names `--alias-of <existing-path>` instead. The secret is a REFERENCE
     /// (`env:VAR` / `vault:driver/connection`), never a value — nothing secret rides in argv.
+    /// `qfs connect --list` lists the defined paths; `--import-env` prints the `CREATE CONNECTION`
+    /// declarations equivalent to the current `QFS_SQL_*` / `QFS_GIT_*` env vars.
     Connect {
-        /// The user-defined path (the mount point), e.g. `/work/orders`.
-        path: String,
+        /// The user-defined path (the mount point), e.g. `/work/orders`. Omitted only with
+        /// `--list` / `--import-env`.
+        path: Option<String>,
         /// The driver id for a full connect (e.g. `postgres`). Mutually exclusive with `--alias-of`.
         #[arg(long = "driver", value_name = "DRIVER")]
         driver: Option<String>,
@@ -465,6 +466,13 @@ enum Command {
         /// The service-account label the mount binds (e.g. a Google email) — never a token.
         #[arg(long = "account", value_name = "LABEL")]
         account: Option<String>,
+        /// List the defined-path bindings (metadata only — never a secret value).
+        #[arg(long = "list", conflicts_with_all = ["driver", "at", "secret", "alias_of", "host", "account", "import_env"])]
+        list: bool,
+        /// Print the `CREATE CONNECTION` declarations equivalent to the current `QFS_SQL_*` /
+        /// `QFS_GIT_*` env vars (the migration off the deprecated env-var convention).
+        #[arg(long = "import-env", conflicts_with_all = ["driver", "at", "secret", "alias_of", "host", "account"])]
+        import_env: bool,
     },
     /// Remove a defined path (idempotent; aliases cascade). The CLI twin of `DISCONNECT` (t100020).
     Disconnect {
@@ -579,68 +587,6 @@ enum JobVerb {
     },
 }
 
-/// `qfs connection <verb>` — the credential-store management verbs (t27). Each maps onto a
-/// [`qfs_core::Secrets`] backend + the resolution model; the credential value is read
-/// from a prompt / stdin (never an argv, which would leak into shell history and `ps`).
-#[derive(Subcommand, Debug)]
-enum ConnectionVerb {
-    /// Add (or replace) the credential for a driver's named connection.
-    Add {
-        /// The driver this connection belongs to, e.g. `mail`, `s3`.
-        driver: String,
-        /// The connection name, e.g. `work`, `personal`.
-        connection: String,
-    },
-    /// List configured connections (optionally for one driver). Prints selectors + metadata
-    /// only — never a credential.
-    List {
-        /// Restrict the listing to one driver.
-        driver: Option<String>,
-    },
-    /// Set the persistent active connection for a driver (`connection use`).
-    Use {
-        /// The driver to set the active connection for.
-        driver: String,
-        /// The connection to make active.
-        connection: String,
-    },
-    /// Remove the credential for a driver's named connection (idempotent).
-    Remove {
-        /// The driver.
-        driver: String,
-        /// The connection to remove.
-        connection: String,
-    },
-    /// Rotate (re-mint) the credential for a driver's named connection (t79): read a NEW secret from
-    /// stdin, re-seal it, and clear any revocation. The offboarding answer — replace, not un-grant.
-    Rotate {
-        /// The driver this connection belongs to.
-        driver: String,
-        /// The connection to re-mint.
-        connection: String,
-    },
-    /// Revoke a driver's named connection (t79): mark it unresolvable so a later bind fails closed
-    /// and the secret is never returned (offboarding / compromise). Other connections keep working.
-    Revoke {
-        /// The driver this connection belongs to.
-        driver: String,
-        /// The connection to revoke.
-        connection: String,
-    },
-    /// Re-wrap the credential store's data-key under a NEW passphrase (t79): read the new passphrase
-    /// from stdin; the current `QFS_PASSPHRASE` is the old one. Existing secrets stay decryptable; the
-    /// old passphrase stops unlocking. One re-wrap, never an N-way re-encryption of every secret.
-    Rekey,
-    /// Print the `CREATE CONNECTION` declarations equivalent to the current `QFS_SQL_*` / `QFS_GIT_*`
-    /// env vars — the one-command migration off the deprecated env-var alias convention. Reads no
-    /// secret; writes the declarations to stdout for you to paste into a `connections.qfs`.
-    #[command(name = "import-env")]
-    ImportEnv,
-    /// List the defined-path bindings (the `path_binding` registry, t100020): metadata only —
-    /// the path, its driver / alias target, and the secret REFERENCE, never a secret value.
-    Paths,
-}
-
 /// `qfs host <verb>` — the client-of-hosts verbs (ADR 0008 §1). Maps onto the injected
 /// [`HostLauncher`]; no credential rides here.
 #[derive(Subcommand, Debug)]
@@ -698,6 +644,22 @@ enum AccountVerb {
         /// The account label (a Google email; a connection name elsewhere).
         label: String,
     },
+    /// Rotate (re-mint) an account's secret: read a NEW secret from stdin, re-seal it, and clear
+    /// any revocation. The offboarding answer — replace, not un-grant.
+    Rotate {
+        /// The provider of the account.
+        provider: String,
+        /// The account label to re-mint.
+        label: String,
+    },
+    /// Revoke an account's credential: mark it unresolvable so a later bind fails closed and the
+    /// secret is never returned (offboarding / compromise). Other accounts keep working.
+    Revoke {
+        /// The provider of the account.
+        provider: String,
+        /// The account label to revoke.
+        label: String,
+    },
 }
 
 /// `qfs vault <verb>` — the KeyGuardian slot verbs (ADR 0008 §5). Maps onto the injected
@@ -717,6 +679,10 @@ enum VaultVerb {
         /// The slot id (see `qfs vault slots`).
         slot_id: i64,
     },
+    /// Re-wrap the credential store's data-key under a NEW passphrase: read the new passphrase
+    /// from stdin; the current `QFS_PASSPHRASE` is the old one. Existing secrets stay decryptable;
+    /// the old passphrase stops unlocking. One re-wrap, never an N-way re-encryption.
+    Rekey,
 }
 
 /// `qfs identity <verb>` — the local-identity verbs (t45). Maps onto the injected
@@ -910,15 +876,9 @@ where
             tracing::debug!(target: "qfs::cmd", "dispatch serve via launcher");
             return serve(&config);
         }
-        // `connection` is dispatched through the injected launcher (the binary owns the encrypted
-        // credential store; qfs-cmd stays off the concrete backend). Returns the exit code directly.
-        Some(Command::Connection { verb }) => {
-            tracing::debug!(target: "qfs::cmd", "dispatch connection via launcher");
-            return connection(&connection_action(&verb));
-        }
         // `connect` / `disconnect` (t100020): the CLI twin of the CONNECT/DISCONNECT statements —
-        // dispatched through the SAME connection launcher (the binary owns the Project-DB binding
-        // I/O). Returns the exit code directly.
+        // dispatched through the injected connect launcher (the binary owns the Project-DB binding
+        // I/O). `--list` / `--import-env` are the pathless modes. Returns the exit code directly.
         Some(Command::Connect {
             path,
             driver,
@@ -927,8 +887,20 @@ where
             alias_of,
             host,
             account,
+            list,
+            import_env,
         }) => {
             tracing::debug!(target: "qfs::cmd", "dispatch connect via launcher");
+            if list {
+                return connection(&ConnectionAction::ListPaths);
+            }
+            if import_env {
+                return connection(&ConnectionAction::ImportEnv);
+            }
+            let Some(path) = path else {
+                eprintln!("qfs: error: connect needs a path (or --list / --import-env)");
+                return 2;
+            };
             return connection(&ConnectionAction::Connect {
                 path,
                 driver,
@@ -1178,40 +1150,6 @@ fn read_stdin() -> String {
     buf
 }
 
-/// Map the clap-parsed [`ConnectionVerb`] to the public [`ConnectionAction`] handed to the injected
-/// [`ConnectionLauncher`]. Pure (selectors only); the credential value is never carried — the
-/// launcher reads it from stdin/prompt, never from argv (which would leak into history / `ps`).
-fn connection_action(verb: &ConnectionVerb) -> ConnectionAction {
-    match verb {
-        ConnectionVerb::Add { driver, connection } => ConnectionAction::Add {
-            driver: driver.clone(),
-            connection: connection.clone(),
-        },
-        ConnectionVerb::List { driver } => ConnectionAction::List {
-            driver: driver.clone(),
-        },
-        ConnectionVerb::Use { driver, connection } => ConnectionAction::Use {
-            driver: driver.clone(),
-            connection: connection.clone(),
-        },
-        ConnectionVerb::Remove { driver, connection } => ConnectionAction::Remove {
-            driver: driver.clone(),
-            connection: connection.clone(),
-        },
-        ConnectionVerb::Rotate { driver, connection } => ConnectionAction::Rotate {
-            driver: driver.clone(),
-            connection: connection.clone(),
-        },
-        ConnectionVerb::Revoke { driver, connection } => ConnectionAction::Revoke {
-            driver: driver.clone(),
-            connection: connection.clone(),
-        },
-        ConnectionVerb::Rekey => ConnectionAction::Rekey,
-        ConnectionVerb::ImportEnv => ConnectionAction::ImportEnv,
-        ConnectionVerb::Paths => ConnectionAction::ListPaths,
-    }
-}
-
 /// Map the clap-parsed [`IdentityVerb`] to the public [`IdentityAction`] handed to the injected
 /// [`IdentityLauncher`]. Pure (handles only); the password is never carried — the launcher reads it
 /// from STDIN, never from argv (which would leak into history / `ps`).
@@ -1252,6 +1190,14 @@ fn account_action_verb(verb: &AccountVerb) -> AccountAction {
             provider: provider.clone(),
             label: label.clone(),
         },
+        AccountVerb::Rotate { provider, label } => AccountAction::Rotate {
+            provider: provider.clone(),
+            label: label.clone(),
+        },
+        AccountVerb::Revoke { provider, label } => AccountAction::Revoke {
+            provider: provider.clone(),
+            label: label.clone(),
+        },
     }
 }
 
@@ -1264,6 +1210,7 @@ fn vault_action(verb: &VaultVerb) -> VaultAction {
             guardian: guardian.clone(),
         },
         VaultVerb::Revoke { slot_id } => VaultAction::Revoke { slot_id: *slot_id },
+        VaultVerb::Rekey => VaultAction::Rekey,
     }
 }
 
@@ -1862,50 +1809,66 @@ mod tests {
     }
 
     #[test]
-    fn connection_verbs_map_to_the_public_action() {
-        // The clap verb maps 1:1 to the injected-launcher action (selectors only, no secret).
-        assert_eq!(
-            connection_action(&ConnectionVerb::Add {
-                driver: "mail".into(),
-                connection: "work".into()
-            }),
-            ConnectionAction::Add {
-                driver: "mail".into(),
-                connection: "work".into()
-            }
-        );
-        assert_eq!(
-            connection_action(&ConnectionVerb::List { driver: None }),
-            ConnectionAction::List { driver: None }
-        );
-        assert_eq!(
-            connection_action(&ConnectionVerb::Use {
-                driver: "s3".into(),
-                connection: "prod".into()
-            }),
-            ConnectionAction::Use {
-                driver: "s3".into(),
-                connection: "prod".into()
-            }
-        );
-        assert_eq!(
-            connection_action(&ConnectionVerb::Remove {
-                driver: "mail".into(),
-                connection: "work".into()
-            }),
-            ConnectionAction::Remove {
-                driver: "mail".into(),
-                connection: "work".into()
-            }
-        );
+    fn the_connection_namespace_no_longer_parses() {
+        // ADR 0008 (ticket 20260702120050): the credentialed `qfs connection` verb namespace is
+        // RETIRED outright — accounts live under `qfs account`, the store re-wrap under
+        // `qfs vault rekey`, and mounts under `qfs connect`. Every retired form is a hard parse
+        // error (exit 2), never a silent alias.
+        for argv in [
+            ["qfs", "connection", "list"].as_slice(),
+            ["qfs", "connection", "add", "mail", "work"].as_slice(),
+            ["qfs", "connection", "use", "mail", "work"].as_slice(),
+            ["qfs", "connection", "remove", "mail", "work"].as_slice(),
+            ["qfs", "connection", "rotate", "mail", "work"].as_slice(),
+            ["qfs", "connection", "revoke", "mail", "work"].as_slice(),
+            ["qfs", "connection", "rekey"].as_slice(),
+            ["qfs", "connection", "paths"].as_slice(),
+        ] {
+            assert_eq!(
+                run_t(argv.iter().copied()),
+                2,
+                "retired verb must not parse: {argv:?}"
+            );
+        }
     }
 
     #[test]
-    fn connection_subcommand_parses_and_dispatches_to_the_launcher() {
-        // `qfs connection …` parses cleanly and routes into the injected connection launcher (the stub
-        // returns the sentinel 7). The real encrypted-store I/O lives in the binary crate.
-        assert_eq!(run_t(["qfs", "connection", "list"]), 7);
-        assert_eq!(run_t(["qfs", "connection", "add", "mail", "work"]), 7);
+    fn account_rotate_revoke_and_vault_rekey_replace_the_retired_verbs() {
+        // The rotation/revocation/rekey capabilities live on under their per-layer homes.
+        assert_eq!(
+            account_action_verb(&AccountVerb::Rotate {
+                provider: "github".into(),
+                label: "work".into()
+            }),
+            AccountAction::Rotate {
+                provider: "github".into(),
+                label: "work".into()
+            }
+        );
+        assert_eq!(
+            account_action_verb(&AccountVerb::Revoke {
+                provider: "github".into(),
+                label: "work".into()
+            }),
+            AccountAction::Revoke {
+                provider: "github".into(),
+                label: "work".into()
+            }
+        );
+        assert_eq!(vault_action(&VaultVerb::Rekey), VaultAction::Rekey);
+        // And they parse + dispatch through their launchers (stub sentinels).
+        assert_eq!(run_t(["qfs", "account", "rotate", "github", "work"]), 15);
+        assert_eq!(run_t(["qfs", "account", "revoke", "github", "work"]), 15);
+        assert_eq!(run_t(["qfs", "vault", "rekey"]), 13);
+    }
+
+    #[test]
+    fn connect_list_and_import_env_dispatch_pathless() {
+        // `qfs connect --list` / `--import-env` are the pathless modes that absorbed
+        // `connection paths` / `connection import-env`; a bare `qfs connect` is an error.
+        assert_eq!(run_t(["qfs", "connect", "--list"]), 7);
+        assert_eq!(run_t(["qfs", "connect", "--import-env"]), 7);
+        assert_eq!(run_t(["qfs", "connect"]), 2);
     }
 
     #[test]

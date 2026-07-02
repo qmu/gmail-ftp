@@ -344,7 +344,7 @@ pub fn e2e_recover_dek(
 }
 
 /// **Open** the E2E secret value for `(driver, connection)` as a recipient, gating on attendance
-/// FIRST. The pure [`e2e_attendance_gate`] runs before any unwrap: an E2E connection used
+/// FIRST. The pure [`e2e_attendance_gate`] runs before any unwrap: an E2E credential used
 /// `attended == false` (an autonomous agent / server-fire) is refused with [`E2eError::Attendance`]
 /// and the DEK is NEVER recovered. With a human in the loop (`attended == true`), the recipient's
 /// private key recovers the DEK and opens the value into a redacting [`Secret`].
@@ -360,7 +360,7 @@ pub fn e2e_open(
     recipient_key: &RecipientKey,
     attended: bool,
 ) -> Result<Secret, E2eError> {
-    // GATE BEFORE UNWRAP: a high-sensitivity connection used unattended is refused here, before the
+    // GATE BEFORE UNWRAP: a high-sensitivity credential used unattended is refused here, before the
     // per-recipient DEK is ever recovered (the t59-safety-mode-shaped, audited trade-off).
     e2e_attendance_gate(true, connection, attended).map_err(E2eError::Attendance)?;
 
@@ -498,7 +498,7 @@ mod tests {
         assert!(!format!("{err:?} {err}").contains(PLANTED));
     }
 
-    /// An E2E connection used UNATTENDED (an autonomous agent) is refused BEFORE any unwrap — and the
+    /// An E2E credential used UNATTENDED (an autonomous agent) is refused BEFORE any unwrap — and the
     /// live bind gate refuses it too. With a human in the loop it succeeds.
     #[test]
     fn an_unattended_open_is_refused_pending_human_unwrap() {

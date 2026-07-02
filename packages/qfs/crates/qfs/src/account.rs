@@ -74,7 +74,50 @@ fn run_inner(action: &AccountAction) -> Result<String, String> {
             "google" => remove_google(label),
             other => remove_cloud(other, label),
         },
+        AccountAction::Rotate { provider, label } => rotate_account(provider, label),
+        AccountAction::Revoke { provider, label } => revoke_account(provider, label),
     }
+}
+
+/// `qfs account rotate <provider> <label>` — re-mint the account's secret (t79, moved here from
+/// the retired `connection` namespace): read a NEW secret from stdin, re-seal it, and clear any
+/// revocation. The offboarding answer — replace, not un-grant.
+fn rotate_account(provider: &str, label: &str) -> Result<String, String> {
+    // A cloud account carries the same sign-in gate as `add` (a cloud credential is unusable for
+    // an unauthenticated operator); resolve identity BEFORE touching stdin.
+    if is_cloud_driver(&DriverId(provider.to_string())) {
+        let _ = require_signed_in(provider)?;
+    }
+    let value = read_secret(
+        "new secret",
+        &format!("printf %s \"$TOKEN\" | qfs account rotate {provider} {label}"),
+    )?;
+    let conn_id = ConnectionId::new(label).map_err(|e| e.to_string())?;
+    let key = CredentialKey::new(DriverId(provider.to_string()), conn_id);
+    let store = open_store()?;
+    store
+        .rotate(&key, Secret::from(value))
+        .map_err(|e| format!("rotating the credential: {e}"))?;
+    crate::connection::emit_connection_audit("ROTATE", &format!("{provider}/{label}"));
+    Ok(format!(
+        "rotated {provider}/{label} (secret re-minted; any revocation cleared)"
+    ))
+}
+
+/// `qfs account revoke <provider> <label>` — mark the account's credential unresolvable (t79,
+/// moved here from the retired `connection` namespace): a later bind fails closed (the secret is
+/// never returned); other accounts keep working. Re-minting (`qfs account rotate`) restores use.
+fn revoke_account(provider: &str, label: &str) -> Result<String, String> {
+    let conn_id = ConnectionId::new(label).map_err(|e| e.to_string())?;
+    let key = CredentialKey::new(DriverId(provider.to_string()), conn_id);
+    let store = open_store()?;
+    store
+        .revoke(&key)
+        .map_err(|e| format!("revoking the account: {e}"))?;
+    crate::connection::emit_connection_audit("REVOKE", &format!("{provider}/{label}"));
+    Ok(format!(
+        "revoked {provider}/{label} (it can no longer resolve until re-minted with `qfs account rotate`)"
+    ))
 }
 
 /// The `<provider>-app` driver id an app registration is sealed under (the same key the retired
@@ -179,15 +222,13 @@ fn add_google(label: Option<&str>) -> Result<String, String> {
 
     // Record the account-level consent per Google DRIVER, keyed by the ACCOUNT EMAIL (ADR 0008
     // §4 — the mount carries the account, so the commit-time bind gate consults the mount's
-    // `(driver, account)`), and make this account the active `google` selection the legacy
-    // token-source path resolves (retired with the `connection` namespace).
+    // `(driver, account)`). No selection is made: the account becomes usable by connecting a
+    // mount to it (`qfs connect /mail gmail <email>`).
     let proj = open_project_conn()?;
     record_google_consents(&proj, &subject, &email)?;
-    secret_store::db_set_active(&proj, "google", &email)
-        .map_err(|e| format!("selecting the account: {e}"))?;
     Ok(format!(
         "authorized google account {email} (one authorization serves mail, drive, and analytics; \
-         consent granted by {subject})"
+         consent granted by {subject}) — mount it with `qfs connect /mail gmail {email}`"
     ))
 }
 
@@ -273,8 +314,9 @@ fn list_accounts() -> Result<String, String> {
     Ok(accounts.join("\n"))
 }
 
-/// `qfs account remove google <email>` — delete the refresh token, the three drivers' consent
-/// rows, and the active selection (data-sovereignty: deletion is first-class and complete).
+/// `qfs account remove google <email>` — delete the refresh token and the three drivers' consent
+/// rows (data-sovereignty: deletion is first-class and complete). Mounts bound to the account
+/// stay defined and fail closed until reconnected to another account.
 fn remove_google(email: &str) -> Result<String, String> {
     let key = qfs_google_auth::refresh_token_key(email).map_err(|e| e.to_string())?;
     let store = open_store()?;
@@ -285,13 +327,8 @@ fn remove_google(email: &str) -> Result<String, String> {
     for driver in GOOGLE_DRIVERS {
         delete_consent(&proj, driver, email)?;
     }
-    proj.execute(
-        "DELETE FROM active_account WHERE driver = 'google' AND connection = ?1",
-        rusqlite::params![email],
-    )
-    .map_err(|e| format!("clearing the account selection: {e}"))?;
     Ok(format!(
-        "removed google account {email} (token, consents, and selection deleted)"
+        "removed google account {email} (token and consents deleted)"
     ))
 }
 
@@ -358,9 +395,9 @@ mod tests {
         out
     }
 
-    /// The Google token-import bookkeeping: the refresh token lands under the account key, all
+    /// The Google token-import bookkeeping: the refresh token lands under the account key and all
     /// three Google drivers get a consent row keyed by the ACCOUNT EMAIL (ADR 0008 — what the
-    /// mount-bound bind gate consults), and the account becomes the active `google` selection.
+    /// mount-bound bind gate consults). No selection state exists (migration #11 dropped it).
     /// Removal deletes all of it (deletion is complete).
     #[test]
     fn google_account_bookkeeping_round_trips() {
@@ -372,7 +409,6 @@ mod tests {
             store.put(&key, Secret::from("1//refresh")).unwrap();
             let proj = open_project_conn().unwrap();
             record_google_consents(&proj, "op@example.com", "you@example.com").unwrap();
-            secret_store::db_set_active(&proj, "google", "you@example.com").unwrap();
 
             for driver in GOOGLE_DRIVERS {
                 assert!(
@@ -380,10 +416,6 @@ mod tests {
                     "{driver} consent recorded under the account email"
                 );
             }
-            assert_eq!(
-                secret_store::db_get_active(&proj, "google").as_deref(),
-                Some("you@example.com")
-            );
             drop(proj);
 
             let out = remove_google("you@example.com").unwrap();
@@ -395,7 +427,6 @@ mod tests {
                     "{driver} consent deleted"
                 );
             }
-            assert_eq!(secret_store::db_get_active(&proj, "google"), None);
         });
     }
 

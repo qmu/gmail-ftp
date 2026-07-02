@@ -4,8 +4,8 @@
 //!
 //! - the query-language `CONNECT`/`DISCONNECT` statement (parser-desugared to a `/sys/paths`
 //!   effect, applied by the runtime [`crate::sys`] backend), and
-//! - the `qfs connect` / `qfs disconnect` / `qfs connection list` CLI (direct DB I/O, mirroring
-//!   `qfs connection add`).
+//! - the `qfs connect` / `qfs disconnect` / `qfs connect --list` CLI (direct DB I/O,
+//!   writing selectors + secret REFERENCES only).
 //!
 //! A **defined path** is a user-chosen PATH that MOUNTS a connection: a FULL connect binds
 //! `/<path>` to a `(driver, at-locator, secret-ref)`; an ALIAS binds `/<path>` to another defined
@@ -119,7 +119,7 @@ pub fn db_remove_binding(conn: &Connection, path: &str) -> Result<u64, rusqlite:
 }
 
 /// List every defined-path binding (metadata only), ordered by `path`. The passphrase-free read the
-/// registration path (t100040), `qfs connection list`, and `/sys/paths` all consult.
+/// registration path (t100040), `qfs connect --list`, and `/sys/paths` all consult.
 ///
 /// # Errors
 /// The underlying `rusqlite::Error` on a DB failure.

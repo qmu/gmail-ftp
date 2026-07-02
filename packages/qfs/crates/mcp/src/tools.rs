@@ -13,7 +13,7 @@
 //!   policy decision; an irreversible plan (`REMOVE` / `CALL`) WITHOUT `ack` is REFUSED (a legible
 //!   "needs human approval" result), never silently applied. No privileged shortcut exists.
 //! - `connections` returns names + metadata only, through the SAME redaction as
-//!   `qfs connection list` — never secret material.
+//!   `qfs account list` — never secret material.
 //!
 //! Upstream engine errors are surfaced as the owned, secret-free [`EngineError`] (code + message
 //! only — no token, path-secret, or stack leak), reported in-band as an `isError` tool result so a
@@ -73,7 +73,7 @@ pub fn default_deny_policy() -> qfs_server::Policy {
     qfs_server::resolve_policy(None, &qfs_server::PolicyTable::new())
 }
 
-/// One stored connection — selectors + metadata ONLY (the same shape `qfs connection list`
+/// One stored connection — selectors + metadata ONLY (the same shape `qfs account list`
 /// surfaces). Never carries credential material. The binary builds these from the connection
 /// store's redacted listing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

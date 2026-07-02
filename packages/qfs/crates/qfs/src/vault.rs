@@ -12,7 +12,7 @@
 //!   this EC2 box) [`keychain_kek`] reports the guardian unavailable (`None`) and enrolling fails
 //!   with an actionable error — never a hang, never a panic.
 //! - **`passphrase`** — lives in [`crate::connection`] (`resolve_store_passphrase`), enrolled as
-//!   slot #1 by the first store open; `qfs connection rekey` re-wraps that slot only.
+//!   slot #1 by the first store open; `qfs vault rekey` re-wraps that slot only.
 //!
 //! ## Secret hygiene (RFD §10)
 //! The KEK is 32 CSPRNG bytes minted here, hex-encoded into the keyring entry, and never logged,
@@ -54,7 +54,43 @@ fn run_inner(action: &VaultAction) -> Result<String, String> {
             )),
         },
         VaultAction::Revoke { slot_id } => revoke_slot(*slot_id),
+        VaultAction::Rekey => rekey_passphrase(),
     }
+}
+
+/// `qfs vault rekey` — re-wrap the store's data-key under a NEW passphrase (t79, moved here from
+/// the retired `connection` namespace — the vault owns the store's key material). The OLD
+/// passphrase is `QFS_PASSPHRASE` (the one that opened the store); the NEW one comes from stdin
+/// (never argv). One re-wrap of the passphrase slot — existing secrets stay decryptable, the old
+/// passphrase stops unlocking. A wrong old passphrase cannot reach here (the store would not open).
+fn rekey_passphrase() -> Result<String, String> {
+    use std::io::Read;
+    let store = crate::connection::open_store()?;
+    let old =
+        std::env::var("QFS_PASSPHRASE").map_err(|_| "QFS_PASSPHRASE is not set".to_string())?;
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .map_err(|e| format!("reading the new passphrase from stdin: {e}"))?;
+    let new = buf.trim_end_matches(['\n', '\r']).to_string();
+    if new.is_empty() {
+        return Err(
+            "no new passphrase on stdin — pipe it, e.g. `printf %s \"$NEWPASS\" | qfs vault rekey`"
+                .into(),
+        );
+    }
+    store
+        .rewrap_passphrase(
+            &qfs_secrets::Secret::from(old),
+            &qfs_secrets::Secret::from(new),
+        )
+        .map_err(|e| format!("re-wrapping the data key: {e}"))?;
+    crate::connection::emit_connection_audit("REKEY", "store");
+    Ok(
+        "re-wrapped the credential store under the new passphrase — set QFS_PASSPHRASE to the \
+         new value for the next run"
+            .into(),
+    )
 }
 
 /// `qfs vault slots` — the slot metadata (id, guardian kind, created_at). Passphrase-free: slots

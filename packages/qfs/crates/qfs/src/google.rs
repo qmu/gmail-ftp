@@ -72,7 +72,7 @@ pub struct GoogleStack {
 /// The store driver/connection the Google OAuth **app** credentials are saved under, so a qfs user
 /// can offer them once and qfs owns them in its own encrypted DB (rather than depending on an env
 /// var or an external `credentials.json` that "isn't always there"). Set with:
-/// `cat credentials.json | qfs connection add google-app default` — the stored value is the Google
+/// `cat credentials.json | qfs app add google` — the stored value is the Google
 /// `credentials.json` (or a `{"client_id":…,"client_secret":…}` blob); read back by
 /// [`app_config_from_store`].
 pub const GOOGLE_APP_DRIVER: &str = "google-app";

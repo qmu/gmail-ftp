@@ -1,24 +1,27 @@
-//! The `qfs connection` composition root: the real credential-store I/O that backs
-//! `qfs connection add/list/use/remove`, injected into `qfs-cmd` as the [`qfs_cmd::ConnectionLauncher`].
+//! The **credential-store plumbing + the connect layer's CLI I/O**: opening the envelope-encrypted
+//! vault (the passphrase / keychain guardians), the sign-in gate, the rotation/rekey audit
+//! emitter, and the `qfs connect` / `qfs disconnect` / `qfs connect --list` defined-path verbs —
+//! injected into `qfs-cmd` as the [`qfs_cmd::ConnectionLauncher`]. The credentialed
+//! `qfs connection` verb NAMESPACE is retired (ADR 0008 §3): accounts live under `qfs account`,
+//! app registrations under `qfs app`, the store re-wrap under `qfs vault rekey`, and the account
+//! a statement runs as comes off the MOUNT — selection state (`active_account`) is dropped by
+//! migration #11.
 //!
 //! `qfs-cmd` may not depend on the concrete `qfs-secrets` backend (the dep_direction guard), so —
 //! exactly like the shell / serve / describe launchers — the binary owns this and `qfs-cmd` only
 //! parses the verb and calls in.
 //!
 //! ## Security (RFD §10)
-//! - The credential **value** is read from **stdin**, never from argv (argv leaks into shell
+//! - A credential **value** is read from **stdin**, never from argv (argv leaks into shell
 //!   history and `ps`).
 //! - Credentials live in the envelope-encrypted SQLite **Project DB** ([`crate::secret_store`]):
-//!   a random data-key (DEK) encrypts each secret value (ChaCha20-Poly1305), and the DEK is wrapped
-//!   under a key derived from the `QFS_PASSPHRASE` env var (argon2id) — the t43 replacement for the
-//!   old file vault. The active-connection selection lives in the DB's `active_account` table (no
-//!   passphrase needed — selectors only). Secrets are never printed, logged, or echoed.
-
-use std::io::Read;
+//!   a random data-key (DEK) encrypts each secret value (ChaCha20-Poly1305), and the DEK is
+//!   wrapped once per KeyGuardian slot (ADR 0008 §5). Secrets are never printed, logged, or
+//!   echoed.
 
 use qfs_cmd::ConnectionAction;
 use qfs_identity::{IdentityStore, SoleUser};
-use qfs_secrets::{is_cloud_driver, ConnectionId, CredentialKey, DriverId, Secret, Secrets};
+use qfs_secrets::Secret;
 use qfs_store::audit::AuditEvent;
 use rusqlite::{Connection, OptionalExtension};
 
@@ -197,25 +200,9 @@ pub fn open_store_for_commit() -> Option<SqliteSecrets> {
     SqliteSecrets::open_or_init(conn, &pass).ok()
 }
 
-/// The persisted active connection name for `driver`, read from the Project DB's `active_account`
-/// table (selectors only — no secret, so no passphrase is needed to read it). This is the same
-/// selection `qfs connection use <driver> <connection>` writes; the commit resolver consumes it to
-/// pick which credential to apply with. Returns `None` when unset/unreadable.
-#[must_use]
-pub fn active_connection(driver: &str) -> Option<String> {
-    let conn = open_project_conn().ok()?;
-    secret_store::db_get_active(&conn, driver)
-}
-
-fn cred_key(driver: &str, connection: &str) -> Result<CredentialKey, String> {
-    let conn_id =
-        ConnectionId::new(connection).map_err(|e| format!("invalid connection name: {e:?}"))?;
-    Ok(CredentialKey::new(DriverId(driver.to_string()), conn_id))
-}
-
-/// t54 / M4 — the **sign-in mandatory** gate for a cloud driver. A cloud connection is unusable for
-/// an unauthenticated operator (decision B/C: fail closed), so `connection add`/`use` for a cloud
-/// driver first resolves the signed-in identity from the System-DB identity store (t45). Returns the
+/// t54 / M4 — the **sign-in mandatory** gate for a cloud driver. A cloud credential is unusable for
+/// an unauthenticated operator (decision B/C: fail closed), so `qfs account add`/`rotate` for a
+/// cloud provider first resolves the signed-in identity from the System-DB identity store (t45). Returns the
 /// operator's identity (their primary email) to record on the consent grant, or a structured,
 /// secret-free error naming the remedy.
 ///
@@ -245,23 +232,6 @@ pub(crate) fn require_signed_in(driver: &str) -> Result<String, String> {
     }
 }
 
-/// The OAuth scope a cloud connection's consent is recorded against — the driver's minimum scope set
-/// (metadata, a §10 hint, never a token). Recorded on the consent grant so a later under-scoped use
-/// is diagnosable; the live token negotiation that actually obtains these scopes is the driver's
-/// OAuth client (`crates/google-auth`), out of band of this metadata.
-fn consent_scope(driver: &str) -> &'static str {
-    match driver {
-        "gmail" => "gmail.readonly",
-        "gdrive" => "drive.readonly",
-        "ga" => "analytics.readonly",
-        "github" => "repo",
-        "slack" => "channels:read",
-        "objstore" => "storage.read",
-        "cf" => "account.read",
-        _ => "",
-    }
-}
-
 /// The t76 audit event a rotation / revocation / re-key emits — metadata ONLY (the verb, the
 /// `<driver>/<connection>` selector, the `/sys/connections` surface, a timestamp), **never** a
 /// secret. Kept as a pure builder so the emitted shape is unit-testable over an explicit System DB.
@@ -276,10 +246,11 @@ fn connection_audit_event(verb: &str, connection: &str) -> AuditEvent {
     }
 }
 
-/// Append a connection rotation/revocation event onto the t76 hash chain (best-effort, exactly like
-/// the commit path's `emit_audit`): a missing/unavailable System DB is logged at debug and never
-/// breaks the operation. Secret-free — the event carries selectors + metadata only.
-fn emit_connection_audit(verb: &str, connection: &str) {
+/// Append a credential rotation/revocation/rekey event onto the t76 hash chain (best-effort,
+/// exactly like the commit path's `emit_audit`): a missing/unavailable System DB is logged at
+/// debug and never breaks the operation. Secret-free — the event carries selectors + metadata
+/// only. Shared by `qfs account rotate/revoke` and `qfs vault rekey`.
+pub(crate) fn emit_connection_audit(verb: &str, connection: &str) {
     let event = connection_audit_event(verb, connection);
     match crate::store::open_system_db() {
         Ok(Some(sys)) => {
@@ -303,116 +274,8 @@ fn now_rfc3339() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
-/// Read a single secret value from stdin (never argv — argv leaks into shell history and `ps`),
-/// trimming the trailing newline. Used by `connection add`/`rotate`/`rekey` for the credential-input
-/// path (§4.5 — a secret never enters a qfs statement). `what` names the value for the empty-input
-/// error so the operator knows what to pipe.
-fn read_secret_from_stdin(what: &str, example: &str) -> Result<String, String> {
-    let mut buf = String::new();
-    std::io::stdin()
-        .read_to_string(&mut buf)
-        .map_err(|e| format!("reading the {what} from stdin: {e}"))?;
-    let value = buf.trim_end_matches(['\n', '\r']).to_string();
-    if value.is_empty() {
-        return Err(format!("no {what} on stdin — pipe it, e.g. `{example}`"));
-    }
-    Ok(value)
-}
-
 fn run_inner(action: &ConnectionAction) -> Result<String, String> {
     match action {
-        ConnectionAction::Add { driver, connection } => {
-            // t54 / M4 — sign-in MANDATORY for a cloud driver. Resolve (and require) the signed-in
-            // identity BEFORE touching the secret store or stdin, so an unauthenticated operator
-            // fails closed up front (decision B/C). Local drivers are ungated (the M4 rule is a
-            // cloud-tier concern only); `subject` is `None` for them.
-            let subject = if is_cloud_driver(&DriverId(driver.clone())) {
-                Some(require_signed_in(driver)?)
-            } else {
-                None
-            };
-            // (The interactive Google browser consent moved to `qfs account add google` —
-            // ADR 0008 §3 / ticket 20260702120040; the old QFS_GOOGLE_CONSENT opt-in is retired.)
-            let store = open_store()?;
-            let key = cred_key(driver, connection)?;
-            // The credential value comes from stdin — never argv. For a cloud driver this is the
-            // refresh token provisioned out of band (the wasm/refresh-only path the OAuth client
-            // also feeds); the interactive loopback consent flow is the driver's native-only
-            // `crates/google-auth` `authorize()` and is not exercised here (no network in this path).
-            let mut buf = String::new();
-            std::io::stdin()
-                .read_to_string(&mut buf)
-                .map_err(|e| format!("reading the secret from stdin: {e}"))?;
-            let value = buf.trim_end_matches(['\n', '\r']).to_string();
-            if value.is_empty() {
-                return Err(
-                    "no secret on stdin — pipe it, e.g. `printf %s \"$TOKEN\" | qfs connection add mail work`"
-                        .into(),
-                );
-            }
-            store
-                .put(&key, Secret::from(value))
-                .map_err(|e| format!("storing the credential: {e}"))?;
-            // For a cloud driver, RECORD the consent against the connection (selectors + metadata
-            // only — never the token, which the store sealed above). This is the load-bearing M4
-            // state the commit-time bind gate consults to let the driver proceed.
-            if let Some(subject) = subject {
-                let proj = open_project_conn()?;
-                secret_store::db_record_consent(
-                    &proj,
-                    driver,
-                    connection,
-                    &subject,
-                    consent_scope(driver),
-                )
-                .map_err(|e| format!("recording consent: {e}"))?;
-                return Ok(format!(
-                    "stored credential and recorded consent for {driver}/{connection} (granted by {subject})"
-                ));
-            }
-            Ok(format!("stored credential for {driver}/{connection}"))
-        }
-        ConnectionAction::List { driver } => {
-            // Declared (non-secret) connections from the connections.qfs — these are plain config,
-            // so they list WITHOUT a passphrase. Selectors + the secret REFERENCE only, never a value.
-            let declared: Vec<_> = crate::connections_config::declared_connections()
-                .into_iter()
-                .filter(|c| driver.as_deref().is_none_or(|d| c.driver == d))
-                .collect();
-            for c in &declared {
-                let secret = c
-                    .secret_ref
-                    .as_deref()
-                    .map_or(String::new(), |r| format!("\tsecret {r}"));
-                println!("{}/{}\t(declared){secret}", c.driver, c.name);
-            }
-            // Stored credentials — the encrypted vault behind `vault:` references. Needs the
-            // passphrase; when it can't open we still show the declared connections (the vault is
-            // just locked) unless there is nothing else to show, in which case surface the error.
-            let stored = match open_store() {
-                Ok(store) => {
-                    let filter = driver.as_ref().map(|d| DriverId(d.clone()));
-                    let recs = store
-                        .list(filter.as_ref())
-                        .map_err(|e| format!("listing connections: {e}"))?;
-                    // Selectors + metadata only — never a credential.
-                    for r in &recs {
-                        println!("{}/{}\t{}", r.driver.0, r.connection, r.created_at);
-                    }
-                    recs.len()
-                }
-                Err(e) if declared.is_empty() => return Err(e),
-                Err(_) => 0,
-            };
-            if declared.is_empty() && stored == 0 {
-                return Ok("no connections configured".into());
-            }
-            Ok(format!(
-                "{} declared + {} stored connection(s)",
-                declared.len(),
-                stored
-            ))
-        }
         ConnectionAction::ImportEnv => {
             // Print the CREATE CONNECTION declarations equivalent to the current QFS_SQL_*/QFS_GIT_*
             // env vars — the one-command migration off the deprecated convention. No secret is read
@@ -423,83 +286,6 @@ fn run_inner(action: &ConnectionAction) -> Result<String, String> {
             }
             println!("{decls}");
             Ok("printed the equivalent CREATE CONNECTION declarations".into())
-        }
-        ConnectionAction::Remove { driver, connection } => {
-            let store = open_store()?;
-            let key = cred_key(driver, connection)?;
-            store
-                .remove(&key)
-                .map_err(|e| format!("removing the credential: {e}"))?;
-            Ok(format!("removed {driver}/{connection} (idempotent)"))
-        }
-        ConnectionAction::Rotate { driver, connection } => {
-            // t79 — re-mint the secret. Cloud drivers carry the same sign-in gate as `add` (a cloud
-            // connection is unusable for an unauthenticated operator); resolve identity BEFORE stdin.
-            if is_cloud_driver(&DriverId(driver.clone())) {
-                let _ = require_signed_in(driver)?;
-            }
-            let store = open_store()?;
-            let key = cred_key(driver, connection)?;
-            // The NEW credential value comes from stdin — never argv (§4.5).
-            let value = read_secret_from_stdin(
-                "new secret",
-                &format!("printf %s \"$TOKEN\" | qfs connection rotate {driver} {connection}"),
-            )?;
-            store
-                .rotate(&key, Secret::from(value))
-                .map_err(|e| format!("rotating the credential: {e}"))?;
-            emit_connection_audit("ROTATE", &format!("{driver}/{connection}"));
-            Ok(format!(
-                "rotated {driver}/{connection} (secret re-minted; any revocation cleared)"
-            ))
-        }
-        ConnectionAction::Revoke { driver, connection } => {
-            // t79 — mark the connection unresolvable. A later bind fails closed (the secret is never
-            // returned); other connections keep working. Re-minting (`rotate`) restores use.
-            let store = open_store()?;
-            let key = cred_key(driver, connection)?;
-            store
-                .revoke(&key)
-                .map_err(|e| format!("revoking the connection: {e}"))?;
-            emit_connection_audit("REVOKE", &format!("{driver}/{connection}"));
-            Ok(format!(
-                "revoked {driver}/{connection} (it can no longer resolve until re-minted with `qfs connection rotate`)"
-            ))
-        }
-        ConnectionAction::Rekey => {
-            // t79 — DEK re-wrap on a passphrase change. The OLD passphrase is `QFS_PASSPHRASE` (the
-            // one that opened the store); the NEW passphrase comes from stdin (never argv). One
-            // re-wrap of the wrapped-DEK — existing secrets stay decryptable, the old passphrase
-            // stops unlocking. A wrong old passphrase cannot reach here (the store would not open).
-            let store = open_store()?;
-            let old = std::env::var("QFS_PASSPHRASE")
-                .map_err(|_| "QFS_PASSPHRASE is not set".to_string())?;
-            let new = read_secret_from_stdin(
-                "new passphrase",
-                "printf %s \"$NEWPASS\" | qfs connection rekey",
-            )?;
-            store
-                .rewrap_passphrase(&Secret::from(old), &Secret::from(new))
-                .map_err(|e| format!("re-wrapping the data key: {e}"))?;
-            emit_connection_audit("REKEY", "store");
-            Ok("re-wrapped the credential store under the new passphrase — set QFS_PASSPHRASE to the new value for the next run".into())
-        }
-        ConnectionAction::Use { driver, connection } => {
-            // Validate the names, then persist the active selection into the Project DB's
-            // `active_account` table (selectors only — no passphrase needed). The commit resolver
-            // reads it back via `active_connection()`.
-            let _ = cred_key(driver, connection)?;
-            // t54 / M4 — selecting a cloud connection is gated on sign-in too: an unauthenticated
-            // operator may not make a cloud connection active (fail closed).
-            if is_cloud_driver(&DriverId(driver.clone())) {
-                let _ = require_signed_in(driver)?;
-            }
-            let conn = open_project_conn()?;
-            secret_store::db_set_active(&conn, driver, connection)
-                .map_err(|e| format!("setting the active connection: {e}"))?;
-            Ok(format!(
-                "active connection for {driver} set to {connection}"
-            ))
         }
         // t100020 (the CONNECT model): bind a defined PATH to a driver + credential reference (or an
         // alias). Direct Project-DB I/O — the twin of the `CONNECT` statement. No passphrase: the
@@ -620,14 +406,6 @@ fn run_connect(
 mod tests {
     use super::*;
 
-    #[test]
-    fn cred_key_rejects_an_invalid_connection_name() {
-        assert!(cred_key("mail", "").is_err());
-        let k = cred_key("mail", "work").expect("valid");
-        assert_eq!(k.driver.0, "mail");
-        assert_eq!(k.connection.as_str(), "work");
-    }
-
     /// `store_initialized` is the passphrase-free flag that decides first-run (create + confirm) vs
     /// unlock in the interactive prompt: false on a migrated-but-empty Project DB, true once any
     /// vault-key slot exists (what the first `open_or_init` enrolls — ADR 0008 §5; migration #10
@@ -655,34 +433,6 @@ mod tests {
         assert!(
             store_initialized(&conn),
             "an established store is initialized"
-        );
-    }
-
-    /// The active-connection selection now round-trips through the Project DB's `active_account`
-    /// table (replacing the old `.active` sidecar): `use` UPSERTs, the resolver reads back, and
-    /// per-driver rows stay independent (last-writer-wins). Exercised over the same DB seam the
-    /// binary uses (`db_set_active` / `db_get_active`).
-    #[test]
-    fn active_selection_round_trips_through_the_db_table() {
-        use qfs_store::{MemorySource, ProjectDb};
-        let conn = ProjectDb::open(&MemorySource)
-            .unwrap()
-            .into_db()
-            .into_connection();
-
-        assert!(secret_store::db_get_active(&conn, "mail").is_none());
-        secret_store::db_set_active(&conn, "mail", "work").unwrap();
-        secret_store::db_set_active(&conn, "s3", "prod").unwrap();
-        // Replacing mail's connection must NOT affect s3 and must not duplicate the row.
-        secret_store::db_set_active(&conn, "mail", "personal").unwrap();
-
-        assert_eq!(
-            secret_store::db_get_active(&conn, "mail").as_deref(),
-            Some("personal")
-        );
-        assert_eq!(
-            secret_store::db_get_active(&conn, "s3").as_deref(),
-            Some("prod")
         );
     }
 

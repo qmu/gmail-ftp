@@ -465,35 +465,6 @@ fn parse_created_at(s: &str) -> OffsetDateTime {
     OffsetDateTime::parse(s, &Rfc3339).unwrap_or(OffsetDateTime::UNIX_EPOCH)
 }
 
-/// Set (UPSERT) the active connection for `driver` in the `active_account` table — last-writer-wins,
-/// the same semantics as the old `credentials.active` sidecar. Selectors only; no passphrase.
-///
-/// # Errors
-/// [`SecretError::Backend`] on a DB failure (secret-free message).
-pub fn db_set_active(conn: &Connection, driver: &str, connection: &str) -> Result<(), SecretError> {
-    conn.execute(
-        "INSERT INTO active_account (driver, connection) VALUES (?1, ?2) \
-         ON CONFLICT(driver) DO UPDATE SET connection = excluded.connection",
-        rusqlite::params![driver, connection],
-    )
-    .map_err(|e| SecretError::Backend(format!("setting active connection: {e}")))?;
-    Ok(())
-}
-
-/// Read the active connection for `driver` from the `active_account` table, or `None` if unset /
-/// unreadable. Best-effort (selectors only; no passphrase) so the commit resolver can fall back.
-#[must_use]
-pub fn db_get_active(conn: &Connection, driver: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT connection FROM active_account WHERE driver = ?1",
-        rusqlite::params![driver],
-        |r| r.get::<_, String>(0),
-    )
-    .optional()
-    .ok()
-    .flatten()
-}
-
 /// A recorded cloud-connection consent grant — selectors + metadata ONLY (subject, scope, time),
 /// **never** a secret. This is what [`db_get_consent`] reads back so the commit-time bind gate can
 /// confirm a signed-in operator granted this `(driver, connection)` explicit consent (t54 / M4).
@@ -510,7 +481,7 @@ pub struct ConsentRow {
 /// Record (UPSERT) that the `subject` granted consent for the cloud `driver`/`connection` with
 /// `scope`. Last-writer-wins per `(driver, connection)`. Selectors + metadata only — the refresh
 /// token itself is sealed separately in `secret_store`; this row carries no key material, so it needs
-/// no passphrase (the same passphrase-free path as `active_account`).
+/// no passphrase (the same passphrase-free path as `connection_consent`).
 ///
 /// # Errors
 /// [`SecretError::Backend`] on a DB failure (secret-free message).
@@ -574,7 +545,7 @@ pub struct SharedConnectionRow {
 /// member's actor-policy must grant to USE it, recording `shared_by` (who shared it). UPSERT —
 /// re-sharing updates the scope/sharer (last-writer-wins per `(driver, connection)`). Selectors +
 /// metadata only — the credential itself stays ENCRYPTED in `secret_store`; this row carries no key
-/// material, so it needs no passphrase (the same passphrase-free path as `active_account`).
+/// material, so it needs no passphrase (the same passphrase-free path as `connection_consent`).
 ///
 /// # Errors
 /// [`SecretError::Backend`] on a DB failure (secret-free message).
@@ -697,7 +668,7 @@ pub struct BrokerConnectionRow {
 /// `broker_client_id`, the `scope`, and who provisioned it (`brokered_by`). Last-writer-wins per
 /// `(driver, connection)`. Selectors + metadata only — the brokered token itself is sealed separately
 /// in `secret_store`; this row carries no key material, so it needs no passphrase (the same
-/// passphrase-free path as `shared_connection`/`active_account`).
+/// passphrase-free path as `shared_connection`/`connection_consent`).
 ///
 /// # Errors
 /// [`SecretError::Backend`] on a DB failure (secret-free message).
@@ -1053,19 +1024,20 @@ mod tests {
         );
     }
 
+    /// ADR 0008 (migration #11): the `active_account` selection table is GONE — the mount carries
+    /// the account, so a migrated store has nothing to select against.
     #[test]
-    fn active_connection_set_get_round_trip() {
+    fn active_account_table_is_dropped() {
         let conn = migrated_conn();
-        assert!(db_get_active(&conn, "mail").is_none());
-        db_set_active(&conn, "mail", "work").unwrap();
-        assert_eq!(db_get_active(&conn, "mail").as_deref(), Some("work"));
-        // Last-writer-wins (UPSERT keeps one row per driver).
-        db_set_active(&conn, "mail", "personal").unwrap();
-        assert_eq!(db_get_active(&conn, "mail").as_deref(), Some("personal"));
-        // Other drivers are independent.
-        db_set_active(&conn, "s3", "prod").unwrap();
-        assert_eq!(db_get_active(&conn, "s3").as_deref(), Some("prod"));
-        assert_eq!(db_get_active(&conn, "mail").as_deref(), Some("personal"));
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'active_account'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(exists.is_none(), "active_account must be dropped by v11");
     }
 
     #[test]

@@ -36,7 +36,7 @@ pub trait Secrets: Send + Sync {
     fn put(&self, key: &CredentialKey, value: Secret) -> Result<(), SecretError>;
 
     /// Remove the credential for `key`. Removing an absent key is **not** an error
-    /// (idempotent — `qfs connection remove` is replayable).
+    /// (idempotent — `qfs account remove` is replayable).
     ///
     /// # Errors
     /// [`SecretError::Locked`] or [`SecretError::Backend`] on failure.
@@ -57,7 +57,7 @@ pub trait Secrets: Send + Sync {
 /// it from a `Secret` is impossible because `Secret` has no `Display`/`Into<String>`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SecretError {
-    /// No credential stored for this `(driver, connection)`. Actionable: run `qfs connection
+    /// No credential stored for this `(driver, connection)`. Actionable: run `qfs account
     /// add` for the named connection.
     #[error("no credential for {}/{}", .0.driver.as_str(), .0.connection.as_str())]
     NotFound(CredentialKey),
@@ -70,7 +70,7 @@ pub enum SecretError {
     /// The credential for this `(driver, connection)` was **revoked** (t79 — offboarding /
     /// compromise). The connection is marked revoked and the bind path REFUSES to resolve it: the
     /// secret is NEVER decrypted or returned (default-deny). Carries the *key* (selectors), never
-    /// the value. Actionable: re-mint it with `qfs connection rotate <driver> <connection>`, which
+    /// the value. Actionable: re-mint it with `qfs account rotate <provider> <label>`, which
     /// replaces the secret and clears the revocation.
     #[error("credential for {}/{} is revoked", .0.driver.as_str(), .0.connection.as_str())]
     Revoked(CredentialKey),

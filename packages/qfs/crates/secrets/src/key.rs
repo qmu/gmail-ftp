@@ -113,7 +113,7 @@ impl CredentialKey {
 ///
 /// This is the *connection record's* ownership label (the t44 connection record, extended). It is
 /// metadata only — never a credential — so it is safe to `Debug`, serialize, and surface in
-/// `qfs connection list`. The owner is **not** the policy: a project-owned connection only *selects*
+/// `qfs account list`. The owner is **not** the policy: a project-owned connection only *selects*
 /// which upstream credential an allowed effect rides; the actor's policy decides whether the effect
 /// is allowed at all (§3.3 — policy gates the actor, the connection picks the credential).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -156,7 +156,7 @@ impl OwnerScope {
 }
 
 /// A listing entry describing one stored connection — selectors + metadata only, **never**
-/// the credential. Safe to `Debug`, serialize, log, and surface in `qfs connection list`.
+/// the credential. Safe to `Debug`, serialize, log, and surface in `qfs account list`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionRecord {
     /// The driver this connection belongs to.
