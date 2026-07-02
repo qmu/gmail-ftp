@@ -252,21 +252,6 @@ fn live_registry() -> DriverRegistry {
         );
     }
 
-    // GitHub: the real REST client over the production reqwest transport + the resolved credential.
-    // t54 / M4 — github is a CLOUD driver: it only binds when a signed-in operator has recorded
-    // consent for the selected connection (`cloud_bind_allowed`). Otherwise it is left UNREGISTERED
-    // (fail closed) and the refusal reason is logged secret-free, so a `/github` commit fails with a
-    // clear cause rather than silently acting without consent. The credentialed client is built by
-    // the SHARED [`crate::clients`] builder, so the commit applier and the read facet
-    // (`run_engine_and_reads`) bind the SAME client construction + bind gate — one source of truth.
-    if let Some(gh_client) = crate::clients::live_github_client() {
-        let gh_driver = qfs_driver_github::GitHubDriver::new(gh_client);
-        reg = reg.with(
-            DriverId::new("github"),
-            Arc::new(qfs_driver_github::github_apply_driver(&gh_driver)),
-        );
-    }
-
     // SQL: the real SQLite-backed driver, when at least one `QFS_SQL_<conn>` is configured. Real
     // ACID `INSERT`/`UPDATE`/`UPSERT`/`REMOVE` legs apply through the live connection; an
     // unconfigured `/sql` commit fails closed (no driver) rather than faking success.
@@ -318,121 +303,152 @@ fn live_registry() -> DriverRegistry {
         );
     }
 
-    // Slack: same shape (the shared reqwest transport, Slack's body-error rule on). Slack is a CLOUD
-    // driver too — gated on the same sign-in + recorded-consent bind rule as github (t54 / M4). The
-    // credentialed client comes from the SAME shared [`crate::clients`] builder the read facet uses.
-    if let Some(sl_client) = crate::clients::live_slack_client() {
-        let sl_driver = qfs_driver_slack::SlackDriver::new(sl_client);
-        reg = reg.with(
-            DriverId::new("slack"),
-            Arc::new(qfs_driver_slack::slack_apply_driver(&sl_driver)),
-        );
-    }
-
-    // Google (gmail / gdrive / ga): the real OAuth-authenticated clients over the shared reqwest
-    // transport + the per-account refresh token. Composed in `crate::google`, registered here under
-    // the runtime DriverIds `mail` / `drive` / `ga`. FAIL CLOSED on two layers: the stack is `None`
-    // unless the operator's Google OAuth app (QFS_GOOGLE_CLIENT_ID/SECRET) AND an active account
-    // email are configured (so without config NO Google driver is registered — a `/mail` commit then
-    // fails "no driver / not configured", honest); and each driver additionally only binds when the
-    // SAME t54 cloud sign-in + recorded-consent gate (`cloud_bind_allowed`) passes for its consent
-    // driver name (`gmail`/`gdrive`/`ga`). The live browser consent + live commit remain a documented
-    // seam (`crate::google`); this wires the plumbing so a configured, consented operator routes.
-    reg = register_google(reg, crate::google::live_google_stack());
-
-    // S3 / R2 (objstore): the real SigV4-signed S3-compatible backend over the shared reqwest
-    // transport + the resolved secret access key. FAIL CLOSED on two layers: the routing config is
-    // `None` unless the operator set the endpoint/region/bucket/access-key-id env vars (see
-    // `crate::objstore`), so without config NO objstore driver is registered (a `/s3` commit then
-    // fails "no driver / not configured", honest); and a present config still resolves the SECRET
-    // access key from the encrypted credential store and binds nothing if it cannot be resolved.
-    // Live S3/R2 (a real bucket round-trip) remains a documented seam (no live network is exercised
-    // by any test); this wires the plumbing so a configured operator's commit routes + signs.
-    reg = register_objstore(reg, live_s3_driver(), live_r2_driver());
+    // Cloud mounts (ADR 0008 §4 — mount-bound accounts): every connect-created cloud mount
+    // (gmail/gdrive/ga/github/slack/s3/r2) registers its OWN apply driver under the mount's
+    // segment id, bound to the MOUNT's account — never a process-global selection. N mounts of
+    // one kind coexist as N registered drivers. FAIL CLOSED per mount: no account on a cloud
+    // mount, an unconfigured operator app, a refused t54 sign-in/consent gate, or an
+    // unresolvable credential all leave THAT mount unregistered (a commit against it then fails
+    // "no driver / not configured", honest) without affecting sibling mounts.
+    reg = register_cloud_mounts(reg, &crate::cloud_mounts::load_cloud_mounts());
 
     reg
 }
 
-/// Register the object-storage apply drivers (`/s3`, `/r2`) into `reg` when a live, fully-configured
-/// SigV4 driver is available for each. Factored out (and taking the built drivers as parameters) so
-/// the **fail-closed** contract is hermetic: `register_objstore(reg, None, None)` touches no store
-/// and registers nothing, which is exactly the no-config path. The live builders
-/// ([`live_s3_driver`] / [`live_r2_driver`]) return `None` whenever the routing config or the secret
-/// access key is absent, so an unconfigured `/s3`/`/r2` commit fails closed (no driver) rather than
-/// faking success.
-fn register_objstore(
+/// Register every connect-created cloud mount's apply driver into `reg` (ADR 0008 §4): each
+/// mount gets its kind's real apply driver, bound to the MOUNT's account and wrapped in a
+/// [`MountApplyDriver`](crate::mount_adapter::MountApplyDriver) so the interpreter routes the
+/// mount's segment id to it. Factored out (and taking the mounts as a parameter) so the
+/// **fail-closed** contract is hermetic: `register_cloud_mounts(reg, &[])` touches no store and
+/// registers nothing — exactly the fresh, nothing-connected state. Per-mount failures
+/// (no account, no operator app, refused consent gate, unresolvable credential) skip THAT mount
+/// only, so one broken mount cannot sink its siblings.
+fn register_cloud_mounts(
     mut reg: DriverRegistry,
-    s3: Option<qfs_driver_objstore::S3Driver>,
-    r2: Option<qfs_driver_objstore::R2Driver>,
+    mounts: &[crate::cloud_mounts::CloudMount],
 ) -> DriverRegistry {
-    if let Some(driver) = &s3 {
-        reg = reg.with(
-            DriverId::new("s3"),
-            Arc::new(qfs_driver_objstore::s3_apply_driver(driver)),
-        );
-    }
-    if let Some(driver) = &r2 {
-        reg = reg.with(
-            DriverId::new("r2"),
-            Arc::new(qfs_driver_objstore::r2_apply_driver(driver)),
-        );
+    for mount in mounts {
+        let Some(remap) = mount.remap() else { continue };
+        if let Some(apply) = cloud_apply_driver(mount) {
+            reg = reg.with(
+                remap.outer_id(),
+                Arc::new(crate::mount_adapter::MountApplyDriver::new(remap, apply)),
+            );
+        }
     }
     reg
 }
 
-/// Build the live SigV4 [`S3Driver`](qfs_driver_objstore::S3Driver) when fully configured, else
-/// `None` (fail closed). Resolves the NON-secret routing config from the environment
-/// (`crate::objstore::s3_config`) and the SECRET access key from the SAME encrypted credential store
-/// the networked drivers use (keyed by driver id `s3` + the active connection); the secret is read
-/// here only to hand it to the signer (a `qfs_secrets::Secret` that redacts) — if it cannot be
-/// resolved (locked store, no credential) the driver is left unregistered, never a panic. The
-/// `amz_date`/`date_stamp` are fixed at construction from the current UTC (the live registry is
-/// rebuilt per short-lived commit, so a per-build wall-clock read is correct).
-fn live_s3_driver() -> Option<qfs_driver_objstore::S3Driver> {
-    let cfg = crate::objstore::s3_config()?;
-    let registry = build_obj_registry("s3", cfg)?;
-    Some(qfs_driver_objstore::S3Driver::new(registry))
+/// Build the live apply driver for one cloud mount, bound to the mount's account — or `None`
+/// (fail closed, secret-free debug log) when the mount cannot bind. The account/credential
+/// resolution is the mount's row alone: a Google mount's `account` is the email whose refresh
+/// token the stack reads; a github/slack/s3/r2 mount's `account` is the credential label the
+/// token was sealed under (defaulting to `default`).
+fn cloud_apply_driver(
+    mount: &crate::cloud_mounts::CloudMount,
+) -> Option<Arc<dyn qfs_runtime::ApplyDriver>> {
+    match mount.kind.as_str() {
+        "gmail" | "gdrive" | "ga" | "google-analytics" => {
+            let stack = google_stack_for_mount(mount)?;
+            Some(match mount.kind.as_str() {
+                "gmail" => {
+                    let client: Arc<dyn qfs_driver_gmail::GmailClient> = Arc::new(
+                        qfs_driver_gmail::GoogleApiGmailClient::new(stack.api.clone()),
+                    );
+                    let driver = qfs_driver_gmail::GmailDriver::new(client);
+                    Arc::new(qfs_driver_gmail::gmail_apply_driver(&driver))
+                }
+                "gdrive" => {
+                    let client: Arc<dyn qfs_driver_gdrive::GDriveClient> = Arc::new(
+                        qfs_driver_gdrive::GoogleApiDriveClient::new(stack.api.clone()),
+                    );
+                    let driver = qfs_driver_gdrive::GDriveDriver::new(client);
+                    Arc::new(qfs_driver_gdrive::gdrive_apply_driver(&driver))
+                }
+                _ => {
+                    let client: Arc<dyn qfs_driver_ga::GaClient> =
+                        Arc::new(qfs_driver_ga::GoogleApiGaClient::new(stack.api.clone()));
+                    let driver = qfs_driver_ga::GaDriver::new(client);
+                    Arc::new(qfs_driver_ga::ga_apply_driver(&driver))
+                }
+            })
+        }
+        "github" => {
+            let client = crate::clients::live_github_client(mount_connection(mount))?;
+            let driver = qfs_driver_github::GitHubDriver::new(client);
+            Some(Arc::new(qfs_driver_github::github_apply_driver(&driver)))
+        }
+        "slack" => {
+            let client = crate::clients::live_slack_client(mount_connection(mount))?;
+            let driver = qfs_driver_slack::SlackDriver::new(client);
+            Some(Arc::new(qfs_driver_slack::slack_apply_driver(&driver)))
+        }
+        "s3" => {
+            let cfg = crate::objstore::s3_config()?;
+            let registry = build_obj_registry("s3", mount_connection(mount), cfg)?;
+            let driver = qfs_driver_objstore::S3Driver::new(registry);
+            Some(Arc::new(qfs_driver_objstore::s3_apply_driver(&driver)))
+        }
+        "r2" => {
+            let cfg = crate::objstore::r2_config()?;
+            let registry = build_obj_registry("r2", mount_connection(mount), cfg)?;
+            let driver = qfs_driver_objstore::R2Driver::new(registry);
+            Some(Arc::new(qfs_driver_objstore::r2_apply_driver(&driver)))
+        }
+        // cf is describe-only today (its live driver is a separate ticket) — no apply facet.
+        _ => None,
+    }
 }
 
-/// Build the live SigV4 [`ObjDriver`](qfs_driver_objstore::ObjDriver) for the READ facet (t-203070):
-/// the same fail-closed live registry [`live_s3_driver`]/[`live_r2_driver`] build for the apply path,
-/// exposed as the bare `ObjDriver` the read facet (`crate::read_facets::ObjReadDriver`) calls `ls`/
-/// `get` on. `None` (fail closed) whenever the routing config or the secret access key is absent.
-pub(crate) fn live_obj_read_driver(
-    scheme: qfs_driver_objstore::Scheme,
-) -> Option<qfs_driver_objstore::ObjDriver> {
-    use qfs_driver_objstore::Scheme;
-    let (driver_id, cfg) = match scheme {
-        Scheme::S3 => ("s3", crate::objstore::s3_config()?),
-        Scheme::R2 => ("r2", crate::objstore::r2_config()?),
+/// The credential-store **connection label** a non-Google cloud mount binds: the mount's
+/// account, defaulting to `default` (the label `qfs account add <provider>` seals under when
+/// none is given).
+fn mount_connection(mount: &crate::cloud_mounts::CloudMount) -> &str {
+    mount.account.as_deref().unwrap_or("default")
+}
+
+/// Build the account-bound [`GoogleStack`](crate::google::GoogleStack) for one Google-kind cloud
+/// mount, or `None` (fail closed): the mount must carry an account email (ADR 0008 — no account,
+/// no bind), the t54 sign-in + consent gate must pass for the mount's `(kind, account)`, and the
+/// operator's OAuth app credentials must resolve.
+pub(crate) fn google_stack_for_mount(
+    mount: &crate::cloud_mounts::CloudMount,
+) -> Option<crate::google::GoogleStack> {
+    let Some(email) = mount.account.as_deref() else {
+        tracing::debug!(
+            target: "qfs::consent",
+            "cloud mount '{}' has no account — reconnect it with an account email",
+            mount.path
+        );
+        return None;
     };
-    let registry = build_obj_registry(driver_id, cfg)?;
-    Some(qfs_driver_objstore::ObjDriver::new(scheme, registry))
+    let consent_kind = if mount.kind == "google-analytics" {
+        "ga"
+    } else {
+        mount.kind.as_str()
+    };
+    if !cloud_bind_allowed(consent_kind, email) {
+        return None;
+    }
+    crate::google::google_stack_for_account(email)
 }
 
-/// Build the live SigV4 [`R2Driver`](qfs_driver_objstore::R2Driver) when fully configured, else
-/// `None` (fail closed) — the R2 twin of [`live_s3_driver`], reusing the same native SigV4 backend.
-fn live_r2_driver() -> Option<qfs_driver_objstore::R2Driver> {
-    let cfg = crate::objstore::r2_config()?;
-    let registry = build_obj_registry("r2", cfg)?;
-    Some(qfs_driver_objstore::R2Driver::new(registry))
-}
-
-/// Shared objstore-registry builder for a `driver` id (`s3`/`r2`) over a resolved
-/// [`ObjConfig`](crate::objstore::ObjConfig): resolve + gate the credential exactly like the
-/// networked drivers (the t81/t80 bind gates AND the t54 cloud bind gate — a no-op for the
-/// non-cloud-classified `s3`/`r2` ids, kept for structural parity and future-proofing), read the
-/// secret access key from the store (fail closed on any error), construct the SigV4
-/// [`HttpBackend`](qfs_driver_objstore::HttpBackend) over the shared reqwest exchange, and register
-/// the single configured bucket. Returns `None` (driver left unregistered) whenever the credential
-/// cannot bind or resolve.
+/// Shared objstore-registry builder for a `driver` id (`s3`/`r2`) over the mount's credential
+/// `connection` label and a resolved [`ObjConfig`](crate::objstore::ObjConfig): resolve + gate
+/// the credential exactly like the networked drivers (the t81/t80 bind gates AND the t54 cloud
+/// bind gate — a no-op for the non-cloud-classified `s3`/`r2` ids, kept for structural parity
+/// and future-proofing), read the secret access key from the store (fail closed on any error),
+/// construct the SigV4 [`HttpBackend`](qfs_driver_objstore::HttpBackend) over the shared reqwest
+/// exchange, and register the single configured bucket. Returns `None` (driver left
+/// unregistered) whenever the credential cannot bind or resolve.
 fn build_obj_registry(
     driver: &str,
+    connection: &str,
     cfg: crate::objstore::ObjConfig,
 ) -> Option<qfs_driver_objstore::ObjRegistry> {
     use qfs_driver_objstore::{Bucket, HttpBackend, ObjRegistry, SigV4Credentials};
 
-    let (store, cred) = networked_credential(driver)?;
+    let (store, cred) = networked_credential(driver, connection)?;
     if !cloud_bind_allowed(driver, cred.connection.as_str()) {
         return None;
     }
@@ -452,67 +468,21 @@ fn build_obj_registry(
     Some(ObjRegistry::new().with_bucket(cfg.bucket, Bucket::new(Arc::new(backend))))
 }
 
-/// Register the Google apply drivers (`/mail`, `/drive`, `/ga`) into `reg` when a live
-/// [`GoogleStack`](crate::google::GoogleStack) is available, each gated by the t54 cloud bind rule.
-///
-/// Factored out (and taking the stack as a parameter) so the **fail-closed** contract is hermetic:
-/// `register_google(reg, None)` touches no store and registers nothing, which is exactly the
-/// no-config path. A present stack still binds a driver only when `cloud_bind_allowed` passes for
-/// that driver's consent name — gmail→`gmail`, drive→`gdrive`, ga→`ga` (the `is_cloud_driver`
-/// classification keys off those names, while the runtime registry keys off `mail`/`drive`/`ga`).
-/// The shared `GoogleApiClient` is cloned (`Arc`) into each driver's client (one token cache serves
-/// all three). A refused bind leaves the driver UNREGISTERED (fail closed); the reason is logged
-/// secret-free by `cloud_bind_allowed`.
-fn register_google(
-    mut reg: DriverRegistry,
-    stack: Option<crate::google::GoogleStack>,
-) -> DriverRegistry {
-    let Some(stack) = stack else {
-        return reg;
+/// Build the live SigV4 [`ObjDriver`](qfs_driver_objstore::ObjDriver) for one objstore cloud
+/// mount's READ facet (t-203070): the same fail-closed registry the apply path builds, exposed
+/// as the bare `ObjDriver` the read facet (`crate::read_facets::ObjReadDriver`) calls `ls`/`get`
+/// on. `None` (fail closed) whenever the routing config or the secret access key is absent.
+pub(crate) fn live_obj_read_driver(
+    scheme: qfs_driver_objstore::Scheme,
+    connection: &str,
+) -> Option<qfs_driver_objstore::ObjDriver> {
+    use qfs_driver_objstore::Scheme;
+    let (driver_id, cfg) = match scheme {
+        Scheme::S3 => ("s3", crate::objstore::s3_config()?),
+        Scheme::R2 => ("r2", crate::objstore::r2_config()?),
     };
-
-    // gmail → /mail
-    let gmail_conn =
-        crate::connection::active_connection("gmail").unwrap_or_else(|| "default".to_string());
-    if cloud_bind_allowed("gmail", &gmail_conn) {
-        let client: Arc<dyn qfs_driver_gmail::GmailClient> = Arc::new(
-            qfs_driver_gmail::GoogleApiGmailClient::new(stack.api.clone()),
-        );
-        let driver = qfs_driver_gmail::GmailDriver::new(client);
-        reg = reg.with(
-            DriverId::new("mail"),
-            Arc::new(qfs_driver_gmail::gmail_apply_driver(&driver)),
-        );
-    }
-
-    // gdrive → /drive
-    let gdrive_conn =
-        crate::connection::active_connection("gdrive").unwrap_or_else(|| "default".to_string());
-    if cloud_bind_allowed("gdrive", &gdrive_conn) {
-        let client: Arc<dyn qfs_driver_gdrive::GDriveClient> = Arc::new(
-            qfs_driver_gdrive::GoogleApiDriveClient::new(stack.api.clone()),
-        );
-        let driver = qfs_driver_gdrive::GDriveDriver::new(client);
-        reg = reg.with(
-            DriverId::new("drive"),
-            Arc::new(qfs_driver_gdrive::gdrive_apply_driver(&driver)),
-        );
-    }
-
-    // ga → /ga
-    let ga_conn =
-        crate::connection::active_connection("ga").unwrap_or_else(|| "default".to_string());
-    if cloud_bind_allowed("ga", &ga_conn) {
-        let client: Arc<dyn qfs_driver_ga::GaClient> =
-            Arc::new(qfs_driver_ga::GoogleApiGaClient::new(stack.api.clone()));
-        let driver = qfs_driver_ga::GaDriver::new(client);
-        reg = reg.with(
-            DriverId::new("ga"),
-            Arc::new(qfs_driver_ga::ga_apply_driver(&driver)),
-        );
-    }
-
-    reg
+    let registry = build_obj_registry(driver_id, connection, cfg)?;
+    Some(qfs_driver_objstore::ObjDriver::new(scheme, registry))
 }
 
 /// t54 / M4 — the commit-time **bind gate** for a cloud driver: may a credential for
@@ -580,27 +550,28 @@ fn consent_recorded(driver: &str, connection: &str) -> bool {
 }
 
 /// Resolve the `(store, credential key)` a networked driver applies with. Reads the **same**
-/// credential `qfs connection add <driver> <name>` wrote: the envelope-encrypted SQLite store
+/// credential `qfs account add <driver> <label>` sealed: the envelope-encrypted SQLite store
 /// ([`crate::secret_store::SqliteSecrets`]) when `QFS_PASSPHRASE` + the Project DB exist, else the
-/// process-env store (`QFS_SECRET_*`, the agent / CI path). The connection is the one `qfs connection use
-/// <driver> <name>` selected (the Project DB's `active_account` table), defaulting to `default`. The
+/// process-env store (`QFS_SECRET_*`, the agent / CI path). The `connection` label comes from the
+/// caller — under ADR 0008 it is the MOUNT's account, never a process-global selection. The
 /// secret is **not** read here — the client reads it lazily at request-build time, so a
 /// missing/locked credential becomes a clear per-leg auth error at commit, never a panic at registry
 /// build. Returns `None` only if the connection id cannot be constructed (impossible for the literal
 /// `default` fallback) — in which case the driver is simply left unregistered rather than panicking.
-pub(crate) fn networked_credential(driver: &str) -> Option<(Arc<dyn Secrets>, CredentialKey)> {
+pub(crate) fn networked_credential(
+    driver: &str,
+    connection: &str,
+) -> Option<(Arc<dyn Secrets>, CredentialKey)> {
     let store: Arc<dyn Secrets> = match crate::connection::open_store_for_commit() {
         Some(sqlite) => Arc::new(sqlite),
         None => Arc::new(EnvStore::from_process_env()),
     };
-    let connection =
-        crate::connection::active_connection(driver).unwrap_or_else(|| "default".to_string());
     // t81: a project/team-owned connection is gated on the acting operator's actor-policy BEFORE
     // the credential binds — a member with no grant for the connection's scope cannot use it
     // (default-deny). A denial leaves the driver UNREGISTERED (fail closed, like t54's cloud
     // consent gate); a user-owned connection is unaffected (`bind_allowed` short-circuits to true).
     // Metadata-only + passphrase-free: this never decrypts the secret — it only decides who may bind.
-    if !crate::shared_connection::bind_allowed(driver, &connection) {
+    if !crate::shared_connection::bind_allowed(driver, connection) {
         return None;
     }
     // t80 (decision U / §4.5): a HIGH-SENSITIVITY (end-to-end) connection is wrapped per-recipient and
@@ -609,11 +580,11 @@ pub(crate) fn networked_credential(driver: &str) -> Option<(Arc<dyn Secrets>, Cr
     // driver UNREGISTERED (fail closed, audited); using it requires a human recipient unwrap. A
     // non-E2E connection short-circuits to allowed. Metadata-only + passphrase-free (reads the E2E
     // flag, never a token, BEFORE any decrypt).
-    if !crate::e2e_store::e2e_bind_allowed(driver, &connection) {
+    if !crate::e2e_store::e2e_bind_allowed(driver, connection) {
         return None;
     }
-    // `default` is always a valid connection name; an invalid persisted selection falls back to it.
-    let acct = ConnectionId::new(&connection)
+    // `default` is always a valid connection name; an invalid mount account falls back to it.
+    let acct = ConnectionId::new(connection)
         .or_else(|_| ConnectionId::new("default"))
         .ok()?;
     let cred = CredentialKey::new(qfs_secrets::DriverId(driver.to_string()), acct);
@@ -624,43 +595,39 @@ pub(crate) fn networked_credential(driver: &str) -> Option<(Arc<dyn Secrets>, Cr
 mod tests {
     use super::*;
 
-    /// Fail closed: with no live Google stack (the no-config path — absent
-    /// `QFS_GOOGLE_CLIENT_ID`/`SECRET` or no selected account), the gmail/drive/ga apply drivers are
-    /// NOT registered, so a `/mail` (or `/drive` / `/ga`) commit fails with a clear "no driver"
-    /// cause rather than faking success. Hermetic: `register_google(_, None)` touches no store and
-    /// reads no environment — it is the pure no-config decision.
+    /// Fail closed: with nothing connected (the fresh state — no `path_binding` rows), NO cloud
+    /// apply driver is registered, so a `/mail`-shaped commit fails with a clear "no driver"
+    /// cause rather than faking success. Hermetic: `register_cloud_mounts(reg, &[])` touches no
+    /// store and reads no environment — it is the pure nothing-connected decision.
     #[test]
-    fn google_drivers_are_unregistered_without_config() {
-        let reg = register_google(DriverRegistry::new(), None);
-        assert!(
-            reg.get(&DriverId::new("mail")).is_none(),
-            "/mail must be unregistered without Google config (fail closed)"
-        );
-        assert!(
-            reg.get(&DriverId::new("drive")).is_none(),
-            "/drive must be unregistered without Google config (fail closed)"
-        );
-        assert!(
-            reg.get(&DriverId::new("ga")).is_none(),
-            "/ga must be unregistered without Google config (fail closed)"
-        );
+    fn no_cloud_mounts_registers_no_cloud_drivers() {
+        let reg = register_cloud_mounts(DriverRegistry::new(), &[]);
+        for id in ["mail", "drive", "ga", "github", "slack", "s3", "r2"] {
+            assert!(
+                reg.get(&DriverId::new(id)).is_none(),
+                "/{id} must be unregistered with nothing connected (fail closed)"
+            );
+        }
     }
 
-    /// Fail closed: with no live object-storage driver (the no-config path — absent
-    /// `QFS_S3_*`/`QFS_R2_*` routing config or an unresolvable secret), the s3/r2 apply drivers are
-    /// NOT registered, so a `/s3` (or `/r2`) commit fails with a clear "no driver" cause rather than
-    /// faking success. Hermetic: `register_objstore(_, None, None)` touches no store and reads no
-    /// environment — it is the pure no-config decision.
+    /// Fail closed per mount (ADR 0008): a Google-kind cloud mount with NO account binds nothing
+    /// — the mount is skipped before any store/env is consulted, so a commit against it fails
+    /// "no driver" rather than silently using someone else's account.
     #[test]
-    fn objstore_drivers_are_unregistered_without_config() {
-        let reg = register_objstore(DriverRegistry::new(), None, None);
+    fn a_google_mount_without_an_account_is_unregistered() {
+        let mount = crate::cloud_mounts::CloudMount {
+            path: "/mail".into(),
+            kind: "gmail".into(),
+            account: None,
+        };
         assert!(
-            reg.get(&DriverId::new("s3")).is_none(),
-            "/s3 must be unregistered without objstore config (fail closed)"
+            google_stack_for_mount(&mount).is_none(),
+            "no account on the mount ⇒ no stack (fail closed)"
         );
+        let reg = register_cloud_mounts(DriverRegistry::new(), std::slice::from_ref(&mount));
         assert!(
-            reg.get(&DriverId::new("r2")).is_none(),
-            "/r2 must be unregistered without objstore config (fail closed)"
+            reg.get(&DriverId::new("mail")).is_none(),
+            "/mail must be unregistered when its mount carries no account"
         );
     }
 }

@@ -31,13 +31,18 @@ use qfs_exec::ReadDriver;
 use qfs_pushdown::{ScanNode, SourceId};
 use qfs_runtime::{ApplyCx, ApplyDriver, EffectError, EffectInput, EffectOutput};
 
-/// The prefix arithmetic between an **outer** (registered) mount and the **inner** (driver
-/// native) mount, plus the derived driver-id pair for `CALL` qualifier rewriting. Cheap to
+/// The prefix arithmetic between an **outer** (registered) mount and the **inner** driver's
+/// id-keyed namespace, plus the derived driver-id pair for `CALL` qualifier rewriting. Cheap to
 /// clone; one instance is shared by the three facet wrappers of a mount.
+///
+/// The inner side is keyed by the wrapped driver's **id**, not its `mount()`: every path the
+/// engine hands a driver is reconstructed as `/{driver.id()}/…` (plan/resolve/eval), so the
+/// namespace a driver's describe/read/apply surfaces actually speak is `/<id>` — which differs
+/// from the mount for the one renamed driver (ga: mount `/google-analytics`, id `ga`).
 #[derive(Debug, Clone)]
 pub struct MountRemap {
     outer_mount: String,
-    inner_mount: String,
+    inner_prefix: String,
     outer_id: String,
     inner_id: String,
 }
@@ -55,21 +60,30 @@ fn remap_prefix(path: &str, from: &str, to: &str) -> Option<String> {
 }
 
 impl MountRemap {
-    /// Build the remap between `outer_mount` (the connect-created segment, e.g. `/mail2`) and
-    /// `inner_mount` (the wrapped driver's native mount, e.g. `/mail`). Both must be
-    /// non-empty absolute paths.
+    /// Build the remap between `outer_mount` (the connect-created mount, e.g. `/mail2`) and
+    /// `inner_id` (the wrapped driver's plan identity, e.g. `mail`). The outer mount must be a
+    /// non-empty absolute path; the inner id must be a non-empty bare id (no leading `/`).
     ///
     /// # Errors
-    /// [`CfsError::InvalidPath`] if either mount is empty or not absolute.
-    pub fn new(outer_mount: &str, inner_mount: &str) -> Result<Self, CfsError> {
+    /// [`CfsError::InvalidPath`] if the outer mount is empty or not absolute, or the inner id is
+    /// empty / not a bare id.
+    pub fn new(outer_mount: &str, inner_id: &str) -> Result<Self, CfsError> {
         let outer = Path::parse(outer_mount)?;
-        let inner = Path::parse(inner_mount)?;
-        let seg = |m: &str| m.strip_prefix('/').unwrap_or(m).to_string();
+        if inner_id.is_empty() || inner_id.starts_with('/') {
+            return Err(CfsError::InvalidPath {
+                path: inner_id.to_string(),
+                reason: "inner driver id must be a non-empty bare id",
+            });
+        }
         Ok(Self {
-            outer_id: seg(outer.as_str()),
-            inner_id: seg(inner.as_str()),
+            outer_id: outer
+                .as_str()
+                .strip_prefix('/')
+                .unwrap_or(outer.as_str())
+                .to_string(),
+            inner_prefix: format!("/{inner_id}"),
+            inner_id: inner_id.to_string(),
             outer_mount: outer.as_str().to_string(),
-            inner_mount: inner.as_str().to_string(),
         })
     }
 
@@ -89,13 +103,15 @@ impl MountRemap {
     /// A path outside the outer mount (or a non-path like a draft handle) passes unchanged.
     #[must_use]
     pub fn path_in(&self, path: &str) -> String {
-        remap_prefix(path, &self.outer_mount, &self.inner_mount).unwrap_or_else(|| path.to_string())
+        remap_prefix(path, &self.outer_mount, &self.inner_prefix)
+            .unwrap_or_else(|| path.to_string())
     }
 
     /// Rewrite an inner-mount path back onto the outer mount (`/mail/x` → `/mail2/x`).
     #[must_use]
     pub fn path_out(&self, path: &str) -> String {
-        remap_prefix(path, &self.inner_mount, &self.outer_mount).unwrap_or_else(|| path.to_string())
+        remap_prefix(path, &self.inner_prefix, &self.outer_mount)
+            .unwrap_or_else(|| path.to_string())
     }
 
     /// Re-qualify an inner `CALL` name outward (`mail.send` → `mail2.send`).
@@ -179,12 +195,12 @@ pub struct MountDriver {
 
 impl MountDriver {
     /// Wrap `inner` so it answers for `outer_mount`. The remap is derived from the inner
-    /// driver's own `mount()`.
+    /// driver's own `id()` (the id-keyed namespace its paths are reconstructed under).
     ///
     /// # Errors
     /// [`CfsError::InvalidPath`] if `outer_mount` is empty or not absolute.
     pub fn new(outer_mount: &str, inner: Arc<dyn Driver>) -> Result<Self, CfsError> {
-        let remap = MountRemap::new(outer_mount, inner.mount())?;
+        let remap = MountRemap::new(outer_mount, inner.id().as_str())?;
         let prelude = inner
             .prelude()
             .iter()
@@ -410,14 +426,15 @@ mod tests {
     }
 
     #[test]
-    fn remap_requires_absolute_mounts() {
-        assert!(MountRemap::new("mail2", "/mail").is_err());
+    fn remap_requires_an_absolute_mount_and_a_bare_id() {
+        assert!(MountRemap::new("mail2", "mail").is_err());
         assert!(MountRemap::new("/mail2", "").is_err());
+        assert!(MountRemap::new("/mail2", "/mail").is_err());
     }
 
     #[test]
     fn prefix_rewrite_respects_segment_boundaries() {
-        let remap = MountRemap::new("/mail2", "/mail").expect("valid");
+        let remap = MountRemap::new("/mail2", "mail").expect("valid");
         // Inbound: the outer mount moves; deeper segments and coordinates ride along.
         assert_eq!(remap.path_in("/mail2"), "/mail");
         assert_eq!(remap.path_in("/mail2/inbox"), "/mail/inbox");
@@ -433,7 +450,7 @@ mod tests {
 
     #[test]
     fn proc_qualifier_rewrites_both_directions() {
-        let remap = MountRemap::new("/mail2", "/mail").expect("valid");
+        let remap = MountRemap::new("/mail2", "mail").expect("valid");
         assert_eq!(remap.proc_out("mail.send"), "mail2.send");
         assert_eq!(remap.proc_in("mail2.send"), "mail.send");
         // A foreign qualifier is not touched.
@@ -507,7 +524,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_adapter_rewrites_source_and_path_inward() {
-        let remap = MountRemap::new("/mail2", "/mail").expect("valid");
+        let remap = MountRemap::new("/mail2", "mail").expect("valid");
         let read = MountReadDriver::new(remap, Arc::new(AssertingRead));
         let scan = ScanNode {
             source: SourceId::new("mail2"),
@@ -541,7 +558,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_adapter_rewrites_targets_and_qualifiers_inward() {
-        let remap = MountRemap::new("/mail2", "/mail").expect("valid");
+        let remap = MountRemap::new("/mail2", "mail").expect("valid");
         let apply = MountApplyDriver::new(remap, Arc::new(AssertingApply));
         let node = EffectNode::new(
             NodeId(7),

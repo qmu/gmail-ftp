@@ -25,6 +25,7 @@ pub mod broker;
 pub mod catalog;
 pub mod claude;
 pub mod clients;
+pub mod cloud_mounts;
 pub mod commit;
 pub mod connection;
 pub mod connections_config;

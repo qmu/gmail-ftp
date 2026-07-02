@@ -177,11 +177,12 @@ fn add_google(label: Option<&str>) -> Result<String, String> {
         email.to_string()
     };
 
-    // Record the account-level consent per Google DRIVER (the 120050 seam keeps the bind gate
-    // working: `default` is what the gate consults until the mount carries the account), and make
-    // this account the active `google` selection the token source resolves.
+    // Record the account-level consent per Google DRIVER, keyed by the ACCOUNT EMAIL (ADR 0008
+    // §4 — the mount carries the account, so the commit-time bind gate consults the mount's
+    // `(driver, account)`), and make this account the active `google` selection the legacy
+    // token-source path resolves (retired with the `connection` namespace).
     let proj = open_project_conn()?;
-    record_google_consents(&proj, &subject)?;
+    record_google_consents(&proj, &subject, &email)?;
     secret_store::db_set_active(&proj, "google", &email)
         .map_err(|e| format!("selecting the account: {e}"))?;
     Ok(format!(
@@ -190,10 +191,11 @@ fn add_google(label: Option<&str>) -> Result<String, String> {
     ))
 }
 
-/// Consent rows for the three Google drivers under the `default` connection (see the module doc).
-fn record_google_consents(proj: &Connection, subject: &str) -> Result<(), String> {
+/// Consent rows for the three Google drivers, keyed by the account email — what the mount-bound
+/// bind gate consults for a `(kind, account)` cloud mount (see the module doc).
+fn record_google_consents(proj: &Connection, subject: &str, email: &str) -> Result<(), String> {
     for driver in GOOGLE_DRIVERS {
-        secret_store::db_record_consent(proj, driver, "default", subject, google_scope(driver))
+        secret_store::db_record_consent(proj, driver, email, subject, google_scope(driver))
             .map_err(|e| format!("recording consent for {driver}: {e}"))?;
     }
     Ok(())
@@ -281,7 +283,7 @@ fn remove_google(email: &str) -> Result<String, String> {
         .map_err(|e| format!("removing the refresh token: {e}"))?;
     let proj = open_project_conn()?;
     for driver in GOOGLE_DRIVERS {
-        delete_consent(&proj, driver, "default")?;
+        delete_consent(&proj, driver, email)?;
     }
     proj.execute(
         "DELETE FROM active_account WHERE driver = 'google' AND connection = ?1",
@@ -357,8 +359,9 @@ mod tests {
     }
 
     /// The Google token-import bookkeeping: the refresh token lands under the account key, all
-    /// three Google drivers get a consent row under `default` (the 120050 seam), and the account
-    /// becomes the active `google` selection. Removal deletes all of it (deletion is complete).
+    /// three Google drivers get a consent row keyed by the ACCOUNT EMAIL (ADR 0008 — what the
+    /// mount-bound bind gate consults), and the account becomes the active `google` selection.
+    /// Removal deletes all of it (deletion is complete).
     #[test]
     fn google_account_bookkeeping_round_trips() {
         with_fresh_home(|| {
@@ -368,13 +371,13 @@ mod tests {
             let key = qfs_google_auth::refresh_token_key("you@example.com").unwrap();
             store.put(&key, Secret::from("1//refresh")).unwrap();
             let proj = open_project_conn().unwrap();
-            record_google_consents(&proj, "op@example.com").unwrap();
+            record_google_consents(&proj, "op@example.com", "you@example.com").unwrap();
             secret_store::db_set_active(&proj, "google", "you@example.com").unwrap();
 
             for driver in GOOGLE_DRIVERS {
                 assert!(
-                    secret_store::db_get_consent(&proj, driver, "default").is_some(),
-                    "{driver} consent recorded"
+                    secret_store::db_get_consent(&proj, driver, "you@example.com").is_some(),
+                    "{driver} consent recorded under the account email"
                 );
             }
             assert_eq!(
@@ -388,7 +391,7 @@ mod tests {
             let proj = open_project_conn().unwrap();
             for driver in GOOGLE_DRIVERS {
                 assert!(
-                    secret_store::db_get_consent(&proj, driver, "default").is_none(),
+                    secret_store::db_get_consent(&proj, driver, "you@example.com").is_none(),
                     "{driver} consent deleted"
                 );
             }
