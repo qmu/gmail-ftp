@@ -59,6 +59,7 @@ pub mod telemetry;
 pub mod transport;
 pub mod tty;
 pub mod tunnel;
+pub mod vault;
 pub mod version;
 pub mod watchtower;
 pub mod worm;

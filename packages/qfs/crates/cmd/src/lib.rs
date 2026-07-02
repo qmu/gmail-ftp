@@ -188,6 +188,31 @@ pub enum IdentityAction {
 /// like the connection launcher. Returns the process exit code.
 pub type IdentityLauncher<'a> = dyn Fn(&IdentityAction) -> i32 + 'a;
 
+/// A parsed `qfs vault <verb>` request, handed to the binary-injected [`VaultLauncher`]
+/// (ADR 0008 §5 — KeyGuardian). Selectors + metadata only: no passphrase, no KEK, no wrap bytes
+/// ever ride here — the launcher owns every byte of key material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VaultAction {
+    /// `vault slots` — list the vault-key slots (id, guardian kind, created_at). Metadata only.
+    Slots,
+    /// `vault enroll <guardian>` — wrap the store's data-key under one more guardian (today:
+    /// `keychain`, the platform secret service). The KEK is minted and stored by the launcher.
+    Enroll {
+        /// The guardian kind to enroll (e.g. `keychain`).
+        guardian: String,
+    },
+    /// `vault revoke <slot>` — delete one vault-key wrap (the last slot is refused).
+    Revoke {
+        /// The slot id to revoke (see `vault slots`).
+        slot_id: i64,
+    },
+}
+
+/// The injected **vault launcher** (ADR 0008 §5): the binary supplies the slot I/O + the guardian
+/// backends (the envelope store and the OS keyring, which `qfs-cmd` may not depend on — the
+/// dep_direction guard). `qfs-cmd` only parses the verb and calls this. Returns the exit code.
+pub type VaultLauncher<'a> = dyn Fn(&VaultAction) -> i32 + 'a;
+
 /// A parsed `qfs invite <verb>` request, handed to the binary-injected [`InviteLauncher`] (t55, M5).
 /// This is the team-membership front door — a host operator MINTS a one-time, expiring invite, the
 /// invitee REDEEMS it to create their local identity + a membership (identity ≠ authorization, §4.1).
@@ -367,6 +392,13 @@ enum Command {
         /// The user-defined path to remove, e.g. `/work/orders`.
         path: String,
     },
+    /// Manage the vault's key slots (ADR 0008 — KeyGuardian): list them, enroll the OS keychain
+    /// so this host unlocks without a passphrase, or revoke a slot. The passphrase slot is
+    /// enrolled automatically when the store is first created.
+    Vault {
+        #[command(subcommand)]
+        verb: VaultVerb,
+    },
     /// Manage local identity: sign up (email + password) and look yourself up (t45, roadmap M1).
     ///
     /// AUTHENTICATION ONLY (decision §4.1: identity is not authorization). A signed-up user can do
@@ -503,6 +535,25 @@ enum ConnectionVerb {
     Paths,
 }
 
+/// `qfs vault <verb>` — the KeyGuardian slot verbs (ADR 0008 §5). Maps onto the injected
+/// [`VaultLauncher`]; no key material ever parses out of argv.
+#[derive(Subcommand, Debug)]
+enum VaultVerb {
+    /// List the vault-key slots: id, guardian kind, created_at (metadata only, never key bytes).
+    Slots,
+    /// Enroll a new guardian slot — today `keychain` (the platform secret service), so this host
+    /// unlocks the credential store without a passphrase from then on.
+    Enroll {
+        /// The guardian kind to enroll (`keychain`).
+        guardian: String,
+    },
+    /// Revoke a vault-key slot by id (the last remaining slot is refused).
+    Revoke {
+        /// The slot id (see `qfs vault slots`).
+        slot_id: i64,
+    },
+}
+
 /// `qfs identity <verb>` — the local-identity verbs (t45). Maps onto the injected
 /// [`IdentityLauncher`] over the System-DB identity store. The password is read from STDIN (never an
 /// argv, which would leak into shell history and `ps`); the password hash is never printed.
@@ -582,6 +633,7 @@ pub fn run<I, T>(
     skill: &SkillProvider,
     connection: &ConnectionLauncher,
     identity: &IdentityLauncher,
+    vault: &VaultLauncher,
     invite: &InviteLauncher,
     job: &JobLauncher,
     apply: &qfs_exec::WorldApply,
@@ -733,6 +785,12 @@ where
         Some(Command::Identity { verb }) => {
             tracing::debug!(target: "qfs::cmd", "dispatch identity via launcher");
             return identity(&identity_action(&verb));
+        }
+        // `vault` (ADR 0008 §5) is dispatched through the injected launcher (the binary owns the
+        // slot I/O + the OS-keyring guardian; qfs-cmd stays off both). Returns the exit code.
+        Some(Command::Vault { verb }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch vault via launcher");
+            return vault(&vault_action(&verb));
         }
         // `invite` is dispatched through the injected launcher (the binary owns the System-DB invite
         // store + the token CSPRNG; qfs-cmd stays off the concrete backend). Returns the exit code.
@@ -972,6 +1030,18 @@ fn connection_action(verb: &ConnectionVerb) -> ConnectionAction {
 /// Map the clap-parsed [`IdentityVerb`] to the public [`IdentityAction`] handed to the injected
 /// [`IdentityLauncher`]. Pure (handles only); the password is never carried — the launcher reads it
 /// from STDIN, never from argv (which would leak into history / `ps`).
+/// Map the clap-parsed [`VaultVerb`] to the public [`VaultAction`] handed to the injected
+/// [`VaultLauncher`]. Pure (selectors only); key material never parses out of argv.
+fn vault_action(verb: &VaultVerb) -> VaultAction {
+    match verb {
+        VaultVerb::Slots => VaultAction::Slots,
+        VaultVerb::Enroll { guardian } => VaultAction::Enroll {
+            guardian: guardian.clone(),
+        },
+        VaultVerb::Revoke { slot_id } => VaultAction::Revoke { slot_id: *slot_id },
+    }
+}
+
 fn identity_action(verb: &IdentityVerb) -> IdentityAction {
     match verb {
         IdentityVerb::Signup { email } => IdentityAction::Signup {
@@ -1184,6 +1254,13 @@ mod tests {
         11
     }
 
+    /// A stub vault launcher returning a distinct sentinel, so a test can assert the `vault` arm
+    /// dispatched into the injected launcher (the real slot I/O + keyring guardian live in the
+    /// binary crate).
+    fn stub_vault(_action: &VaultAction) -> i32 {
+        13
+    }
+
     /// A stub job launcher: echoes a fixed code (the real boot→build→gate→apply path lives in the
     /// binary crate; here we only assert the clap dispatch + request plumbing).
     fn stub_job(_req: &JobRequest) -> i32 {
@@ -1221,11 +1298,46 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_vault,
             &stub_invite,
             &stub_job,
             &noop_apply,
             &stub_run_ctx,
         )
+    }
+
+    #[test]
+    fn vault_verbs_dispatch_through_the_injected_launcher() {
+        // ADR 0008 §5: `qfs vault slots/enroll/revoke` route to the injected VaultLauncher (the
+        // binary owns the slot I/O + keyring guardian). qfs-cmd only parses + forwards selectors.
+        let seen: std::cell::RefCell<Option<VaultAction>> = std::cell::RefCell::new(None);
+        let launcher = |action: &VaultAction| {
+            *seen.borrow_mut() = Some(action.clone());
+            13
+        };
+        let code = run(
+            ["qfs", "vault", "enroll", "keychain"],
+            &noop_shell,
+            &|_cfg| 0,
+            &empty_describe,
+            &stub_skill,
+            &stub_connection,
+            &stub_identity,
+            &launcher,
+            &stub_invite,
+            &stub_job,
+            &noop_apply,
+            &stub_run_ctx,
+        );
+        assert_eq!(code, 13, "vault dispatches to the launcher");
+        assert_eq!(
+            seen.borrow().as_ref(),
+            Some(&VaultAction::Enroll {
+                guardian: "keychain".into()
+            })
+        );
+        assert_eq!(run_t(["qfs", "vault", "slots"]), 13);
+        assert_eq!(run_t(["qfs", "vault", "revoke", "2"]), 13);
     }
 
     #[test]
@@ -1252,6 +1364,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_vault,
             &stub_invite,
             &launcher,
             &noop_apply,
@@ -1282,6 +1395,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_vault,
             &stub_invite,
             &launcher2,
             &noop_apply,
@@ -1330,6 +1444,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_vault,
             &stub_invite,
             &stub_job,
             &noop_apply,
@@ -1382,6 +1497,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_vault,
             &stub_invite,
             &stub_job,
             &noop_apply,
@@ -1544,6 +1660,7 @@ mod tests {
                 &provider,
                 &stub_connection,
                 &stub_identity,
+                &stub_vault,
                 &stub_invite,
                 &stub_job,
                 &noop_apply,
@@ -1561,6 +1678,7 @@ mod tests {
                 &provider,
                 &stub_connection,
                 &stub_identity,
+                &stub_vault,
                 &stub_invite,
                 &stub_job,
                 &noop_apply,

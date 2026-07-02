@@ -145,8 +145,8 @@ mod tests {
         // All project migrations applied (skeleton + t43 secret store + t54 consent ledger +
         // t81 shared-connection registry + t79 rotation/revocation columns + t80 per-recipient E2E
         // wrap + t66 brokered team-connection registry + t100020 path-binding registry + ADR 0008
-        // mount-coordinate columns).
-        assert_eq!(qfs_store::applied_migrations(proj.db()).unwrap().len(), 9);
+        // mount-coordinate columns + ADR 0008 vault-key slots).
+        assert_eq!(qfs_store::applied_migrations(proj.db()).unwrap().len(), 10);
         match prev_xdg {
             Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
             None => std::env::remove_var("XDG_CONFIG_HOME"),

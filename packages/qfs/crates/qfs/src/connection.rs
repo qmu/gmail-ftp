@@ -43,19 +43,20 @@ pub fn run_connection(action: &ConnectionAction) -> i32 {
 /// Open the migrated Project DB and return its **owned** connection (the t42 seam). The connection
 /// carries the t43 secret-store schema; callers either move it into [`SqliteSecrets`] (the credential
 /// path) or use it directly for the passphrase-free `active_account` table.
-fn open_project_conn() -> Result<Connection, String> {
+pub(crate) fn open_project_conn() -> Result<Connection, String> {
     let proj = crate::store::open_project_db()
         .map_err(|e| format!("opening the project database: {e}"))?
         .ok_or("cannot determine the project database path (set HOME or XDG_CONFIG_HOME)")?;
     Ok(proj.into_db().into_connection())
 }
 
-/// Has the credential store already been initialized on this host? True once the single
-/// `secret_meta` row exists (written by the first [`SqliteSecrets::open_or_init`]). Passphrase-free —
-/// it reads only a metadata presence flag, never key material — so it can decide *before* we know
-/// the passphrase whether this is a first-run store-creation (prompt + confirm) or an unlock.
+/// Has the credential store already been initialized on this host? True once any vault-key slot
+/// exists (the first [`SqliteSecrets::open_or_init`] enrolls the passphrase slot; migration #10
+/// forward-copied the pre-slot `secret_meta` wrap). Passphrase-free — it reads only a presence
+/// flag, never key material — so it can decide *before* we know the passphrase whether this is a
+/// first-run store-creation (prompt + confirm) or an unlock.
 fn store_initialized(conn: &Connection) -> bool {
-    conn.query_row("SELECT 1 FROM secret_meta WHERE id = 1", [], |_| Ok(()))
+    conn.query_row("SELECT 1 FROM vault_key_slot LIMIT 1", [], |_| Ok(()))
         .optional()
         .ok()
         .flatten()
@@ -113,10 +114,33 @@ fn resolve_store_passphrase(conn: &Connection) -> Result<Secret, String> {
 }
 
 /// Open the envelope-encrypted SQLite credential store: open + migrate the Project DB, then unlock
-/// (or initialize) the envelope with the resolved passphrase (`QFS_PASSPHRASE` or an interactive
-/// prompt — see [`resolve_store_passphrase`]).
-fn open_store() -> Result<SqliteSecrets, String> {
+/// through the guardian slots (ADR 0008 §5) — an enrolled OS-keychain slot first (non-interactive:
+/// no prompt, no env var), else the passphrase (`QFS_PASSPHRASE` / the process cache / an
+/// interactive prompt — see [`resolve_store_passphrase`]), which also initializes a fresh store.
+pub(crate) fn open_store() -> Result<SqliteSecrets, String> {
     let conn = open_project_conn()?;
+    let slots = SqliteSecrets::db_load_slots(&conn)
+        .map_err(|e| format!("reading the vault key slots: {e}"))?;
+    if slots
+        .iter()
+        .any(|s| s.guardian_kind == secret_store::GUARDIAN_KEYCHAIN)
+    {
+        if let Some(kek) = crate::vault::keychain_kek() {
+            match SqliteSecrets::open_with_resolver(conn, |s| {
+                (s.guardian_kind == secret_store::GUARDIAN_KEYCHAIN).then_some(kek)
+            }) {
+                Ok(store) => return Ok(store),
+                // Stale keychain material (rotated store, restored backup): fall through to the
+                // passphrase guardian on a fresh connection rather than failing the command.
+                Err(_) => {
+                    let conn = open_project_conn()?;
+                    let pass = resolve_store_passphrase(&conn)?;
+                    return SqliteSecrets::open_or_init(conn, &pass)
+                        .map_err(|e| format!("opening the credential store: {e}"));
+                }
+            }
+        }
+    }
     let pass = resolve_store_passphrase(&conn)?;
     SqliteSecrets::open_or_init(conn, &pass)
         .map_err(|e| format!("opening the credential store: {e}"))
@@ -150,6 +174,25 @@ fn quiet_store_passphrase() -> Option<Secret> {
 #[must_use]
 pub fn open_store_for_commit() -> Option<SqliteSecrets> {
     let conn = open_project_conn().ok()?;
+    // ADR 0008 §5: an enrolled OS-keychain slot unlocks the commit resolver non-interactively —
+    // exactly the guardian this best-effort path is allowed to use (no prompt involved).
+    let slots = SqliteSecrets::db_load_slots(&conn).ok()?;
+    if slots
+        .iter()
+        .any(|s| s.guardian_kind == secret_store::GUARDIAN_KEYCHAIN)
+    {
+        if let Some(kek) = crate::vault::keychain_kek() {
+            if let Ok(store) = SqliteSecrets::open_with_resolver(conn, |s| {
+                (s.guardian_kind == secret_store::GUARDIAN_KEYCHAIN).then_some(kek)
+            }) {
+                return Some(store);
+            }
+            // Stale keychain material: retry the quiet passphrase on a fresh connection.
+            let conn = open_project_conn().ok()?;
+            let pass = quiet_store_passphrase()?;
+            return SqliteSecrets::open_or_init(conn, &pass).ok();
+        }
+    }
     let pass = quiet_store_passphrase()?;
     SqliteSecrets::open_or_init(conn, &pass).ok()
 }
@@ -622,10 +665,11 @@ mod tests {
     }
 
     /// `store_initialized` is the passphrase-free flag that decides first-run (create + confirm) vs
-    /// unlock in the interactive prompt: false on a migrated-but-empty Project DB, true once the
-    /// single `secret_meta` row exists (what the first `open_or_init` writes).
+    /// unlock in the interactive prompt: false on a migrated-but-empty Project DB, true once any
+    /// vault-key slot exists (what the first `open_or_init` enrolls — ADR 0008 §5; migration #10
+    /// forward-copies a pre-slot `secret_meta` wrap into slot #1, so old stores read the same way).
     #[test]
-    fn store_initialized_reflects_the_secret_meta_row() {
+    fn store_initialized_reflects_the_vault_key_slots() {
         use qfs_store::{MemorySource, ProjectDb};
         let conn = ProjectDb::open(&MemorySource)
             .unwrap()
@@ -636,10 +680,11 @@ mod tests {
             "a fresh store is not initialized"
         );
 
-        // The first real open writes secret_meta id=1; emulate exactly that row (bytes are opaque to
-        // the presence check) and confirm the flag flips.
+        // The first real open enrolls the passphrase slot; emulate exactly that row (bytes are
+        // opaque to the presence check) and confirm the flag flips.
         conn.execute(
-            "INSERT INTO secret_meta (id, wrapped_dek, kdf_salt) VALUES (1, ?1, ?2)",
+            "INSERT INTO vault_key_slot (guardian_kind, wrapped_dek, kdf_salt) \
+             VALUES ('passphrase', ?1, ?2)",
             rusqlite::params![vec![0u8; 4], vec![0u8; 4]],
         )
         .unwrap();

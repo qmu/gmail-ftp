@@ -226,6 +226,15 @@ tracing = { workspace = true }
 # witness / chain-mismatch failures in structured, AI-consumable error taxonomies (the same posture
 # as the domain leaves' `thiserror` enums). No secret or key material ever reaches an error.
 thiserror = { workspace = true }
+# ADR 0008 §5 (KeyGuardian, src/vault.rs): the OS-keychain guardian — a random vault-key-slot KEK
+# held by the platform secret service (macOS Keychain / Linux Secret Service). Confined to this
+# terminal leaf like every backend dep; on a host with no secret service (headless) every call
+# fails cleanly and the guardian reports itself unavailable — never a hang, never a panic.
+# Feature choice: the Linux backend is `async-secret-service` over zbus (PURE RUST — the
+# `sync-secret-service` alternative links the C libdbus, which would break the static musl
+# release builds) with the binary's existing tokio as its runtime and rust-crypto for the
+# session encryption. macOS/Windows use their native stores.
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "tokio", "crypto-rust"] }
 # Interactive credential entry (src/tty.rs): read a passphrase / password from the controlling
 # terminal with echo DISABLED, so a human is prompted instead of having to export QFS_PASSPHRASE or
 # pipe a password by hand. Reached ONLY when stdin is a real TTY; automation (piped stdin, cron, CI)

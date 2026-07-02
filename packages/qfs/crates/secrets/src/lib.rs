@@ -52,9 +52,14 @@ mod e2e;
 // that consumes it lives in the native binary). Keeps qfs-secrets wasm-buildable.
 #[cfg(not(target_arch = "wasm32"))]
 mod envelope;
+// ADR 0008 §5 (KeyGuardian): the PURE vault-key-slot model — LUKS-style N wraps of one DEK, one
+// per guardian. Builds on envelope, so native-only like it; the guardian I/O (keyring, prompt,
+// env) lives in the binary and passes a resolver in.
 mod key;
 mod resolve;
 mod secret;
+#[cfg(not(target_arch = "wasm32"))]
+mod slots;
 // t81 (roadmap M5): the PURE shared-connection USE gate (no I/O, no Secret), so it builds on both
 // native and wasm. The binary wires the real owner + actor-policy-grant state into it.
 mod shared;
@@ -82,11 +87,16 @@ pub use envelope::{
     derive_kek, generate_dek, generate_salt, open, rewrap_dek, seal, unwrap_dek, wrap_dek,
     EnvelopeError,
 };
+// ADR 0008 §5 (KeyGuardian): the vault-key-slot model. The binary's credential store unlocks the
+// DEK through the slot set (any one guardian suffices) and enrolls/revokes wraps without touching
+// a sealed value. Native-only (see the `mod slots` gate above).
 pub use key::{
     ConnectionId, ConnectionIdError, ConnectionRecord, CredentialKey, DriverId, OwnerScope,
 };
 pub use resolve::{resolve, ConnectionSource, Resolution, ResolveError};
 pub use secret::{Secret, REDACTED};
+#[cfg(not(target_arch = "wasm32"))]
+pub use slots::{unlock_via_slots, SlotWrap};
 // t81 (roadmap M5): the shared-connection USE gate. The binary's commit-time bind consults this to
 // fail closed for a member whose actor-policy does not grant a project-owned connection's scope.
 pub use shared::{shared_use_gate, SharedUseError};

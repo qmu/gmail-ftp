@@ -438,6 +438,19 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
         name: "project_mount_coordinate",
         sql: include_str!("schema/project_mount_coordinate.sql"),
     },
+    // EPIC 20260702120000 / ADR 0008 §5 (KeyGuardian): the LUKS-style VAULT-KEY SLOT table
+    // (`vault_key_slot`) — the store DEK wrapped once per guardian (passphrase / OS keychain /
+    // later agent + managed KMS), any one slot unlocking the store. SUPERSEDES the single
+    // `secret_meta` wrap: the migration forward-copies the existing passphrase wrap into slot #1
+    // and empties `secret_meta` (whose shipped shape stays frozen), so a pre-v10 store opens with
+    // its existing passphrase unchanged. Appended as a NEW version (#10) — migrations #1–#9 stay
+    // frozen (the checksum guard forbids editing a shipped migration). The slot unlock/enroll I/O
+    // lives in the binary (`crates/qfs/src/secret_store.rs`); this declares the shape.
+    Migration {
+        version: 10,
+        name: "project_vault_key_slots",
+        sql: include_str!("schema/project_vault_key_slots.sql"),
+    },
 ];
 
 /// Structured, secret-free persistence errors (AI-consumable; a DB path is infra, not a secret, but
@@ -744,8 +757,10 @@ mod tests {
         // ADR 0008 migration #9: the mount coordinate — host (default 'local') + account label.
         assert!(column_exists(proj.db(), "path_binding", "host"));
         assert!(column_exists(proj.db(), "path_binding", "account"));
-        // All nine project migrations are recorded.
-        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 9);
+        // ADR 0008 migration #10: the KeyGuardian vault-key slots.
+        assert!(table_exists(proj.db(), "vault_key_slot"));
+        // All ten project migrations are recorded.
+        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 10);
     }
 
     #[test]

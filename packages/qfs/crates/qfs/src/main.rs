@@ -11,7 +11,9 @@
 //! binary is that leaf, so it builds the wired shell and injects it into `qfs-cmd` via the
 //! [`qfs_cmd::ShellLauncher`]. The shell LOGIC itself lives in `qfs-exec`; this only wires it.
 
-use qfs::{commit, connection, describe, identity, invite, job, serve, shell, store, version};
+use qfs::{
+    commit, connection, describe, identity, invite, job, serve, shell, store, vault, version,
+};
 
 fn main() {
     // t40: the binary owns the build metadata (semver + git sha + target triple baked in by
@@ -61,6 +63,10 @@ fn main() {
         // is zeroized after); the password hash is never printed. AUTHENTICATION ONLY — no session
         // yet (t46), no authorization (M2).
         &identity::run_identity,
+        // ADR 0008 §5 `qfs vault slots/enroll/revoke`: the KeyGuardian slot I/O + the OS-keyring
+        // guardian, injected here (the binary owns the envelope store and the keyring dep; qfs-cmd
+        // stays off both). Key material never crosses this seam — the action carries selectors only.
+        &vault::run_vault,
         // t55 `qfs invite create/redeem/revoke`: the System-DB-backed invite store I/O + the
         // binary-owned CSPRNG that mints the one-time token, injected here (qfs-cmd stays off the
         // concrete backend). The token is generated, returned ONCE, and stored only as a hash; redeem
