@@ -43,6 +43,11 @@ Bindings don't run until a server hosts them — collect them in a `.qfs` file a
 
 ## Setup
 
+::: tip Prerequisite — unlock your credential store
+Connecting a service stores a login, so it needs your `QFS_PASSPHRASE` set — the one-time setup in
+**[The QFS passphrase](/guide/passphrase)**. Do that first; every step below assumes the store is unlocked.
+:::
+
 Put your `CREATE …` bindings in one config and serve them. The happy path is a single command:
 
 ```sh

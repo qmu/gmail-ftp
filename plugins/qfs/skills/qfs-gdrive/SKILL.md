@@ -53,6 +53,11 @@ verbatim.
 
 ## Setup
 
+::: tip Prerequisite — unlock your credential store
+Connecting a service stores a login, so it needs your `QFS_PASSPHRASE` set — the one-time setup in
+**[The QFS passphrase](/guide/passphrase)**. Do that first; every step below assumes the store is unlocked.
+:::
+
 Drive uses the **same Google account and OAuth app as Gmail** — a single consent covers both. If you
 already followed the [Gmail cookbook Setup](/cookbook/gmail#setup), the happy path is one command:
 

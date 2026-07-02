@@ -56,6 +56,11 @@ The one coordinate that makes this a *versioned* tree: **`@<ref>`** in the path
 
 ## Setup
 
+::: tip Prerequisite for a connected source
+A local file / repo needs no passphrase. A **remote / connected** source stores a login behind your
+`QFS_PASSPHRASE` — set it up once in **[The QFS passphrase](/guide/passphrase)**.
+:::
+
 git needs almost no setup — there's no account to connect. You just tell qfs where the repo lives by
 registering it with an environment variable, then read it at `/git/<repo>/…`:
 

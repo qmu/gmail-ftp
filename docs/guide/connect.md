@@ -11,9 +11,11 @@ This page is the per-service how-to: the exact commands for each source. For the
 Two things some services need first:
 
 - **A passphrase for the local secret store.** Any service that stores a secret (mail, Drive,
-  GitHub, Slack, S3, R2) needs `QFS_PASSPHRASE` exported — a password you choose that encrypts the
-  service logins you save on this machine (not any service's own password). Set it without leaking it
-  into shell history:
+  GitHub, Slack, S3, R2) needs `QFS_PASSPHRASE` — a password you choose that encrypts the service
+  logins you save on this machine (not any service's own password). On a terminal qfs will simply
+  **prompt** you for it; to set it for the whole shell session instead, export it without leaking it
+  into history. See **[The QFS passphrase](/guide/passphrase)** for all the options (prompt, export,
+  `.env`, OS keychain) and their trade-offs.
   ```sh
   read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE
   ```

@@ -58,6 +58,11 @@ Gmail isn't reachable until you connect a Google account to a path — about fiv
 
 ## Setup
 
+::: tip Prerequisite — unlock your credential store
+Connecting a service stores a login, so it needs your `QFS_PASSPHRASE` set — the one-time setup in
+**[The QFS passphrase](/guide/passphrase)**. Do that first; every step below assumes the store is unlocked.
+:::
+
 You connect Gmail once. The happy path is four commands:
 
 ```sh

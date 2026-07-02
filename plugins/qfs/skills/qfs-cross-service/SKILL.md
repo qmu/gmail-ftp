@@ -10,6 +10,12 @@ a `JOIN`, `UNION`, `INTERSECT`, or `EXCEPT` whose paths live in *different* serv
 service is the same kind of path yielding rows, a database table, a GitHub issue list, and a mailbox
 combine in a single query as easily as two tables would.
 
+::: tip Prerequisite — unlock your credential store
+A cross-service query needs **every** participating service connected, and each connection stores a
+login behind your `QFS_PASSPHRASE` — the one-time setup in **[The QFS passphrase](/guide/passphrase)**.
+Connect each service via its own cookbook (linked below) once the store is unlocked.
+:::
+
 ## See it work first
 
 **Stitch one customer's whole story together from three services at once** — inbound mail joined to

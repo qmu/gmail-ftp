@@ -8,6 +8,12 @@ skill_description: Use for an overview of what qfs can do and which qfs cookbook
 Every external service, one language. Mail, a database, a repo, a channel, a bucket — each becomes a
 tree of paths you query with the same filesystem-shaped pipe-SQL.
 
+::: tip Start here — unlock your credential store
+`/local`, `/sys`, and local files/repos need no setup. **Every connected service below** stores a
+login behind your `QFS_PASSPHRASE`, so do the one-time **[The QFS passphrase](/guide/passphrase)**
+step first — without it you can't connect Gmail, Drive, GitHub, Slack, databases, or object storage.
+:::
+
 ## One query shape, any service
 
 **Find the invoices in your inbox, newest first** — search a mailbox with `where`, `select`,

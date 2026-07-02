@@ -56,6 +56,11 @@ recipe on this page works verbatim.
 
 ## Setup
 
+::: tip Prerequisite for a connected source
+A local file / repo needs no passphrase. A **remote / connected** source stores a login behind your
+`QFS_PASSPHRASE` — set it up once in **[The QFS passphrase](/guide/passphrase)**.
+:::
+
 You register a database once, by name. The happy path is two lines:
 
 ```sh

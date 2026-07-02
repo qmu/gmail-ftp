@@ -52,6 +52,11 @@ it. Paste any recipe below and safely watch what it *would* do first.
 
 ## Setup
 
+::: tip Prerequisite — unlock your credential store
+Connecting a service stores a login, so it needs your `QFS_PASSPHRASE` set — the one-time setup in
+**[The QFS passphrase](/guide/passphrase)**. Do that first; every step below assumes the store is unlocked.
+:::
+
 `/local` and `/sys` work out of the box — skip straight to the recipes. You only need this section to
 read **S3 or R2** buckets. The happy path is two commands:
 

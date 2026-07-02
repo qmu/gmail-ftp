@@ -53,6 +53,11 @@ After that every recipe on this page works verbatim.
 
 ## Setup
 
+::: tip Prerequisite — unlock your credential store
+Connecting a service stores a login, so it needs your `QFS_PASSPHRASE` set — the one-time setup in
+**[The QFS passphrase](/guide/passphrase)**. Do that first; every step below assumes the store is unlocked.
+:::
+
 A Slack read needs a connected workspace:
 
 ```sh

@@ -58,6 +58,11 @@ GitHub isn't reachable until you connect an account to it — one command, once,
 
 ## Setup
 
+::: tip Prerequisite — unlock your credential store
+Connecting a service stores a login, so it needs your `QFS_PASSPHRASE` set — the one-time setup in
+**[The QFS passphrase](/guide/passphrase)**. Do that first; every step below assumes the store is unlocked.
+:::
+
 qfs pre-mounts nothing for GitHub. A read (and the `CALL` that targets a PR) needs a token:
 
 ```sh
