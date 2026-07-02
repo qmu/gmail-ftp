@@ -642,4 +642,111 @@ mod tests {
             "/mail must be unregistered when its mount carries no account"
         );
     }
+
+    /// **The ADR 0008 coexistence proof, hermetic** (the point of the epic): two connect-created
+    /// gmail mounts bound to DIFFERENT accounts register two independent apply drivers in ONE
+    /// process — exactly what the abolished selection state could never express. Fully local:
+    /// a fresh XDG home, an in-DB operator identity (the t54 sign-in leg), per-`(kind, account)`
+    /// consent rows (the t54 consent leg), the sealed OAuth app, and two `path_binding` rows.
+    /// No network — the refresh token is read lazily at request time, never at registration.
+    #[test]
+    fn two_gmail_mounts_with_different_accounts_coexist() {
+        use qfs_identity::IdentityStore;
+
+        let _g = crate::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let prev_pass = std::env::var_os("QFS_PASSPHRASE");
+        let prev_acct = std::env::var_os(crate::google::GOOGLE_ACCOUNT_ENV);
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        std::env::set_var("QFS_PASSPHRASE", "coexist-pass");
+        std::env::remove_var(crate::google::GOOGLE_ACCOUNT_ENV);
+
+        // Sign in the operator (one identity on this host — the sign-in leg of the bind gate).
+        {
+            let store = crate::identity::open_identity_store().unwrap();
+            let unusable = qfs_secrets::Secret::from(qfs_secrets::generate_dek().to_vec());
+            let hash = qfs_identity::hash_password(&unusable).unwrap();
+            store.signup_local("op@example.com", &hash).unwrap();
+        }
+        // Seal the operator's OAuth app (what `qfs app add google` does).
+        {
+            let store = crate::connection::open_store().unwrap();
+            let key = CredentialKey::new(
+                qfs_secrets::DriverId("google-app".to_string()),
+                ConnectionId::new("default").unwrap(),
+            );
+            store
+                .put(
+                    &key,
+                    qfs_secrets::Secret::from(
+                        r#"{"client_id":"id.apps.example","client_secret":"s3cr3t"}"#,
+                    ),
+                )
+                .unwrap();
+        }
+        // Two authorized accounts (consent keyed by email — what `qfs account add google` does)
+        // and two connect-created mounts, one per account.
+        {
+            let proj = crate::connection::open_project_conn().unwrap();
+            for email in ["work@example.com", "home@example.com"] {
+                crate::secret_store::db_record_consent(
+                    &proj,
+                    "gmail",
+                    email,
+                    "op@example.com",
+                    "gmail.modify gmail.compose",
+                )
+                .unwrap();
+            }
+            crate::path_binding::db_upsert_binding(
+                &proj,
+                "/mail",
+                "gmail",
+                None,
+                None,
+                None,
+                Some("work@example.com"),
+            )
+            .unwrap();
+            crate::path_binding::db_upsert_binding(
+                &proj,
+                "/mail2",
+                "gmail",
+                None,
+                None,
+                None,
+                Some("home@example.com"),
+            )
+            .unwrap();
+        }
+
+        let mounts = crate::cloud_mounts::load_cloud_mounts();
+        assert_eq!(mounts.len(), 2, "both cloud mounts enumerate");
+        let reg = register_cloud_mounts(DriverRegistry::new(), &mounts);
+        assert!(
+            reg.get(&DriverId::new("mail")).is_some(),
+            "/mail (work account) must register its own apply driver"
+        );
+        assert!(
+            reg.get(&DriverId::new("mail2")).is_some(),
+            "/mail2 (home account) must register its own apply driver — two accounts of one \
+             driver coexist as two mounts in one process"
+        );
+        // No other cloud kind sneaks in off the two gmail mounts.
+        assert!(reg.get(&DriverId::new("drive")).is_none());
+
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        match prev_pass {
+            Some(v) => std::env::set_var("QFS_PASSPHRASE", v),
+            None => std::env::remove_var("QFS_PASSPHRASE"),
+        }
+        match prev_acct {
+            Some(v) => std::env::set_var(crate::google::GOOGLE_ACCOUNT_ENV, v),
+            None => std::env::remove_var(crate::google::GOOGLE_ACCOUNT_ENV),
+        }
+    }
 }

@@ -222,15 +222,21 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
     // error (never the internal-sounding `unknown_source`, never a read without authorization).
     for mount in crate::cloud_mounts::load_cloud_mounts() {
         let Some(remap) = mount.remap() else { continue };
-        let facet = cloud_read_facet(&mount).unwrap_or_else(|| {
-            Arc::new(crate::read_facets::ConnectAccountReadDriver::new(
-                connect_hint(&mount.kind),
-            ))
-        });
-        reads = reads.with(
-            remap.outer_id(),
-            Arc::new(crate::mount_adapter::MountReadDriver::new(remap, facet)),
-        );
+        reads = match cloud_read_facet(&mount) {
+            // A live facet speaks the wrapped driver's canonical namespace — remap the scan in.
+            Some(facet) => reads.with(
+                remap.outer_id(),
+                Arc::new(crate::mount_adapter::MountReadDriver::new(remap, facet)),
+            ),
+            // The honest fallback echoes the scan's own path in its error — register it
+            // UNWRAPPED so the hint names the user's mount path, not the canonical one.
+            None => reads.with(
+                remap.outer_id(),
+                Arc::new(crate::read_facets::ConnectAccountReadDriver::new(
+                    connect_hint(&mount.kind),
+                )),
+            ),
+        };
     }
     (engine, reads, safety_mode)
 }
