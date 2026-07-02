@@ -243,7 +243,7 @@ fn require_signed_in(driver: &str) -> Result<String, String> {
     {
         SoleUser::One(u) => Ok(u.primary_email),
         SoleUser::None => Err(format!(
-            "cloud driver '{driver}' requires sign-in — run `qfs identity signup <email>` first \
+            "cloud driver '{driver}' requires sign-in — run `qfs init` first \
              (cloud connections are unusable for an unauthenticated operator)"
         )),
         SoleUser::Many => Err(format!(

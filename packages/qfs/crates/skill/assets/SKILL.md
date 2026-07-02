@@ -70,7 +70,7 @@ The four archetypes (RFD §5):
 
 6. **Cloud connections require sign-in (M4).** A driver that reaches an external service over OAuth
    (gmail, gdrive, ga, github, slack, objstore, cf) is a **cloud** driver: it is unusable until you
-   have signed in to qfs identity (`qfs identity signup <email>`) **and** added a connection for it
+   have signed in to qfs identity (`qfs init`) **and** added a connection for it
    (`qfs connection add <driver> <name>`), which records your consent against that connection. An
    unauthenticated operator fails closed — a cloud driver will not bind a credential at COMMIT
    without a consented, signed-in connection. Local drivers (`local`, `git`, `sql`, `sys`) are
@@ -79,7 +79,7 @@ The four archetypes (RFD §5):
    binary. **Reading live rows from a cloud service is different**: `/mail/inbox`, `/github/…`,
    `/slack/…`, `/drive/…` reach the backend, so with no connection they **fail closed at resolve
    time** (exit 3, `kind: capability`) with an actionable nudge — e.g. `connect a Google account to
-   read mail — run qfs identity signup <email>, then qfs connection add gmail`. That is the agent's
+   read mail — run qfs init, then qfs connection add gmail`. That is the agent's
    cue to connect an account, not a syntax error.
 
 ---
@@ -136,7 +136,7 @@ relational op after a codec errors `codec_then_query`.
    /mail/drafts |> call mail.send         -- the irreversible send (CALL mail.send)
    ```
    With no account these return a `capability` error (exit 3): *connect a Google account to read
-   mail — run `qfs identity signup <email>`, then `qfs connection add gmail`*. Once connected,
+   mail — run `qfs init`, then `qfs connection add gmail`*. Once connected,
    `/mail/<label>` returns real messages and `CALL mail.send` is the **irreversible** send (a
    one-shot commit needs `--commit --commit-irreversible`; a retry re-sends the same draft id).
 

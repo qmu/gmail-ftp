@@ -209,7 +209,7 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
         None => reads.with(
             DriverId::new("github"),
             Arc::new(crate::read_facets::ConnectAccountReadDriver::new(
-                "connect a GitHub account to read it — run `qfs identity signup <email>`, then `qfs connection add github` (GitHub reads need an authenticated token)",
+                "connect a GitHub account to read it — run `qfs init`, then `qfs connection add github` (GitHub reads need an authenticated token)",
             )),
         ),
     };
@@ -221,7 +221,7 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
         None => reads.with(
             DriverId::new("slack"),
             Arc::new(crate::read_facets::ConnectAccountReadDriver::new(
-                "connect a Slack workspace to read it — run `qfs identity signup <email>`, then `qfs connection add slack`",
+                "connect a Slack workspace to read it — run `qfs init`, then `qfs connection add slack`",
             )),
         ),
     };
@@ -255,9 +255,9 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
     // internal-sounding `unknown_source` (t5). The real networked read (t6/t7) registers over this
     // for a credentialed operator. Each reason is a stable, secret-free `&'static str`.
     for (source, reason) in [
-        ("mail", "connect a Google account to read mail — run `qfs identity signup <email>`, then `qfs connection add gmail` (gmail reads are not available without an authenticated account)"),
-        ("drive", "connect a Google account to read Drive — run `qfs identity signup <email>`, then `qfs connection add gdrive`"),
-        ("ga", "connect a Google Analytics account to read it — run `qfs identity signup <email>`, then `qfs connection add ga`"),
+        ("mail", "connect a Google account to read mail — run `qfs init`, then `qfs connection add gmail` (gmail reads are not available without an authenticated account)"),
+        ("drive", "connect a Google account to read Drive — run `qfs init`, then `qfs connection add gdrive`"),
+        ("ga", "connect a Google Analytics account to read it — run `qfs init`, then `qfs connection add ga`"),
         ("s3", "connect AWS credentials to read S3 — run `qfs connection add s3` (S3 reads need a credentialed bucket)"),
         ("r2", "connect Cloudflare R2 credentials to read it — run `qfs connection add r2`"),
     ] {

@@ -37,6 +37,7 @@ pub mod git;
 pub mod google;
 pub mod host;
 pub mod identity;
+pub mod init;
 pub mod invite;
 pub mod job;
 pub mod mcp;

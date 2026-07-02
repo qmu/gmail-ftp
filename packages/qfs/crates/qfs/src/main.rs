@@ -12,7 +12,7 @@
 //! [`qfs_cmd::ShellLauncher`]. The shell LOGIC itself lives in `qfs-exec`; this only wires it.
 
 use qfs::{
-    commit, connection, describe, identity, invite, job, serve, shell, store, vault, version,
+    commit, connection, describe, identity, init, invite, job, serve, shell, store, vault, version,
 };
 
 fn main() {
@@ -57,12 +57,16 @@ fn main() {
         // off the concrete backend). The secret is read from stdin, never argv; each value is
         // AEAD-sealed under a data-key wrapped by the `QFS_PASSPHRASE`-derived key.
         &connection::run_connection,
-        // t45 `qfs identity signup/whoami`: the System-DB-backed identity store I/O, injected here
+        // t45 `qfs identity whoami`: the System-DB-backed identity store I/O, injected here
         // (the binary owns the rusqlite store over the System DB — qfs-cmd stays off the concrete
         // backend). The password is read from stdin, never argv, hashed with argon2id (the plaintext
         // is zeroized after); the password hash is never printed. AUTHENTICATION ONLY — no session
         // yet (t46), no authorization (M2).
         &identity::run_identity,
+        // ADR 0008 §2 `qfs init`: the first-run wizard — the System-DB operator identity (no
+        // password: OS-delegated auth, unusable placeholder hash) + the vault creation through the
+        // guardian flow, injected here (qfs-cmd stays off the concrete backends).
+        &init::run_init,
         // ADR 0008 §5 `qfs vault slots/enroll/revoke`: the KeyGuardian slot I/O + the OS-keyring
         // guardian, injected here (the binary owns the envelope store and the keyring dep; qfs-cmd
         // stays off both). Key material never crosses this seam — the action carries selectors only.

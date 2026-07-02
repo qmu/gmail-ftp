@@ -49,9 +49,9 @@ pub fn is_cloud_driver(driver: &DriverId) -> bool {
 pub enum ConsentError {
     /// The driver is a cloud driver but no operator is signed in to qfs identity. Fail closed
     /// (decision B/C): cloud connections are unusable for an unauthenticated operator. Actionable:
-    /// `qfs identity signup <email>` (then add the connection).
+    /// `qfs init` (then add the connection).
     #[error(
-        "cloud driver '{driver}' requires sign-in — run `qfs identity signup <email>` first \
+        "cloud driver '{driver}' requires sign-in — run `qfs init` first \
          (cloud connections are unusable for an unauthenticated operator)"
     )]
     SignInRequired {
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(still.code(), "cloud_sign_in_required");
         // Secret-free + actionable: names the driver and the remedy, no token.
         assert!(err.to_string().contains("github"));
-        assert!(err.to_string().contains("identity signup"));
+        assert!(err.to_string().contains("qfs init"));
     }
 
     #[test]

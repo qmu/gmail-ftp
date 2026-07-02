@@ -174,11 +174,9 @@ pub type ConnectionLauncher<'a> = dyn Fn(&ConnectionAction) -> i32 + 'a;
 /// stdin. The email is a handle (safe metadata).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityAction {
-    /// `identity signup <email>` — create a user + a local password account. The password is read
-    /// from STDIN by the launcher, never argv.
-    Signup { email: String },
     /// `identity whoami [email]` — print a user's email + id (NEVER the password hash). With no
     /// email and no session yet (t46), it resolves the sole user if the deployment has exactly one.
+    /// (Signing up moved to `qfs init` — ADR 0008 §2: no unverified password on the CLI.)
     Whoami { email: Option<String> },
 }
 
@@ -187,6 +185,20 @@ pub enum IdentityAction {
 /// keeps `qfs-cmd` off the concrete backends). `qfs-cmd` only parses the verb and calls this, exactly
 /// like the connection launcher. Returns the process exit code.
 pub type IdentityLauncher<'a> = dyn Fn(&IdentityAction) -> i32 + 'a;
+
+/// A parsed `qfs init` request, handed to the binary-injected [`InitLauncher`] (ADR 0008 §2 —
+/// the first-run wizard). Carries the optional operator email only (an accountability label);
+/// NO password exists on this surface at all — local auth is the OS login.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitAction {
+    /// The operator email; `None` means prompt on a terminal (or fail non-interactively).
+    pub email: Option<String>,
+}
+
+/// The injected **init launcher** (ADR 0008 §2): the binary supplies the identity-store + vault
+/// I/O (`qfs-store`/`qfs-identity`/`qfs-secrets`, which `qfs-cmd` may not depend on). Returns the
+/// process exit code.
+pub type InitLauncher<'a> = dyn Fn(&InitAction) -> i32 + 'a;
 
 /// A parsed `qfs vault <verb>` request, handed to the binary-injected [`VaultLauncher`]
 /// (ADR 0008 §5 — KeyGuardian). Selectors + metadata only: no passphrase, no KEK, no wrap bytes
@@ -392,6 +404,14 @@ enum Command {
         /// The user-defined path to remove, e.g. `/work/orders`.
         path: String,
     },
+    /// Ready this machine (ADR 0008 — the first-run wizard): create the encrypted credential
+    /// store (choosing its passphrase) and register the operator identity — one operator per OS
+    /// user, no password (your OS login is the authentication; the email is an accountability
+    /// label). Idempotent: re-running reports what exists.
+    Init {
+        /// The operator email. Omit it on a terminal to be prompted.
+        email: Option<String>,
+    },
     /// Manage the vault's key slots (ADR 0008 — KeyGuardian): list them, enroll the OS keychain
     /// so this host unlocks without a passphrase, or revoke a slot. The passphrase slot is
     /// enrolled automatically when the store is first created.
@@ -559,14 +579,9 @@ enum VaultVerb {
 /// argv, which would leak into shell history and `ps`); the password hash is never printed.
 #[derive(Subcommand, Debug)]
 enum IdentityVerb {
-    /// Sign up a new local user: creates a `users` row + a `local` password account. The password
-    /// is read from STDIN (e.g. `printf %s "$PW" | qfs identity signup a@b.com`), never argv.
-    Signup {
-        /// The new user's primary email (the unique handle and the local account's subject).
-        email: String,
-    },
     /// Print a user's email + id (NEVER the password hash). With an `email`, looks that user up;
     /// with none and exactly one user on this host, prints it (there is no session yet — t46).
+    /// (Signing up moved to `qfs init` — ADR 0008.)
     Whoami {
         /// The user to look up. Optional: omit it to resolve the sole user.
         email: Option<String>,
@@ -633,6 +648,7 @@ pub fn run<I, T>(
     skill: &SkillProvider,
     connection: &ConnectionLauncher,
     identity: &IdentityLauncher,
+    init: &InitLauncher,
     vault: &VaultLauncher,
     invite: &InviteLauncher,
     job: &JobLauncher,
@@ -785,6 +801,12 @@ where
         Some(Command::Identity { verb }) => {
             tracing::debug!(target: "qfs::cmd", "dispatch identity via launcher");
             return identity(&identity_action(&verb));
+        }
+        // `init` (ADR 0008 §2) is dispatched through the injected launcher (the binary owns the
+        // identity-store + vault I/O; qfs-cmd stays off the concrete backends). Returns the code.
+        Some(Command::Init { email }) => {
+            tracing::debug!(target: "qfs::cmd", "dispatch init via launcher");
+            return init(&InitAction { email });
         }
         // `vault` (ADR 0008 §5) is dispatched through the injected launcher (the binary owns the
         // slot I/O + the OS-keyring guardian; qfs-cmd stays off both). Returns the exit code.
@@ -1044,9 +1066,6 @@ fn vault_action(verb: &VaultVerb) -> VaultAction {
 
 fn identity_action(verb: &IdentityVerb) -> IdentityAction {
     match verb {
-        IdentityVerb::Signup { email } => IdentityAction::Signup {
-            email: email.clone(),
-        },
         IdentityVerb::Whoami { email } => IdentityAction::Whoami {
             email: email.clone(),
         },
@@ -1261,6 +1280,12 @@ mod tests {
         13
     }
 
+    /// A stub init launcher returning a distinct sentinel, so a test can assert the `init` arm
+    /// dispatched into the injected launcher (the real identity + vault I/O live in the binary).
+    fn stub_init(_action: &InitAction) -> i32 {
+        14
+    }
+
     /// A stub job launcher: echoes a fixed code (the real boot→build→gate→apply path lives in the
     /// binary crate; here we only assert the clap dispatch + request plumbing).
     fn stub_job(_req: &JobRequest) -> i32 {
@@ -1298,6 +1323,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_init,
             &stub_vault,
             &stub_invite,
             &stub_job,
@@ -1323,6 +1349,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_init,
             &launcher,
             &stub_invite,
             &stub_job,
@@ -1364,6 +1391,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_init,
             &stub_vault,
             &stub_invite,
             &launcher,
@@ -1395,6 +1423,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_init,
             &stub_vault,
             &stub_invite,
             &launcher2,
@@ -1444,6 +1473,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_init,
             &stub_vault,
             &stub_invite,
             &stub_job,
@@ -1497,6 +1527,7 @@ mod tests {
             &stub_skill,
             &stub_connection,
             &stub_identity,
+            &stub_init,
             &stub_vault,
             &stub_invite,
             &stub_job,
@@ -1561,14 +1592,6 @@ mod tests {
     fn identity_verbs_map_to_the_public_action() {
         // The clap verb maps 1:1 to the injected-launcher action (handles only, no password).
         assert_eq!(
-            identity_action(&IdentityVerb::Signup {
-                email: "a@b.com".into()
-            }),
-            IdentityAction::Signup {
-                email: "a@b.com".into()
-            }
-        );
-        assert_eq!(
             identity_action(&IdentityVerb::Whoami { email: None }),
             IdentityAction::Whoami { email: None }
         );
@@ -1586,9 +1609,48 @@ mod tests {
     fn identity_subcommand_parses_and_dispatches_to_the_launcher() {
         // `qfs identity …` parses cleanly and routes into the injected identity launcher (the stub
         // returns the sentinel 9). The real System-DB store I/O lives in the binary crate.
-        assert_eq!(run_t(["qfs", "identity", "signup", "a@b.com"]), 9);
+        // `identity signup` is RETIRED (ADR 0008 — `qfs init` replaced it): a hard parse error.
         assert_eq!(run_t(["qfs", "identity", "whoami"]), 9);
         assert_eq!(run_t(["qfs", "identity", "whoami", "a@b.com"]), 9);
+        assert_eq!(
+            run_t(["qfs", "identity", "signup", "a@b.com"]),
+            2,
+            "the retired signup verb no longer parses"
+        );
+    }
+
+    #[test]
+    fn init_dispatches_to_the_injected_launcher() {
+        // ADR 0008 §2: `qfs init [email]` routes to the injected InitLauncher (the binary owns the
+        // identity + vault I/O). The email is optional (a terminal prompts; automation passes it).
+        let seen: std::cell::RefCell<Option<InitAction>> = std::cell::RefCell::new(None);
+        let launcher = |action: &InitAction| {
+            *seen.borrow_mut() = Some(action.clone());
+            14
+        };
+        let code = run(
+            ["qfs", "init", "you@example.com"],
+            &noop_shell,
+            &|_cfg| 0,
+            &empty_describe,
+            &stub_skill,
+            &stub_connection,
+            &stub_identity,
+            &launcher,
+            &stub_vault,
+            &stub_invite,
+            &stub_job,
+            &noop_apply,
+            &stub_run_ctx,
+        );
+        assert_eq!(code, 14);
+        assert_eq!(
+            seen.borrow().as_ref(),
+            Some(&InitAction {
+                email: Some("you@example.com".into())
+            })
+        );
+        assert_eq!(run_t(["qfs", "init"]), 14, "the email is optional");
     }
 
     #[test]
@@ -1660,6 +1722,7 @@ mod tests {
                 &provider,
                 &stub_connection,
                 &stub_identity,
+                &stub_init,
                 &stub_vault,
                 &stub_invite,
                 &stub_job,
@@ -1678,6 +1741,7 @@ mod tests {
                 &provider,
                 &stub_connection,
                 &stub_identity,
+                &stub_init,
                 &stub_vault,
                 &stub_invite,
                 &stub_job,

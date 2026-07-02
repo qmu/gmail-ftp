@@ -4,8 +4,8 @@ author: a@qmu.jp
 type: enhancement
 layer: [UX, Domain]
 effort:
-commit_hash:
-category: Changed
+commit_hash: ff7f187
+category: Added
 depends_on: [20260702120020-keyguardian-vault-slots.md]
 ---
 
