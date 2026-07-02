@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn the_bridge_serves_no_connection_listing_to_the_browser() {
         // The shell owns the whole `/api/` namespace; a connections probe is a plain 404 (the
-        // redacted-or-not connection list is NOT exposed to the browser in this slice). The stub's
+        // redacted-or-not credential listing is NOT exposed to the browser in this slice). The stub's
         // `connections` panics if ever reached — proving the route never touches it.
         let resp =
             serve_dashboard(&StubEngine, &post("/api/connections", json!({}))).expect("owned");

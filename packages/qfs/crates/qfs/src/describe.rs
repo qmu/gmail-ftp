@@ -127,16 +127,21 @@ fn load_bindings() -> Vec<crate::path_binding::PathBindingRow> {
 }
 
 /// Register every CONNECT-ed defined path from the project DB `path_binding` registry into `reg`
-/// (t100040). A FULL connect mounts the cred-free driver for its `driver_id` at the user path; an
-/// ALIAS mounts the SAME driver its target already resolves to. NOTHING is pre-mounted — a
-/// third-party path resolves ONLY after a CONNECT. Fail-open per binding (an unknown driver id or a
-/// dangling alias is skipped, never a panic) so one bad row cannot sink the whole registry.
+/// (t100040). A FULL connect mounts the cred-free driver for its `driver_id` at the user path,
+/// wrapped in a [`MountDriver`](crate::mount_adapter::MountDriver) so the mount's leading
+/// segment IS the driver's plan identity (ADR 0008 §4 — per-mount `driver.id()`, so N mounts of
+/// one kind plan as N distinct sources); an ALIAS mounts the SAME (already wrapped) driver its
+/// target resolves to, reusing the target's identity. NOTHING is pre-mounted — a third-party
+/// path resolves ONLY after a CONNECT. Fail-open per binding (an unknown driver id, a malformed
+/// path, or a dangling alias is skipped, never a panic) so one bad row cannot sink the registry.
 pub(crate) fn register_defined_paths(reg: &mut MountRegistry) {
     let bindings = load_bindings();
     // Full connects first, so an alias's target mount already exists when the alias is processed.
     for b in bindings.iter().filter(|b| b.alias_of.is_none()) {
         if let Some(driver) = b.driver_id.as_deref().and_then(cred_free_driver) {
-            let _ = reg.register_alias(&b.path, driver);
+            if let Ok(wrapped) = crate::mount_adapter::MountDriver::new(&b.path, driver) {
+                let _ = reg.register(Arc::new(wrapped));
+            }
         }
     }
     for b in bindings.iter().filter(|b| b.alias_of.is_some()) {

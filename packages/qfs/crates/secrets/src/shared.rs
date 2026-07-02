@@ -5,7 +5,7 @@
 //! This module is the *decision*, not the *I/O* — the same shape as t54's [`crate::bind_gate`]. It
 //! holds one pure, secret-free predicate the binary's commit-time bind wires the real state into:
 //!
-//! - **owner** — is the connection user-owned ([`OwnerScope::Me`]) or project-owned
+//! - **owner** — is the connection owned by the user ([`OwnerScope::Me`]) or by the project
 //!   ([`OwnerScope::Project`])? The binary reads this from the project DB's `shared_connection`
 //!   table (a project-owned connection has a row there).
 //! - **actor_granted** — has the acting member's t57 actor-policy granted them the connection's

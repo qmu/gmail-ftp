@@ -11,8 +11,14 @@ Commands:
   describe   Describe a path: archetype, columns, verbs, procedures, pushdown
   skill      Print the embedded AI operating procedure
   serve      Start the server (CLI + MCP endpoint + web dashboard) from a .qfs config
-  connection Manage stored credentials per service/connection
-  identity   Local identity: sign up, look yourself up
+  init       Ready this machine: create the encrypted vault + register the operator
+  connect    Bind a defined path to a driver + account (the CLI twin of CONNECT)
+  disconnect Remove a defined path (idempotent)
+  app        Manage OAuth app registrations (today: Google's credentials.json)
+  account    Manage service accounts: authorize, list, remove, rotate, revoke
+  vault      Manage the vault's key slots: slots, enroll, revoke, rekey
+  host       Manage the qfs hosts this CLI can act on (`local` is implicit)
+  identity   Local identity: look yourself up (signing up is `qfs init`)
   invite     Team invites & membership: create, redeem, revoke
   job        Run / schedule a saved JOB (an external scheduler drives it)
   help       Print help for any command
@@ -47,7 +53,7 @@ qfs run "insert into /mail/drafts values ('alice@example.com','Hi','Body')"
 qfs run "insert into /mail/drafts values ('alice@example.com','Hi','Body')" --commit
 
 # Irreversible needs the extra ack (this CALL needs a connected mail account first —
-# see `qfs connection`; without one it returns a capability error):
+# see `qfs connect`; without one it returns a capability error):
 qfs run "/mail/drafts |> call mail.send" --commit --commit-irreversible
 ```
 
@@ -62,40 +68,83 @@ Completely **offline and credential-free**. It returns the node's archetype, col
 nullability), supported verbs, `CALL` procedures (with which are irreversible), prelude aliases, and
 which filters push down to the service. This is the first thing to run against any unfamiliar path.
 
-## `qfs connection` — credentials
+## `qfs init` — ready this machine
 
-Store and manage credentials per service. Names are metadata (safe to print); the secret is never
-echoed. See [Connections & credentials](/guide/connections).
-
-`add`, `list`, and `remove` need **`QFS_PASSPHRASE`** exported first — the master passphrase that
-unlocks the encrypted local store (not a service credential). The credential **value is read from
-stdin**, never argv:
+The first-run wizard: creates the encrypted vault (walking you through choosing its passphrase —
+the passphrase key slot is enrolled automatically) and registers the **operator identity**. There
+is no password — your OS login is the authentication; the email is an accountability label.
+Idempotent: re-running reports what exists.
 
 ```sh
-read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE     # unlock the store, no shell-history leak
-printf %s "$TOKEN" | qfs connection add <service> <name>   # value via stdin (store/replace)
-qfs connection list [<service>]         # list connection names only
-qfs connection use <service> <name>     # set the active connection (no passphrase needed)
-qfs connection remove <service> <name>  # delete (idempotent)
+qfs init you@example.com     # or omit the email on a terminal to be prompted
 ```
 
-For offboarding and key hygiene, a connection can be **rotated**, **revoked**, or the whole store
-**rekeyed** (the new secret / passphrase is read from stdin, never argv):
+## `qfs connect` / `qfs disconnect` — defined paths
+
+A cloud path exists only after a connect. `connect` binds a path you choose to a driver plus the
+account it uses (the mount carries the account — there is no selection state); `disconnect`
+removes it. The CLI twin of the `CONNECT` / `DISCONNECT` statements:
 
 ```sh
-printf %s "$NEW" | qfs connection rotate <service> <name>  # re-mint the secret, clear any revoke
-qfs connection revoke <service> <name>                     # mark unresolvable (fails closed at bind)
-printf %s "$NEWPASS" | qfs connection rekey                # re-wrap the store under a new passphrase
+qfs connect /mail --driver gmail --account you@gmail.com   # mount Gmail at /mail
+qfs connect /db --driver sqlite --at 'file:app.db'         # local source — no account
+qfs disconnect /mail                                       # remove the defined path (idempotent)
+qfs connect --list                                         # list the defined paths
+qfs connect --import-env    # print CREATE CONNECTION declarations for QFS_SQL_*/QFS_GIT_* env vars
 ```
 
-## `qfs identity` — local sign-up
+## `qfs app` — OAuth app registrations
 
-Authentication only — a signed-up user is an identity, not an authorization (that's policies and
-the ACL). The password is read from **stdin**, never argv; the password hash is never printed.
+The client credentials **your** OAuth app authenticates with (today: Google's `credentials.json`).
+Read from stdin, never printed back:
 
 ```sh
-printf %s "$PW" | qfs identity signup a@b.com   # create a local user + password account
-qfs identity whoami [a@b.com]                    # print a user's email + id (never the hash)
+cat credentials.json | qfs app add google
+qfs app list             # provider + created_at — never a secret
+qfs app remove google    # account tokens stay
+```
+
+## `qfs account` — service accounts
+
+Authorize an external account (providers: `google`, `github`, `slack`, `objstore`, `cf`). On a
+terminal `qfs account add google` runs the live browser consent; automation pipes the token on
+**stdin**, never argv:
+
+```sh
+qfs account add google                                        # browser consent on a TTY
+printf %s "$REFRESH_TOKEN" | qfs account add google you@gmail.com   # automation; email = label
+printf %s "$GH_TOKEN" | qfs account add github work
+qfs account list                          # labels + metadata only, never tokens
+qfs account remove <provider> <label>     # delete the token AND its consent record
+```
+
+For offboarding and key hygiene, an account can be **rotated** or **revoked** (the new secret is
+read from stdin, never argv):
+
+```sh
+printf %s "$NEW" | qfs account rotate <provider> <label>   # re-mint the secret, clear any revoke
+qfs account revoke <provider> <label>                      # mark unresolvable (fails closed at bind)
+```
+
+## `qfs vault` — key slots
+
+The vault's data-key is wrapped once per **key slot** (KeyGuardian). The passphrase slot is
+enrolled by `qfs init`; enroll the OS keychain and this host unlocks with no passphrase at all:
+
+```sh
+qfs vault slots                          # id, guardian kind, created_at — never key bytes
+qfs vault enroll keychain                # OS keychain slot — no passphrase per pane thereafter
+qfs vault revoke <slot>                  # the last remaining slot is refused
+printf %s "$NEWPASS" | qfs vault rekey   # re-wrap the data-key under a new passphrase
+```
+
+## `qfs identity` — who you are
+
+Authentication only — the operator is an identity, not an authorization (that's policies and
+the ACL). Signing up is part of [`qfs init`](#qfs-init-ready-this-machine):
+
+```sh
+qfs identity whoami [a@b.com]   # print a user's email + id
 ```
 
 ## `qfs invite` — teams & membership
@@ -148,7 +197,7 @@ The long form prints the version, the exact build commit, and the target it was 
 when reporting an issue:
 
 ```text
-qfs 0.0.10
+qfs 0.0.14
 commit:  <git-sha>
 target:  x86_64-unknown-linux-gnu
 wasm32:  false

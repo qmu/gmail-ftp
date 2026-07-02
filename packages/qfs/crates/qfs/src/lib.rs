@@ -18,12 +18,14 @@
 //! outside this crate links the binary as a library except `xtask`, which touches only the
 //! pure [`catalog`]/[`docs`]/[`version`] surface (no runtime, no creds, no I/O).
 
+pub mod account;
 pub mod audit;
 pub mod billing;
 pub mod broker;
 pub mod catalog;
 pub mod claude;
 pub mod clients;
+pub mod cloud_mounts;
 pub mod commit;
 pub mod connection;
 pub mod connections_config;
@@ -36,10 +38,13 @@ pub mod fs;
 pub mod git;
 pub mod google;
 pub mod host;
+pub mod hosts;
 pub mod identity;
+pub mod init;
 pub mod invite;
 pub mod job;
 pub mod mcp;
+pub mod mount_adapter;
 pub mod oauth;
 pub mod objstore;
 pub mod path_binding;
@@ -57,7 +62,9 @@ pub mod store;
 pub mod sys;
 pub mod telemetry;
 pub mod transport;
+pub mod tty;
 pub mod tunnel;
+pub mod vault;
 pub mod version;
 pub mod watchtower;
 pub mod worm;

@@ -1026,7 +1026,15 @@ fn returning_clause(input: &mut Stream<'_>) -> ModalResult<Vec<Projection>> {
 /// The `/sys/paths` binding-registry columns, in the order the desugar emits them (the sys applier
 /// reads them by NAME, so the order is internal). A defined path stores selectors + metadata only —
 /// `secret_ref` is a REFERENCE (`env:`/`vault:`), never a secret value.
-const PATH_BINDING_COLUMNS: [&str; 5] = ["path", "driver", "at", "secret_ref", "alias_of"];
+const PATH_BINDING_COLUMNS: [&str; 7] = [
+    "path",
+    "driver",
+    "at",
+    "secret_ref",
+    "alias_of",
+    "host",
+    "account",
+];
 
 /// A plain (unversioned, non-glob) path segment — the shape the synthetic `/sys/paths` target uses.
 fn plain_segment(name: &str) -> PathSegment {
@@ -1058,6 +1066,8 @@ fn binding_values(
     at: Option<&str>,
     secret_ref: Option<&str>,
     alias_of: Option<&str>,
+    host: Option<&str>,
+    account: Option<&str>,
 ) -> Values {
     let lit = |v: Option<&str>| {
         v.map_or(Expr::Lit(Literal::Null), |s| {
@@ -1077,6 +1087,8 @@ fn binding_values(
             lit(at),
             lit(secret_ref),
             lit(alias_of),
+            lit(host),
+            lit(account),
         ]],
     }
 }
@@ -1119,28 +1131,43 @@ fn connect_stmt(input: &mut Stream<'_>) -> ModalResult<Statement> {
             return Err(ErrMode::Cut(ContextError::new()));
         }
         let target_path = canonical_path(&target);
-        let values = binding_values(&user_path, None, None, None, Some(&target_path));
+        let values = binding_values(&user_path, None, None, None, Some(&target_path), None, None);
         return Ok(upsert_sys_paths(values, span));
     }
     // FULL connect: a bare driver ident, then optional `AT '<loc>'` / `SECRET '<ref>'` in any order.
     let driver = cut_err(ident).parse_next(input)?.node;
-    let (at, secret) = connect_secret_clauses(input)?;
+    let (at, secret, host, account) = connect_secret_clauses(input)?;
     let values = binding_values(
         &user_path,
         Some(&driver),
         at.as_deref(),
         secret.as_deref(),
         None,
+        host.as_deref(),
+        account.as_deref(),
     );
     Ok(upsert_sys_paths(values, span))
 }
 
-/// The optional `AT '<locator>'` / `SECRET '<ref>'` tail of a full `CONNECT`, collected in any order
-/// (the sugar shape, like the `CREATE CONNECTION` clause loop). Reuses the shared connection-clause
-/// parsers so the `AT`/`SECRET` contextual idents are recognised identically.
-fn connect_secret_clauses(input: &mut Stream<'_>) -> ModalResult<(Option<String>, Option<String>)> {
+/// The optional `AT '<locator>'` / `SECRET '<ref>'` / `HOST '<name>'` / `ACCOUNT '<label>'` tail of
+/// a full `CONNECT`, collected in any order (the sugar shape, like the `CREATE CONNECTION` clause
+/// loop). Reuses the shared connection-clause parsers so the contextual idents are recognised
+/// identically. `HOST`/`ACCOUNT` are the ADR 0008 mount coordinate: which qfs host owns the mount
+/// (absent = the implicit `local`) and the service-account LABEL it binds (never a token) —
+/// contextual idents like `AT`/`SECRET`, NOT frozen keywords (the t31 lesson).
+#[allow(clippy::type_complexity)]
+fn connect_secret_clauses(
+    input: &mut Stream<'_>,
+) -> ModalResult<(
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+)> {
     let mut at = None;
     let mut secret = None;
+    let mut host = None;
+    let mut account = None;
     loop {
         if at.is_none() {
             if let Some(v) = opt(conn_at_clause).parse_next(input)? {
@@ -1154,9 +1181,21 @@ fn connect_secret_clauses(input: &mut Stream<'_>) -> ModalResult<(Option<String>
                 continue;
             }
         }
+        if host.is_none() {
+            if let Some(v) = opt(conn_host_clause).parse_next(input)? {
+                host = Some(v);
+                continue;
+            }
+        }
+        if account.is_none() {
+            if let Some(v) = opt(conn_account_clause).parse_next(input)? {
+                account = Some(v);
+                continue;
+            }
+        }
         break;
     }
-    Ok((at, secret))
+    Ok((at, secret, host, account))
 }
 
 /// `DISCONNECT /<path>` — remove a defined path. Desugars to `REMOVE /sys/paths/<path>` (the user
@@ -1630,6 +1669,21 @@ fn conn_at_clause(input: &mut Stream<'_>) -> ModalResult<String> {
 /// string. `SECRET` is a contextual ident; the value is a reference, never an inline secret.
 fn conn_secret_clause(input: &mut Stream<'_>) -> ModalResult<String> {
     let _ = word("SECRET").parse_next(input)?;
+    string_value(input)
+}
+
+/// `HOST '<name>'` — which qfs host owns the mount (ADR 0008 §1; absent = the implicit embedded
+/// `local` host). A contextual ident, never a frozen keyword.
+fn conn_host_clause(input: &mut Stream<'_>) -> ModalResult<String> {
+    let _ = word("HOST").parse_next(input)?;
+    string_value(input)
+}
+
+/// `ACCOUNT '<label>'` — the service-account LABEL the mount binds (ADR 0008 §4: the mount carries
+/// the account, e.g. a Google email). A label/selector, never a token; a contextual ident, never a
+/// frozen keyword.
+fn conn_account_clause(input: &mut Stream<'_>) -> ModalResult<String> {
+    let _ = word("ACCOUNT").parse_next(input)?;
     string_value(input)
 }
 

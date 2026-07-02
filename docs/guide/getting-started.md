@@ -233,30 +233,38 @@ If you forget the extra flag on an irreversible plan, qfs **fails safely** and t
 
 ## Connecting a real service
 
-Reads and commits against a live cloud service need a connection. Until you add one, qfs is honest
-about it — a fresh read returns an **actionable** error (exit code 3), never silent or empty rows:
+Reads and commits against a live cloud service need a **connect** — a cloud path exists only after
+you mount it. Until then, qfs is honest about it — a fresh read fails closed (exit code 2), never
+silent or empty rows:
 
 ```sh
 qfs run "/mail/inbox |> select date, subject"
 ```
 
 ```json
-{"error":{"code":"invalid_path","kind":"capability","message":"invalid path \"/mail/inbox\": connect a Google account to read mail — run `qfs identity signup <email>`, then `qfs connection add gmail` (gmail reads are not available without an authenticated account)","path":"/mail/inbox"}}
+{"error":{"code":"unknown_source","kind":"capability","message":"unknown source `mail`"}}
 ```
 
-Once connected, the same query returns real messages. To connect, store a credential once. First
-export `QFS_PASSPHRASE` — a password you choose that encrypts the service logins you save on this
-machine (it is **not** any service's own password; it just locks the local file your saved logins
-live in). It must stay set for the shell that runs `connection add/list/remove`:
+The happy path is four commands — ready the machine, register your OAuth app, authorize the
+account, mount the path:
 
 ```sh
-read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE   # unlock the local vault, no shell-history leak
-printf %s "$TOKEN" | qfs connection add gmail work  # credential VALUE via stdin, never argv
-qfs connection list                                 # shows connection names only, never secrets
+qfs init you@example.com                     # once per machine: create the encrypted vault
+                                             # (choosing its passphrase) + register the operator
+cat credentials.json | qfs app add google    # your Google OAuth app's client credentials
+qfs account add google                       # browser consent; the token is sealed, never printed
+qfs connect /mail --driver gmail --account you@gmail.com   # /mail now exists
+qfs run "/mail/inbox |> select date, subject"              # real messages
 ```
 
-The credential value is read from **stdin** (not prompted, and never passed on argv where it would
-leak into the process table + shell history); qfs never prints it back.
+For a non-Google service, pipe the token on **stdin** (never argv, where it would leak into the
+process table + shell history) and mount it the same way:
+
+```sh
+printf %s "$GH_TOKEN" | qfs account add github work   # credential VALUE via stdin
+qfs connect /github --driver github --account work
+qfs account list                                      # labels + metadata only, never secrets
+```
 
 See [Connect a service](/guide/connect) for the exact steps per source (Gmail/Drive, GitHub/Slack,
 S3/R2, SQL/git), and [Connections & credentials](/guide/connections) for the full model.

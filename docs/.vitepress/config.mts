@@ -47,6 +47,8 @@ export default defineConfig({
         items: [
           { text: 'Installation', link: '/guide/installation' },
           { text: 'Get started', link: '/guide/getting-started' },
+          { text: 'The QFS passphrase', link: '/guide/passphrase' },
+          { text: 'The operator identity', link: '/guide/operator' },
           { text: 'Connect a service', link: '/guide/connect' },
         ],
       },
@@ -71,6 +73,7 @@ export default defineConfig({
         text: 'Using qfs',
         items: [
           { text: 'How qfs works', link: '/guide/concepts' },
+          { text: 'The account model', link: '/guide/account-model' },
           { text: 'CLI reference', link: '/guide/cli' },
           { text: 'Interactive shell', link: '/guide/shell' },
           { text: 'Connections & credentials', link: '/guide/connections' },
@@ -96,6 +99,7 @@ export default defineConfig({
           { text: '0005 — Deployment hosts', link: '/adr/0005-deployment-hosts' },
           { text: '0006 — Test harness', link: '/adr/0006-test-harness' },
           { text: '0007 — Docs and distribution', link: '/adr/0007-docs-and-distribution' },
+          { text: '0008 — Multi-host account model', link: '/adr/0008-multi-host-account-model' },
         ],
       },
       {

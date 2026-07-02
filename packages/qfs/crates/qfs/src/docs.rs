@@ -258,7 +258,7 @@ pub fn render_server() -> String {
         "`create policy` gates writes by verb / path / irreversibility — an irreversible effect \
          (`remove`, `call mail.send`) can be blocked or required to be explicitly acknowledged. \
          **Credentials are never inline in a config**: a binding references a stored connection by \
-         handle (`qfs connection add <driver> <name>`), and no token is ever written to a config, a \
+         handle (`qfs account add <provider> <label>`), and no token is ever written to a config, a \
          log, or a generated doc. Examples below use placeholder handles only.\n"
     );
     let _ = writeln!(

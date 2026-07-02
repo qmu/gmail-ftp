@@ -7,7 +7,7 @@
 //! path / scheme, never a value, and carries a stable `code`), and never logging the value.
 //!
 //! An inline literal is **rejected**: a secret never sits in a statement. Only `env:` and `vault:`
-//! references are accepted. `vault:` reads the same envelope-encrypted store `qfs connection add`
+//! references are accepted. `vault:` reads the same envelope-encrypted store `qfs account add`
 //! writes (so that command stays the secret *store* behind a `SECRET vault:…` reference); the caller
 //! owns opening it (and thus the `QFS_PASSPHRASE`), so a locked/absent store fails closed.
 

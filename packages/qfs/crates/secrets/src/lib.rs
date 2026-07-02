@@ -15,8 +15,9 @@
 //!   (12-factor / CI / CF `env` bindings), [`LocalStore`] (native encrypted-at-rest,
 //!   `0600`, AEAD, atomic write), and `WorkerStore` (wasm Secret Store).
 //! - [`resolve`] — the connection-resolution ladder
-//!   (`--connection` > `AT 'acct'` > active > sole > structured error), recording the chosen
-//!   [`ConnectionSource`] for the audit ledger ("who ran as whom") — never the credential.
+//!   (`--connection` > `AT 'acct'` > the mount's account > sole > structured error), recording
+//!   the chosen [`ConnectionSource`] for the audit ledger ("who ran as whom") — never the
+//!   credential. There is NO selection state (ADR 0008): the mount carries the account.
 //! - [`grant_scopes`] — the scope tie-in: a driver requests a credential *with* required
 //!   scopes (the `requires_scopes` hints from t13) and gets a structured, secret-free
 //!   grant/deny.
@@ -38,7 +39,6 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-mod active;
 mod backends;
 // t54 (roadmap M4): the PURE cloud-driver consent / sign-in decision (no I/O, no Secret), so it
 // builds on both native and wasm. The binary wires the real identity + consent state into it.
@@ -52,9 +52,14 @@ mod e2e;
 // that consumes it lives in the native binary). Keeps qfs-secrets wasm-buildable.
 #[cfg(not(target_arch = "wasm32"))]
 mod envelope;
+// ADR 0008 §5 (KeyGuardian): the PURE vault-key-slot model — LUKS-style N wraps of one DEK, one
+// per guardian. Builds on envelope, so native-only like it; the guardian I/O (keyring, prompt,
+// env) lives in the binary and passes a resolver in.
 mod key;
 mod resolve;
 mod secret;
+#[cfg(not(target_arch = "wasm32"))]
+mod slots;
 // t81 (roadmap M5): the PURE shared-connection USE gate (no I/O, no Secret), so it builds on both
 // native and wasm. The binary wires the real owner + actor-policy-grant state into it.
 mod shared;
@@ -65,14 +70,13 @@ mod local;
 #[cfg(target_arch = "wasm32")]
 mod worker;
 
-pub use active::ActiveConnections;
 pub use backends::{EnvStore, InMemoryStore};
-// t54 (roadmap M4): the cloud-driver consent / sign-in decision. The binary's `connection add`/`use`
+// t54 (roadmap M4): the cloud-driver consent / sign-in decision. The binary's `qfs account add`
 // gate and its commit-time bind both consult these to fail closed for an unauthenticated operator.
 pub use consent::{bind_gate, is_cloud_driver, ConsentError, CLOUD_DRIVERS};
 // t80 (roadmap M5, decision U): the end-to-end attendance gate. The binary's commit-time bind
-// consults this to fail closed for a high-sensitivity (per-recipient-wrapped) connection used by an
-// autonomous agent unattended — it requires a human recipient unwrap in the loop.
+// consults this to fail closed when an unattended autonomous agent binds a high-sensitivity
+// (per-recipient-wrapped) credential — it requires a human recipient unwrap in the loop.
 pub use e2e::{e2e_attendance_gate, E2eUseError};
 // The envelope-encryption primitive (t43): the SQLite credential store (in the binary) builds on
 // these — a passphrase-derived KEK wraps a random DEK that seals each secret value. Native-only
@@ -82,11 +86,16 @@ pub use envelope::{
     derive_kek, generate_dek, generate_salt, open, rewrap_dek, seal, unwrap_dek, wrap_dek,
     EnvelopeError,
 };
+// ADR 0008 §5 (KeyGuardian): the vault-key-slot model. The binary's credential store unlocks the
+// DEK through the slot set (any one guardian suffices) and enrolls/revokes wraps without touching
+// a sealed value. Native-only (see the `mod slots` gate above).
 pub use key::{
     ConnectionId, ConnectionIdError, ConnectionRecord, CredentialKey, DriverId, OwnerScope,
 };
 pub use resolve::{resolve, ConnectionSource, Resolution, ResolveError};
 pub use secret::{Secret, REDACTED};
+#[cfg(not(target_arch = "wasm32"))]
+pub use slots::{unlock_via_slots, SlotWrap};
 // t81 (roadmap M5): the shared-connection USE gate. The binary's commit-time bind consults this to
 // fail closed for a member whose actor-policy does not grant a project-owned connection's scope.
 pub use shared::{shared_use_gate, SharedUseError};
@@ -138,14 +147,7 @@ mod tests {
                 )
                 .unwrap();
             let available = store.list(Some(&DriverId::new("mail"))).unwrap();
-            resolve(
-                &DriverId::new("mail"),
-                None,
-                None,
-                &ActiveConnections::new(),
-                &available,
-            )
-            .unwrap_err()
+            resolve(&DriverId::new("mail"), None, None, None, &available).unwrap_err()
         };
 
         let mut all = surfaces;
@@ -193,7 +195,7 @@ mod tests {
 
         // Ambiguous without a selector.
         assert_eq!(
-            resolve(&mail, None, None, &ActiveConnections::new(), &available)
+            resolve(&mail, None, None, None, &available)
                 .unwrap_err()
                 .code(),
             "connection_ambiguous"
@@ -201,14 +203,7 @@ mod tests {
 
         // Flag selects, then fetch that connection's secret.
         let chosen = ConnectionId::new("work").unwrap();
-        let r = resolve(
-            &mail,
-            Some(&chosen),
-            None,
-            &ActiveConnections::new(),
-            &available,
-        )
-        .unwrap();
+        let r = resolve(&mail, Some(&chosen), None, None, &available).unwrap();
         assert_eq!(r.source, ConnectionSource::Flag);
         let key = CredentialKey::new(mail.clone(), r.connection);
         assert_eq!(store.get(&key).unwrap().expose_str(), Some("tok-work"));

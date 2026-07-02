@@ -19,10 +19,10 @@ Second, many of the **reads actually execute and return rows**: `/local` (direct
 single-file content, and the `decode`/`encode` codecs), `/sys`, a configured `/sql` connection
 (`QFS_SQL_<name>`), and a configured `/git` repository (`QFS_GIT_<name>`) all run for real and hand
 back data. The cloud-driver reads (`/mail`, `/drive`, `/github`, `/slack`, `/s3`, `/r2`) parse and
-plan, but **executing** them needs a connected account — without one they return an actionable
-"connect a … account" error (run `qfs identity signup <email>`, then `qfs connection add <service>`),
-never an opaque unknown-source failure; `/drive` and `/ga` reads ride that same connect-account path
-but are still coming soon. Bare write statements (`insert into /mail/drafts …`, `update /sql/…`)
+plan, but **executing** them needs a connected account — a mount whose account isn't usable returns
+an actionable error (run `qfs app add google`, `qfs account add <provider> <label>`, then
+`qfs connect <path> --driver <driver> --account <label>`) rather than an opaque failure; `/drive`
+and `/ga` reads ride that same connect-account path but are still coming soon. Bare write statements (`insert into /mail/drafts …`, `update /sql/…`)
 **preview** their effect and touch nothing. On top of all that, a handful of recipes use grammar the
 parser does not ship yet — they are tagged so you can tell which is which. Each ` ```qfs ` block
 carries a machine-readable header

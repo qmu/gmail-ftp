@@ -189,42 +189,6 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
             ))),
         );
     }
-    // GitHub / Slack networked READ facets: register each driver's read adapter behind the SAME
-    // credentialed client the commit applier binds (the shared `crate::clients` builder), so a
-    // `FROM /github/.../pulls` or `FROM /slack/<ws>/users` (and therefore a `FROM … |> CALL` whose
-    // pipeline starts with a read) executes through the read executor. FAIL CLOSED: the builder
-    // returns `None` when the operator is unconfigured or the t54 cloud bind gate refuses, leaving
-    // the read facet UNREGISTERED so the `FROM` then fails honestly ("no source") rather than
-    // reading without authorization. A registered facet whose credential cannot be resolved at
-    // request time surfaces a clear auth error (see `crate::read_facets`), never empty rows.
-    // GitHub / Slack: register the real networked read facet behind the credentialed client (t6); on
-    // a fresh, unconfigured operator the client builder returns None, so fall back to the honest
-    // connect-account facet (t5) — a `FROM /github/...` then gets an ACTIONABLE error, never the raw
-    // unknown_source. The authenticated path returns real rows (issues/pulls/messages).
-    reads = match crate::clients::live_github_client() {
-        Some(client) => reads.with(
-            DriverId::new("github"),
-            Arc::new(crate::read_facets::GitHubReadDriver::new(client)),
-        ),
-        None => reads.with(
-            DriverId::new("github"),
-            Arc::new(crate::read_facets::ConnectAccountReadDriver::new(
-                "connect a GitHub account to read it — run `qfs identity signup <email>`, then `qfs connection add github` (GitHub reads need an authenticated token)",
-            )),
-        ),
-    };
-    reads = match crate::clients::live_slack_client() {
-        Some(client) => reads.with(
-            DriverId::new("slack"),
-            Arc::new(crate::read_facets::SlackReadDriver::new(client)),
-        ),
-        None => reads.with(
-            DriverId::new("slack"),
-            Arc::new(crate::read_facets::ConnectAccountReadDriver::new(
-                "connect a Slack workspace to read it — run `qfs identity signup <email>`, then `qfs connection add slack`",
-            )),
-        ),
-    };
     // SQL (hermetic, no network): register the live SQLite-backed read facet when a connection is
     // configured, so `FROM /sql/<conn>/<table> |> WHERE … |> SELECT …` executes — the native SELECT
     // pushes the WHERE/ORDER/LIMIT into the database and the residual is re-filtered locally. Skipped
@@ -249,79 +213,126 @@ pub fn run_engine_and_reads() -> (Engine, ReadRegistry, qfs_core::SafetyMode) {
             ))),
         );
     }
-    // Cloud sources whose reads fundamentally need a live OAuth/credentialed account (mail, drive,
-    // analytics, object stores) have no offline read. Register an honest "connect your account" read
-    // facet for each so a fresh-user `FROM /mail/...` gets an ACTIONABLE error instead of the
-    // internal-sounding `unknown_source` (t5). The real networked read (t6/t7) registers over this
-    // for a credentialed operator. Each reason is a stable, secret-free `&'static str`.
-    for (source, reason) in [
-        ("mail", "connect a Google account to read mail — run `qfs identity signup <email>`, then `qfs connection add gmail` (gmail reads are not available without an authenticated account)"),
-        ("drive", "connect a Google account to read Drive — run `qfs identity signup <email>`, then `qfs connection add gdrive`"),
-        ("ga", "connect a Google Analytics account to read it — run `qfs identity signup <email>`, then `qfs connection add ga`"),
-        ("s3", "connect AWS credentials to read S3 — run `qfs connection add s3` (S3 reads need a credentialed bucket)"),
-        ("r2", "connect Cloudflare R2 credentials to read it — run `qfs connection add r2`"),
-    ] {
-        reads = reads.with(
-            DriverId::new(source),
-            Arc::new(crate::read_facets::ConnectAccountReadDriver::new(reason)),
-        );
+    // Cloud mounts (ADR 0008 §4 — mount-bound accounts): every connect-created cloud mount
+    // registers its OWN read facet under the mount's segment id, bound to the MOUNT's account —
+    // never a process-global selection — and wrapped in a MountReadDriver so the scan's source
+    // id + path land back on the wrapped driver's canonical namespace. A mount whose live client
+    // cannot bind (no account, no operator app, refused t54 gate, unresolvable credential) gets
+    // the honest connect-account facet instead, so a `FROM` over it fails with an ACTIONABLE
+    // error (never the internal-sounding `unknown_source`, never a read without authorization).
+    for mount in crate::cloud_mounts::load_cloud_mounts() {
+        let Some(remap) = mount.remap() else { continue };
+        reads = match cloud_read_facet(&mount) {
+            // A live facet speaks the wrapped driver's canonical namespace — remap the scan in.
+            Some(facet) => reads.with(
+                remap.outer_id(),
+                Arc::new(crate::mount_adapter::MountReadDriver::new(remap, facet)),
+            ),
+            // The honest fallback echoes the scan's own path in its error — register it
+            // UNWRAPPED so the hint names the user's mount path, not the canonical one.
+            None => reads.with(
+                remap.outer_id(),
+                Arc::new(crate::read_facets::ConnectAccountReadDriver::new(
+                    connect_hint(&mount.kind),
+                )),
+            ),
+        };
     }
-    // Gmail + Drive + Analytics real reads (t7): when a Google account is configured AND the t54
-    // cloud bind gate passes, register the live read facet OVER the connect-account fallback, so
-    // `FROM /mail/<label>` returns messages, `FROM /drive/...` lists a folder's children, and
-    // `FROM /ga/<property> |> select ...` runs a GA4 report for a connected operator. Fail closed:
-    // an unconfigured/ungated operator keeps the t5 connect-account nudge.
-    if let Some(stack) = crate::google::live_google_stack() {
-        let gmail_conn =
-            crate::connection::active_connection("gmail").unwrap_or_else(|| "default".to_string());
-        if crate::commit::cloud_bind_allowed("gmail", &gmail_conn) {
+    (engine, reads, safety_mode)
+}
+
+/// Build the live read facet for one cloud mount, bound to the mount's account — or `None`
+/// (fail closed) when the mount cannot bind. Mirrors `crate::commit::cloud_apply_driver` so the
+/// read and apply funnels can never disagree about which account a mount binds.
+fn cloud_read_facet(mount: &crate::cloud_mounts::CloudMount) -> Option<Arc<dyn ReadDriver>> {
+    let connection = mount.account.as_deref().unwrap_or("default");
+    match mount.kind.as_str() {
+        "gmail" => {
+            let stack = crate::commit::google_stack_for_mount(mount)?;
             let client: Arc<dyn qfs_driver_gmail::GmailClient> = Arc::new(
                 qfs_driver_gmail::GoogleApiGmailClient::new(stack.api.clone()),
             );
-            reads = reads.with(
-                DriverId::new("mail"),
-                Arc::new(crate::read_facets::GmailReadDriver::new(client)),
-            );
+            Some(Arc::new(crate::read_facets::GmailReadDriver::new(client)))
         }
-        let drive_conn =
-            crate::connection::active_connection("gdrive").unwrap_or_else(|| "default".to_string());
-        if crate::commit::cloud_bind_allowed("gdrive", &drive_conn) {
+        "gdrive" => {
+            let stack = crate::commit::google_stack_for_mount(mount)?;
             let client: Arc<dyn qfs_driver_gdrive::GDriveClient> = Arc::new(
                 qfs_driver_gdrive::GoogleApiDriveClient::new(stack.api.clone()),
             );
-            reads = reads.with(
-                DriverId::new("drive"),
-                Arc::new(crate::read_facets::DriveReadDriver::new(client)),
-            );
+            Some(Arc::new(crate::read_facets::DriveReadDriver::new(client)))
         }
-        let ga_conn =
-            crate::connection::active_connection("ga").unwrap_or_else(|| "default".to_string());
-        if crate::commit::cloud_bind_allowed("ga", &ga_conn) {
+        "ga" | "google-analytics" => {
+            let stack = crate::commit::google_stack_for_mount(mount)?;
             let client: Arc<dyn qfs_driver_ga::GaClient> =
                 Arc::new(qfs_driver_ga::GoogleApiGaClient::new(stack.api.clone()));
             let driver = Arc::new(qfs_driver_ga::GaDriver::new(client));
-            reads = reads.with(
-                DriverId::new("ga"),
-                Arc::new(crate::read_facets::GaReadDriver::new(driver)),
-            );
+            Some(Arc::new(crate::read_facets::GaReadDriver::new(driver)))
+        }
+        "github" => {
+            let client = crate::clients::live_github_client(connection)?;
+            Some(Arc::new(crate::read_facets::GitHubReadDriver::new(client)))
+        }
+        "slack" => {
+            let client = crate::clients::live_slack_client(connection)?;
+            Some(Arc::new(crate::read_facets::SlackReadDriver::new(client)))
+        }
+        "s3" => {
+            let driver =
+                crate::commit::live_obj_read_driver(qfs_driver_objstore::Scheme::S3, connection)?;
+            Some(Arc::new(crate::read_facets::ObjReadDriver::new(Arc::new(
+                driver,
+            ))))
+        }
+        "r2" => {
+            let driver =
+                crate::commit::live_obj_read_driver(qfs_driver_objstore::Scheme::R2, connection)?;
+            Some(Arc::new(crate::read_facets::ObjReadDriver::new(Arc::new(
+                driver,
+            ))))
+        }
+        // cf is describe-only today (its live driver is a separate ticket) — no read facet.
+        _ => None,
+    }
+}
+
+/// The actionable, secret-free hint a cloud mount surfaces when its live client cannot bind —
+/// the ADR 0008 connect flow (`account add` then `connect`), per kind.
+fn connect_hint(kind: &str) -> &'static str {
+    match kind {
+        "gmail" => {
+            "this mail mount has no usable Google account — run `qfs app add google`, \
+             `qfs account add google <email>`, then `qfs connect <path> --driver gmail --account <email>`"
+        }
+        "gdrive" => {
+            "this Drive mount has no usable Google account — run `qfs app add google`, \
+             `qfs account add google <email>`, then `qfs connect <path> --driver gdrive --account <email>`"
+        }
+        "ga" | "google-analytics" => {
+            "this Analytics mount has no usable Google account — run `qfs app add google`, \
+             `qfs account add google <email>`, then `qfs connect <path> --driver ga --account <email>`"
+        }
+        "github" => {
+            "this GitHub mount has no usable account — run `qfs account add github <label>`, \
+             then `qfs connect <path> --driver github --account <label>`"
+        }
+        "slack" => {
+            "this Slack mount has no usable workspace token — run `qfs account add slack \
+             <label>`, then `qfs connect <path> --driver slack --account <label>`"
+        }
+        "s3" => {
+            "this S3 mount has no usable credentials — run `qfs account add objstore <label>`, \
+             then `qfs connect <path> --driver s3 --account <label>` (S3 reads need a \
+             credentialed bucket)"
+        }
+        "r2" => {
+            "this R2 mount has no usable credentials — run `qfs account add objstore <label>`, \
+             then `qfs connect <path> --driver r2 --account <label>`"
+        }
+        _ => {
+            "this mount's driver has no live read facet yet — see `qfs describe` for its \
+             surface"
         }
     }
-    // S3 / R2 live READ facets (t-203070): register the SigV4 object-storage reader when the routing
-    // config + secret access key resolve (fail closed otherwise, exactly like the apply path). Built
-    // from the SAME live registry the commit path uses, so `/s3/<bucket>` lists and `/s3/<bucket>/<key>`
-    // downloads against a real (or MinIO) S3 endpoint.
-    for scheme in [
-        qfs_driver_objstore::Scheme::S3,
-        qfs_driver_objstore::Scheme::R2,
-    ] {
-        if let Some(driver) = crate::commit::live_obj_read_driver(scheme) {
-            reads = reads.with(
-                DriverId::new(scheme.mount().trim_start_matches('/')),
-                Arc::new(crate::read_facets::ObjReadDriver::new(Arc::new(driver))),
-            );
-        }
-    }
-    (engine, reads, safety_mode)
 }
 
 /// Render one [`Outcome`] to `out` (human text). The shell reuses qfs-exec's renderers for the

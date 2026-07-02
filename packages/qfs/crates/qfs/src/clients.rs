@@ -26,12 +26,13 @@ use std::sync::Arc;
 use qfs_driver_github::{GitHubClient, RestGitHubClient};
 use qfs_driver_slack::{BodyErrorRule, RestSlackClient, SlackClient};
 
-/// Build the live, credentialed GitHub client when the operator is configured AND the t54 cloud
-/// bind gate passes for the selected connection; else `None` (fail closed). The returned
-/// `Arc<dyn GitHubClient>` is the SAME construction the commit applier and the read facet share.
+/// Build the live, credentialed GitHub client for one mount's credential `connection` label
+/// (ADR 0008: the mount's account) when the operator is configured AND the t54 cloud bind gate
+/// passes for that connection; else `None` (fail closed). The returned `Arc<dyn GitHubClient>`
+/// is the SAME construction the commit applier and the read facet share.
 #[must_use]
-pub(crate) fn live_github_client() -> Option<Arc<dyn GitHubClient>> {
-    let (store, cred) = crate::commit::networked_credential("github")?;
+pub(crate) fn live_github_client(connection: &str) -> Option<Arc<dyn GitHubClient>> {
+    let (store, cred) = crate::commit::networked_credential("github", connection)?;
     if !crate::commit::cloud_bind_allowed("github", cred.connection.as_str()) {
         return None;
     }
@@ -42,12 +43,13 @@ pub(crate) fn live_github_client() -> Option<Arc<dyn GitHubClient>> {
     )))
 }
 
-/// Build the live, credentialed Slack client (body-error rule ON, the Slack setting) when the
-/// operator is configured AND the t54 cloud bind gate passes; else `None` (fail closed). The
-/// returned `Arc<dyn SlackClient>` is shared between the commit applier and the read facet.
+/// Build the live, credentialed Slack client (body-error rule ON, the Slack setting) for one
+/// mount's credential `connection` label when the operator is configured AND the t54 cloud bind
+/// gate passes; else `None` (fail closed). The returned `Arc<dyn SlackClient>` is shared between
+/// the commit applier and the read facet.
 #[must_use]
-pub(crate) fn live_slack_client() -> Option<Arc<dyn SlackClient>> {
-    let (store, cred) = crate::commit::networked_credential("slack")?;
+pub(crate) fn live_slack_client(connection: &str) -> Option<Arc<dyn SlackClient>> {
+    let (store, cred) = crate::commit::networked_credential("slack", connection)?;
     if !crate::commit::cloud_bind_allowed("slack", cred.connection.as_str()) {
         return None;
     }

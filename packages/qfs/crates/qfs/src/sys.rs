@@ -146,7 +146,8 @@ impl SysBackend for SystemDbBackend {
             // t100020 (the CONNECT model): the DEFINED-PATH binding registry, from the Project DB.
             // Metadata only — `secret_ref` is a REFERENCE (`env:`/`vault:`), never a secret value.
             SysNode::Paths => self.scan_project(
-                "SELECT path, driver_id, at_locator, secret_ref, alias_of, created_at \
+                "SELECT path, driver_id, at_locator, secret_ref, alias_of, host, account, \
+                        created_at \
                  FROM path_binding ORDER BY path",
                 |r| {
                     Ok(Row::new(vec![
@@ -155,7 +156,9 @@ impl SysBackend for SystemDbBackend {
                         nullable_text(r, 2)?,
                         nullable_text(r, 3)?,
                         nullable_text(r, 4)?,
-                        nullable_text(r, 5)?,
+                        text(r, 5)?,
+                        nullable_text(r, 6)?,
+                        nullable_text(r, 7)?,
                     ]))
                 },
             )?,
@@ -335,12 +338,18 @@ impl SysBackend for SystemDbBackend {
             })?;
             let at = optional_text(row, "at");
             let secret_ref = optional_text(row, "secret_ref");
+            // ADR 0008: the mount coordinate — an absent HOST clause means the implicit embedded
+            // `local` host (defaulted in the binding I/O); `account` is a label, never a token.
+            let host = optional_text(row, "host");
+            let account = optional_text(row, "account");
             crate::path_binding::db_upsert_binding(
                 &conn,
                 &path,
                 &driver,
                 at.as_deref(),
                 secret_ref.as_deref(),
+                host.as_deref(),
+                account.as_deref(),
             )
             .map_err(binding_err)?
         };

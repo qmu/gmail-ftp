@@ -5,17 +5,22 @@ description: Use for an overview of what qfs can do and which qfs cookbook skill
 
 # Cookbook
 
-Real tasks, and the one qfs statement that solves each. Every recipe is grouped by what you're
-working with; use the sidebar to jump around.
+Every external service, one language. Mail, a database, a repo, a channel, a bucket — each becomes a
+tree of paths you query with the same filesystem-shaped pipe-SQL.
 
-A section heading marked **🚧** has a part that isn't wired yet — the recipes shown work, but the
-section's callout notes what's still coming (today that's object-store writes and reading a git
-blob's bytes at a `@ref`).
+::: tip Start here — the one-time setup gates
+`/local`, `/sys`, and local files/repos need no setup. Every **cloud** service needs a signed-in
+operator (`qfs init` — **[The operator identity](/guide/operator)**; it also creates the encrypted
+credential store, **[The QFS passphrase](/guide/passphrase)**), an authorized account
+(`qfs account add …`), and a mount binding that account to a path (`qfs connect …`). Each chapter's
+Setup walks through them — without them you can't reach Gmail, Drive, GitHub, Slack, or object
+storage.
+:::
 
-## How to read a recipe
+## One query shape, any service
 
-Each recipe is a short statement. Multi-stage queries are written one stage per line, with the `|>`
-pipe leading each line — read it top to bottom like a series of steps:
+**Find the invoices in your inbox, newest first** — search a mailbox with `where`, `select`,
+`order by`, `limit`:
 
 ```qfs
 /mail/inbox
@@ -25,11 +30,16 @@ pipe leading each line — read it top to bottom like a series of steps:
 |> limit 20
 ```
 
+Learn that shape once and you already know how to read every other service. Swap `/mail/inbox` for
+`/sql/<conn>/<table>`, a `/git` tree, or a `/slack` channel and the same `where … select … order by
+… limit` pipe just works — that's the whole promise: no per-service API to relearn, one grammar over
+all of them.
+
 ::: tip Reads return rows; writes preview
 A **read** runs immediately and returns rows — `/local`, `/sys`, a `/sql` table, and a `/git` repo
 all read today. A read of a cloud service you haven't connected (mail, GitHub, Slack, S3, Drive)
-returns an *actionable* error telling you exactly which `qfs connection add …` to run — it never
-silently fails.
+returns an *actionable* error telling you exactly which `qfs account add …` / `qfs connect …` to
+run — it never silently fails.
 
 A **write** (`insert`, `update`, `upsert`, `remove`, `call`) **previews** by default: `qfs run`
 shows the plan and changes nothing. Add `--commit` to act, and `--commit-irreversible` for things
@@ -37,22 +47,28 @@ that can't be undone, like sending mail or merging a PR. So paste any recipe and
 *would* do first.
 :::
 
+A section heading marked **🚧** has a part that isn't wired yet — the recipes shown work, but the
+section's callout notes what's still coming (today that's object-store writes and reading a git
+blob's bytes at a `@ref`).
+
 ## The chapters
 
-One cookbook per service — each opens with how to connect it, then the recipes.
+One cookbook per service — each opens with how to connect it, then the recipes that solve real
+tasks. Jump to the one you need:
 
-- **[Gmail](/cookbook/gmail)** — connect a Google account, then search, triage, draft, send, label,
-  clean up.
+- **[Gmail](/cookbook/gmail)** — search, triage, draft, send, label, and clean up a whole mailbox.
 - **[Google Drive](/cookbook/gdrive)** — browse My Drive and Shared Drives, download, upload, create
   folders, trash.
-- **[Databases](/cookbook/databases)** — filter, aggregate, update, set operations.
-- **[git](/cookbook/git)** — versioned file tree and history; read the tree at a ref; record a commit.
+- **[Databases](/cookbook/databases)** — filter, aggregate, update, and set operations over SQL
+  tables.
+- **[git](/cookbook/git)** — read a versioned file tree and history, browse it at any ref, record a
+  commit.
 - **[GitHub](/cookbook/github)** — list and filter pull requests and issues; merge a PR.
 - **[Slack](/cookbook/slack)** — read a channel's latest messages; post a message.
 - **[Files & object storage](/cookbook/files)** — local files and S3/R2, plus format conversion with
   codecs.
-- **[Cross-service](/cookbook/cross-service)** — join a database to GitHub, a file to a table, one
-  query spanning several services.
+- **[Cross-service](/cookbook/cross-service)** — one query spanning several services: join a database
+  to GitHub, a file to a table.
 - **[Automation (server)](/cookbook/automation)** — turn any query into a trigger, a scheduled job,
   an HTTP endpoint, or a cached view.
 

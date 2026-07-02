@@ -99,10 +99,9 @@ pub use qfs_types::{
 // statement's context into a concrete connection, recording the `ConnectionSource` for the
 // audit ledger — never the credential.
 pub use qfs_secrets::{
-    grant_scopes, resolve as resolve_connection, ActiveConnections, ConnectionId,
-    ConnectionIdError, ConnectionRecord, ConnectionSource, CredentialKey, EnvStore, InMemoryStore,
-    Resolution as ConnectionResolution, ResolveError as ConnectionResolveError, ScopeError,
-    ScopeGrant, Secret, SecretError, Secrets,
+    grant_scopes, resolve as resolve_connection, ConnectionId, ConnectionIdError, ConnectionRecord,
+    ConnectionSource, CredentialKey, EnvStore, InMemoryStore, Resolution as ConnectionResolution,
+    ResolveError as ConnectionResolveError, ScopeError, ScopeGrant, Secret, SecretError, Secrets,
 };
 
 /// The output mode for a session (RFD-0001 §7: `-json` vs human).

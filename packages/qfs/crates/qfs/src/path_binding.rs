@@ -4,8 +4,8 @@
 //!
 //! - the query-language `CONNECT`/`DISCONNECT` statement (parser-desugared to a `/sys/paths`
 //!   effect, applied by the runtime [`crate::sys`] backend), and
-//! - the `qfs connect` / `qfs disconnect` / `qfs connection list` CLI (direct DB I/O, mirroring
-//!   `qfs connection add`).
+//! - the `qfs connect` / `qfs disconnect` / `qfs connect --list` CLI (direct DB I/O,
+//!   writing selectors + secret REFERENCES only).
 //!
 //! A **defined path** is a user-chosen PATH that MOUNTS a connection: a FULL connect binds
 //! `/<path>` to a `(driver, at-locator, secret-ref)`; an ALIAS binds `/<path>` to another defined
@@ -34,6 +34,13 @@ pub struct PathBindingRow {
     pub secret_ref: Option<String>,
     /// For an ALIAS row: the target defined `path` this row reuses; `None` for a full connect.
     pub alias_of: Option<String>,
+    /// Which qfs host owns the mount (ADR 0008 §1); `'local'` is the implicit embedded host. An
+    /// alias inherits its target's coordinate, so an alias row keeps the default.
+    pub host: String,
+    /// The service-account LABEL the mount binds (ADR 0008 §4 — the mount carries the account,
+    /// e.g. a Google email). `None` for a local source with no account / for an alias. NEVER a
+    /// token — the credential stays in the vault, keyed by this label.
+    pub account: Option<String>,
     /// When the binding was created (RFC 3339).
     pub created_at: String,
 }
@@ -49,17 +56,23 @@ pub fn db_upsert_binding(
     driver_id: &str,
     at_locator: Option<&str>,
     secret_ref: Option<&str>,
+    host: Option<&str>,
+    account: Option<&str>,
 ) -> Result<u64, rusqlite::Error> {
+    // The mount coordinate (ADR 0008): an absent host means the implicit embedded host.
+    let host = host.unwrap_or("local");
     let n = conn.execute(
-        "INSERT INTO path_binding (path, driver_id, at_locator, secret_ref, alias_of) \
-             VALUES (?1, ?2, ?3, ?4, NULL) \
+        "INSERT INTO path_binding (path, driver_id, at_locator, secret_ref, alias_of, host, account) \
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6) \
          ON CONFLICT(path) DO UPDATE SET \
              driver_id  = excluded.driver_id, \
              at_locator = excluded.at_locator, \
              secret_ref = excluded.secret_ref, \
              alias_of   = NULL, \
+             host       = excluded.host, \
+             account    = excluded.account, \
              created_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')",
-        rusqlite::params![path, driver_id, at_locator, secret_ref],
+        rusqlite::params![path, driver_id, at_locator, secret_ref, host, account],
     )?;
     Ok(n as u64)
 }
@@ -76,13 +89,15 @@ pub fn db_upsert_alias(
     target: &str,
 ) -> Result<u64, rusqlite::Error> {
     let n = conn.execute(
-        "INSERT INTO path_binding (path, driver_id, at_locator, secret_ref, alias_of) \
-             VALUES (?1, NULL, NULL, NULL, ?2) \
+        "INSERT INTO path_binding (path, driver_id, at_locator, secret_ref, alias_of, host, account) \
+             VALUES (?1, NULL, NULL, NULL, ?2, 'local', NULL) \
          ON CONFLICT(path) DO UPDATE SET \
              driver_id  = NULL, \
              at_locator = NULL, \
              secret_ref = NULL, \
              alias_of   = excluded.alias_of, \
+             host       = 'local', \
+             account    = NULL, \
              created_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')",
         rusqlite::params![path, target],
     )?;
@@ -104,13 +119,13 @@ pub fn db_remove_binding(conn: &Connection, path: &str) -> Result<u64, rusqlite:
 }
 
 /// List every defined-path binding (metadata only), ordered by `path`. The passphrase-free read the
-/// registration path (t100040), `qfs connection list`, and `/sys/paths` all consult.
+/// registration path (t100040), `qfs connect --list`, and `/sys/paths` all consult.
 ///
 /// # Errors
 /// The underlying `rusqlite::Error` on a DB failure.
 pub fn db_list_bindings(conn: &Connection) -> Result<Vec<PathBindingRow>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT path, driver_id, at_locator, secret_ref, alias_of, created_at \
+        "SELECT path, driver_id, at_locator, secret_ref, alias_of, host, account, created_at \
          FROM path_binding ORDER BY path",
     )?;
     let rows = stmt
@@ -121,7 +136,9 @@ pub fn db_list_bindings(conn: &Connection) -> Result<Vec<PathBindingRow>, rusqli
                 at_locator: r.get(2)?,
                 secret_ref: r.get(3)?,
                 alias_of: r.get(4)?,
-                created_at: r.get(5)?,
+                host: r.get(5)?,
+                account: r.get(6)?,
+                created_at: r.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -137,7 +154,7 @@ pub fn db_get_binding(
     path: &str,
 ) -> Result<Option<PathBindingRow>, rusqlite::Error> {
     conn.query_row(
-        "SELECT path, driver_id, at_locator, secret_ref, alias_of, created_at \
+        "SELECT path, driver_id, at_locator, secret_ref, alias_of, host, account, created_at \
          FROM path_binding WHERE path = ?1",
         rusqlite::params![path],
         |r| {
@@ -147,7 +164,9 @@ pub fn db_get_binding(
                 at_locator: r.get(2)?,
                 secret_ref: r.get(3)?,
                 alias_of: r.get(4)?,
-                created_at: r.get(5)?,
+                host: r.get(5)?,
+                account: r.get(6)?,
+                created_at: r.get(7)?,
             })
         },
     )
@@ -174,6 +193,8 @@ mod tests {
             "postgres",
             Some("postgres://db/orders"),
             Some("env:PG_PASS"),
+            None,
+            None,
         )
         .unwrap();
         let row = db_get_binding(&conn, "/work/orders").unwrap().unwrap();
@@ -181,12 +202,54 @@ mod tests {
         assert_eq!(row.at_locator.as_deref(), Some("postgres://db/orders"));
         assert_eq!(row.secret_ref.as_deref(), Some("env:PG_PASS"));
         assert_eq!(row.alias_of, None);
+        // ADR 0008: an omitted host is the implicit embedded host; a local source has no account.
+        assert_eq!(row.host, "local");
+        assert_eq!(row.account, None);
+    }
+
+    /// ADR 0008 §4 — the mount carries the (host, driver, account) coordinate, and two accounts of
+    /// one driver coexist as two paths (what the abolished `active_account` selection can't do).
+    #[test]
+    fn mount_coordinate_round_trips_and_two_accounts_coexist() {
+        let conn = migrated();
+        db_upsert_binding(
+            &conn,
+            "/mail",
+            "gmail",
+            None,
+            None,
+            None,
+            Some("you@work.example"),
+        )
+        .unwrap();
+        db_upsert_binding(
+            &conn,
+            "/mail-priv",
+            "gmail",
+            None,
+            None,
+            Some("local"),
+            Some("me@personal.example"),
+        )
+        .unwrap();
+        let work = db_get_binding(&conn, "/mail").unwrap().unwrap();
+        let priv_ = db_get_binding(&conn, "/mail-priv").unwrap().unwrap();
+        assert_eq!(work.account.as_deref(), Some("you@work.example"));
+        assert_eq!(priv_.account.as_deref(), Some("me@personal.example"));
+        assert_eq!(work.host, "local");
+        assert_eq!(priv_.host, "local");
+        // Re-connecting a path replaces its coordinate (last-writer-wins on the mount).
+        db_upsert_binding(&conn, "/mail", "gmail", None, None, None, None).unwrap();
+        assert_eq!(
+            db_get_binding(&conn, "/mail").unwrap().unwrap().account,
+            None
+        );
     }
 
     #[test]
     fn alias_reuses_a_connection_and_cascades_on_remove() {
         let conn = migrated();
-        db_upsert_binding(&conn, "/work/orders", "postgres", None, None).unwrap();
+        db_upsert_binding(&conn, "/work/orders", "postgres", None, None, None, None).unwrap();
         db_upsert_alias(&conn, "/db", "/work/orders").unwrap();
         assert_eq!(
             db_get_binding(&conn, "/db")

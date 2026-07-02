@@ -1,18 +1,19 @@
 # Connections & credentials
 
-A **connection** is a named configuration that tells qfs *where a source lives and how to reach it*.
-In a path like `/sql/orders/customers` or `/s3/backups/db.sql`, the **second segment is the
-connection name** (`orders`, `backups`) — not a literal host or bucket, but a label you defined that
-holds the actual connection info. That's why you can have `/sql/orders` and `/sql/analytics`, or
-`/mail/work` and `/mail/personal`, side by side.
+A **connection** is what tells qfs *where a source lives and how to reach it*. In qfs the path that
+reaches a source is one **you define**: a cloud path like `/mail` exists only after you **mount** it
+with `qfs connect`, and a local path like `/sql/orders/customers` comes from a `CREATE CONNECTION`
+declaration whose name (`orders`) is the path segment. That's why you can have `/sql/orders` and
+`/sql/analytics`, or a work `/mail` and a home `/mail2`, side by side.
 
 You don't need any connection to **describe** a path or **preview** a query — both are completely
 offline. You need one to **read rows** from a source or **commit** a change to it.
 
 ::: tip Just want the steps for one service?
 [Connect a service](/guide/connect) is the per-source how-to (Gmail/Drive, GitHub/Slack, S3/R2,
-SQL/git). This page is the model behind it — the encrypted store, the passphrase, and rotating or
-revoking secrets.
+SQL/git). This page is the model behind it — the encrypted vault, the account verbs, and rotating or
+revoking secrets. For how mounts relate to your operator identity and the external service
+accounts, see [The account model](/guide/account-model).
 :::
 
 ## Two kinds of connection
@@ -22,7 +23,7 @@ How you define a connection depends on whether the source needs a **secret**:
 | Source | Defined by | Needs a secret? |
 | --- | --- | --- |
 | **Local databases & repos** — `/sql` (SQLite), `/git` | a **`CREATE CONNECTION` declaration** | no |
-| **Credentialed services** — `/mail`, `/drive`, `/github`, `/slack`, `/s3`, `/r2` | `qfs connection add` (encrypted store) | yes |
+| **Credentialed services** — mail, Drive, GitHub, Slack, S3/R2 | `qfs account add` (vault) + `qfs connect` (mount) | yes |
 
 ### Local databases & git — declare a connection
 
@@ -42,111 +43,109 @@ of truth — reviewable and committable — instead of a setting hidden in an en
 
 ::: warning The `QFS_SQL_*` / `QFS_GIT_*` env vars are deprecated
 `export QFS_SQL_ORDERS=/data/orders.db` still works as a temporary fallback (it warns once and, on a
-name clash, overrides the declaration), but it is being retired. Run **`qfs connection import-env`**
+name clash, overrides the declaration), but it is being retired. Run **`qfs connect --import-env`**
 to print the equivalent `CREATE CONNECTION` lines and move them into a `connections.qfs`.
 :::
 
-### Credentialed services — the credential store
+### Credentialed services — accounts in the vault, mounted at a path
 
-`/mail`, `/drive`, `/github`, `/slack`, `/s3`, `/r2` reach an external account over a token/OAuth, so
-their connection carries a **secret** that must be stored encrypted (`qfs connection add`, below).
-The path segment is still the connection name (`qfs connection add s3 prod` → `/s3/prod/…`). The
-rest of this page is about that encrypted store.
-
-## Unlocking the store with `QFS_PASSPHRASE`
-
-`QFS_PASSPHRASE` is **a password you choose that encrypts the service logins you save on this
-machine**. It is *not* a service credential — not your mail token, not an API key — and you never
-register it anywhere: it only locks and unlocks the local file your saved logins live in. You pick
-it once and reuse it; everything else is handled for you. (How that encryption actually works is in
-the *“Where the store lives”* note further down, for those who want the detail.)
-
-`connection add`, `connection list`, and `connection remove` all need it exported in the shell that
-runs them (`connection use` does not — it only flips which stored connection is active). With it
-unset, those commands fail closed with a clear error.
-
-Set it without leaking it into your shell history:
+Mail, Drive, GitHub, Slack, S3/R2 reach an external account over a token/OAuth, so their credential
+is split across two layers: the **service account** (`qfs account add`) seals the token into the
+encrypted vault, and the **mount** (`qfs connect`) binds a path you choose to that
+`(driver, account)` pair:
 
 ```sh
-read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE   # typed value isn't echoed or saved to history
+printf %s "$GH_TOKEN" | qfs account add github work        # seal the token in the vault
+qfs connect /github --driver github --account work         # mount it — /github/… now exists
 ```
 
-Alternatives: source a `0600`-permissioned file you keep outside the repo, or (with
-`HISTCONTROL=ignorespace`) prefix the `export` with a leading space. Avoid a bare
-`export QFS_PASSPHRASE=secret` typed inline — it lands in your history.
+The mount carries the account — there is **no selection state** and nothing "active". Two GitHub
+accounts are simply two mounts. The rest of this page is about that encrypted vault and the
+account lifecycle.
 
-This is **at-rest confidentiality only**: a process or someone with access to your running shell can
-read `QFS_PASSPHRASE` straight out of the environment. It protects the stored blob, not a live host.
+## Unlocking the vault
+
+The vault is created by **`qfs init`** (it walks you through choosing a passphrase — a password you
+pick that encrypts the service logins you save on this machine; it is *not* a service credential
+and you never register it anywhere). After that, any command that touches a sealed secret unlocks
+the vault through one of its **key slots**:
+
+- **Prompt / `QFS_PASSPHRASE`** — on a terminal qfs prompts (echo off); scripts export the env var:
+
+  ```sh
+  read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE   # typed value isn't echoed or saved to history
+  ```
+
+- **OS keychain slot** — `qfs vault enroll keychain` stores a wrap of the vault key in the
+  platform secret service, so this host unlocks with **no passphrase at all** from then on.
+
+All the options and their trade-offs are in **[The QFS passphrase](/guide/passphrase)**. Either way
+this is **at-rest confidentiality only**: it protects the stored blob, not a live host.
 
 ## Storing a credential
 
 ```sh
-qfs connection add <service> <name>
+qfs account add <provider> <label>
 ```
 
-- `<service>` is the driver the connection belongs to — `mail`, `drive`, `github`, `slack`, `s3`,
-  `r2` (the credentialed services; local `/sql`/`/git` use an env var instead — see above)
-- `<name>` is your label for it — `work`, `personal`, `prod`, …
+- `<provider>` is the cloud the account belongs to — `google`, `github`, `slack`, `objstore`
+  (S3/R2), `cf` (local `/sql`/`/git` sources need no account — see above)
+- `<label>` is your name for it — a Google email, or `work`, `personal`, `prod`, …
 
-The credential **value is read from stdin** — pipe it in, never pass it on argv (argv is visible in
-the process table and your shell history). qfs stores the secret securely and **never prints it
-back**. The connection *name* is just metadata (safe to show); the credential itself is write-only
-from your shell's perspective.
+On a terminal, `qfs account add google` runs the **live browser consent** (register your OAuth app
+first: `cat credentials.json | qfs app add google`). For every other provider — and for automation —
+the credential **value is read from stdin**: pipe it in, never pass it on argv (argv is visible in
+the process table and your shell history). qfs seals the secret and **never prints it back**. The
+account *label* is just metadata (safe to show); the credential itself is write-only from your
+shell's perspective.
 
 ```sh
-# QFS_PASSPHRASE must already be exported (see above).
-printf %s "$MAIL_TOKEN"  | qfs connection add mail work
-printf %s "$AWS_SECRET"  | qfs connection add s3 prod
-printf %s "$GH_TOKEN"    | qfs connection add github personal
+printf %s "$REFRESH_TOKEN" | qfs account add google you@gmail.com
+printf %s "$AWS_SECRET"    | qfs account add objstore prod
+printf %s "$GH_TOKEN"      | qfs account add github personal
 ```
 
-## Listing connections
+## Listing accounts and mounts
 
 ```sh
-qfs connection list            # all services
-qfs connection list mail       # just one service
+qfs account list           # every authorized account (labels + metadata only)
+qfs app list               # registered OAuth apps (provider + created_at)
+qfs connect --list         # the defined paths (mount → driver)
 ```
 
-This prints **names and metadata only** — never a secret.
+None of these ever prints a secret.
 
-## Choosing the active connection
-
-A service can have several connections (e.g. `work` and `personal` mail). Set which one is active:
+## Removing an account or a mount
 
 ```sh
-qfs connection use mail work
+qfs account remove github work     # deletes the token AND its consent record
+qfs disconnect /github             # removes the defined path (idempotent; aliases cascade)
 ```
 
-## Removing a connection
+## Rotating and revoking
+
+Offboarding and key hygiene are first-class. The new secret is read from **stdin**, never argv:
 
 ```sh
-qfs connection remove mail work     # idempotent — fine to run twice
+printf %s "$NEW" | qfs account rotate github work   # re-mint the secret in place, clear any revoke
+qfs account revoke github work                      # mark the account unresolvable (fails closed)
 ```
 
-## Rotating, revoking, and rekeying
+- **rotate** replaces an account's secret (the offboarding answer — *replace*, not un-grant) and
+  clears any prior revocation. Other accounts are untouched.
+- **revoke** marks one account unresolvable: a later bind fails closed and the secret is never
+  returned. Other accounts keep working.
 
-Offboarding and key hygiene are first-class. The new secret (or passphrase) is read from **stdin**,
-never argv:
+Re-wrapping the whole vault under a new passphrase is a **vault** operation —
+`printf %s "$NEWPASS" | qfs vault rekey` — covered in
+[The QFS passphrase](/guide/passphrase#rotating-the-passphrase).
 
-```sh
-printf %s "$NEW" | qfs connection rotate mail work   # re-mint the secret in place, clear any revoke
-qfs connection revoke mail work                      # mark the connection unresolvable (fails closed)
-printf %s "$NEWPASS" | qfs connection rekey          # re-wrap the store's data-key under a new passphrase
-```
-
-- **rotate** replaces a connection's secret (the offboarding answer — *replace*, not un-grant) and
-  clears any prior revocation. Other connections are untouched.
-- **revoke** marks one connection unresolvable: a later bind fails closed and the secret is never
-  returned. Other connections keep working.
-- **rekey** re-wraps the store's data-key under a new `QFS_PASSPHRASE` (the current one is the old
-  one, read from the environment; the new one from stdin). Existing secrets stay decryptable; the
-  old passphrase stops unlocking. It is one re-wrap of the data-key, not an N-way re-encryption.
-
-::: tip Where the store lives
-Stored credentials are **envelope-encrypted at rest** in qfs's SQLite store: a random data-key
-encrypts each secret value, and that data-key is itself wrapped under an argon2id key derived from
-`QFS_PASSPHRASE`. The `/sys/connections` admin path shows the registry — driver, connection name,
-and `created_at` only; there is structurally no column a secret could ride in.
+::: tip Where the vault lives
+Sealed credentials are **envelope-encrypted at rest** in qfs's SQLite store: a random data-key
+encrypts each secret value, and that data-key is wrapped once per key slot (the passphrase slot uses
+an argon2id-derived key). The `/sys/connections` admin path shows the account registry — provider,
+label, and `created_at` only — and `/sys/paths` shows the mounts; there is structurally no column a
+secret could ride in.
 :::
 
 ## Least privilege

@@ -18,43 +18,17 @@ VERSION="${QFS_VERSION:-latest}"
 say()  { printf 'qfs-install: %s\n' "$1" >&2; }
 die()  { printf 'qfs-install: error: %s\n' "$1" >&2; exit 1; }
 
-# Printed after a successful install: how to test it, authenticate, update, and find the docs.
-# Every command here is real; the "try it" ones work offline with no credentials.
+# Printed after a successful install: one offline command to prove it works, then where to go next.
+# The "try it" command is real and runs with no account, no network, no credentials.
 next_steps() {
   cat >&2 <<'EOF'
 
-  ✓ qfs is installed. Next steps:
+  ✓ qfs is installed. Try it now — offline, no account:
+      qfs run "/local/etc |> select name, size, is_dir |> limit 5"
 
-  1) Try it — runs entirely on your machine, no account, no network:
-       qfs run "/local/etc |> select name, size, is_dir |> limit 5"   # list a folder
-       echo '{"k":1,"name":"alpha"}' > /tmp/d.json
-       qfs run "/local/tmp/d.json |> decode json |> encode yaml"       # convert a file
-     Both return real output immediately.
-
-  2) Preview a write — still no account; PREVIEW changes nothing:
-       qfs run "INSERT INTO /mail/drafts VALUES ('alice@example.com','Hi','Body')"
-     (qfs run PREVIEWs by default; add --commit to actually apply — applying a
-     real change needs a connected account, next.)
-
-  3) Connect a service — only needed to apply real changes:
-     First export QFS_PASSPHRASE — a password you choose that encrypts the
-     service logins you save on this machine. It is not any service's own
-     password; it just locks the local file your saved logins live in. Keep it
-     set for the shell that runs `connection add/list/remove`:
-       read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE   # no shell-history leak
-     Then add the connection, piping the credential VALUE via stdin (never argv,
-     which leaks into the process table + shell history):
-       printf %s "$TOKEN" | qfs connection add mail work   # then: qfs connection list
-     Your credential is stored locally and never printed back.
-
-  4) Update qfs later — re-run the installer (always fetches the latest):
-       curl -fsSL https://raw.githubusercontent.com/qmu/qfs/main/packages/qfs/install.sh | sh
-     Pin a version with QFS_VERSION=vX.Y.Z.
-
-  5) Learn more:
-       https://github.com/qmu/qfs#readme
-       https://github.com/qmu/qfs/blob/main/docs/guide/getting-started.md
-       qfs skill      # the operating procedure for AI agents
+  Next — connect a service, preview and commit real changes, update qfs:
+      https://github.com/qmu/qfs/blob/main/docs/guide/getting-started.md
+      qfs skill      # the operating procedure for AI agents
 
 EOF
 }

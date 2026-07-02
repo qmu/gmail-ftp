@@ -11,7 +11,10 @@
 //! binary is that leaf, so it builds the wired shell and injects it into `qfs-cmd` via the
 //! [`qfs_cmd::ShellLauncher`]. The shell LOGIC itself lives in `qfs-exec`; this only wires it.
 
-use qfs::{commit, connection, describe, identity, invite, job, serve, shell, store, version};
+use qfs::{
+    account, commit, connection, describe, hosts, identity, init, invite, job, serve, shell, store,
+    vault, version,
+};
 
 fn main() {
     // t40: the binary owns the build metadata (semver + git sha + target triple baked in by
@@ -50,17 +53,31 @@ fn main() {
         // `qfs_skill::render(..)` — this NORMAL `qfs → qfs-skill` edge is what makes SKILL.md ship in
         // the artifact and be discoverable from the running binary.
         &qfs_skill::render,
-        // `qfs connection add/list/use/remove`: the real credential-store I/O, injected here (the
+        // `qfs connect`/`disconnect`/`connect --list`: the defined-path binding I/O, injected here (the
         // binary owns the envelope-encrypted SQLite store over the Project DB — t43; qfs-cmd stays
         // off the concrete backend). The secret is read from stdin, never argv; each value is
         // AEAD-sealed under a data-key wrapped by the `QFS_PASSPHRASE`-derived key.
         &connection::run_connection,
-        // t45 `qfs identity signup/whoami`: the System-DB-backed identity store I/O, injected here
+        // t45 `qfs identity whoami`: the System-DB-backed identity store I/O, injected here
         // (the binary owns the rusqlite store over the System DB — qfs-cmd stays off the concrete
         // backend). The password is read from stdin, never argv, hashed with argon2id (the plaintext
         // is zeroized after); the password hash is never printed. AUTHENTICATION ONLY — no session
         // yet (t46), no authorization (M2).
         &identity::run_identity,
+        // ADR 0008 §2 `qfs init`: the first-run wizard — the System-DB operator identity (no
+        // password: OS-delegated auth, unusable placeholder hash) + the vault creation through the
+        // guardian flow, injected here (qfs-cmd stays off the concrete backends).
+        &init::run_init,
+        // ADR 0008 §1 `qfs host` (list/login/logout): the System-DB hosts registry — records a
+        // remote host with NO network I/O (the remote protocol is deferred, ADR §6), injected here.
+        &hosts::run_host,
+        // ADR 0008 §3 `qfs app` / `qfs account`: the per-layer verbs over the vault + consent
+        // ledger + the live Google consent seam, injected here (qfs-cmd stays off the backends).
+        &account::run_account,
+        // ADR 0008 §5 `qfs vault slots/enroll/revoke`: the KeyGuardian slot I/O + the OS-keyring
+        // guardian, injected here (the binary owns the envelope store and the keyring dep; qfs-cmd
+        // stays off both). Key material never crosses this seam — the action carries selectors only.
+        &vault::run_vault,
         // t55 `qfs invite create/redeem/revoke`: the System-DB-backed invite store I/O + the
         // binary-owned CSPRNG that mints the one-time token, injected here (qfs-cmd stays off the
         // concrete backend). The token is generated, returned ONCE, and stored only as a hash; redeem

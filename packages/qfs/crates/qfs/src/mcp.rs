@@ -23,7 +23,7 @@ use qfs_secrets::Secrets;
 
 /// The binary's live [`McpEngine`]: holds the serve engine (mounts + codecs) the plan builder and
 /// describe registry resolve against. The describe registry + connection store are built per-call
-/// (cred-free / best-effort), exactly as the `qfs describe` and `qfs connection list` subcommands do.
+/// (cred-free / best-effort), exactly as the `qfs describe` and `qfs account list` subcommands do.
 pub struct ServeMcpEngine {
     engine: Arc<Engine>,
 }
@@ -95,7 +95,7 @@ impl McpEngine for ServeMcpEngine {
     }
 
     fn connections(&self) -> Result<Vec<ConnectionInfo>, EngineError> {
-        // Best-effort, redacted: open the SAME envelope-encrypted store `qfs connection list`
+        // Best-effort, redacted: open the SAME envelope-encrypted store `qfs account list`
         // reads, list selectors + metadata ONLY (never credential material). If the store cannot
         // be unlocked (no passphrase / no DB), report an empty list rather than failing — the MCP
         // surface never blocks on a locked credential store, and never leaks a secret.

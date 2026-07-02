@@ -30,7 +30,7 @@ use crate::key::DriverId;
 /// the canonical [`DriverId`] (driver ids are already lowercase by construction).
 ///
 /// Membership is the single source of truth for [`is_cloud_driver`]; a driver NOT listed here is a
-/// **local** driver (e.g. `local`, `git`, `sql`, `sys`, `http`) for which `connection add`/`use` and
+/// **local** driver (e.g. `local`, `git`, `sql`, `sys`, `http`) for which `qfs account add` and
 /// a commit-time bind need no identity and no recorded consent.
 pub const CLOUD_DRIVERS: &[&str] = &["gmail", "gdrive", "ga", "github", "slack", "objstore", "cf"];
 
@@ -49,9 +49,9 @@ pub fn is_cloud_driver(driver: &DriverId) -> bool {
 pub enum ConsentError {
     /// The driver is a cloud driver but no operator is signed in to qfs identity. Fail closed
     /// (decision B/C): cloud connections are unusable for an unauthenticated operator. Actionable:
-    /// `qfs identity signup <email>` (then add the connection).
+    /// `qfs init` (then add the connection).
     #[error(
-        "cloud driver '{driver}' requires sign-in — run `qfs identity signup <email>` first \
+        "cloud driver '{driver}' requires sign-in — run `qfs init` first \
          (cloud connections are unusable for an unauthenticated operator)"
     )]
     SignInRequired {
@@ -59,11 +59,11 @@ pub enum ConsentError {
         driver: String,
     },
     /// The operator is signed in, but no consent has been recorded for this `(driver, connection)`.
-    /// Actionable: `qfs connection add <driver> <connection>` to grant consent (and provision the
+    /// Actionable: `qfs account add <provider>` to authorize the account (and provision the
     /// token) before the driver can bind.
     #[error(
         "cloud driver '{driver}' has no recorded consent for connection '{connection}' — run \
-         `qfs connection add {driver} {connection}` to grant access before using it"
+         `qfs account add <provider>` to authorize the account before using it"
     )]
     ConsentRequired {
         /// The cloud driver that was refused (metadata, never a secret).
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(still.code(), "cloud_sign_in_required");
         // Secret-free + actionable: names the driver and the remedy, no token.
         assert!(err.to_string().contains("github"));
-        assert!(err.to_string().contains("identity signup"));
+        assert!(err.to_string().contains("qfs init"));
     }
 
     #[test]
@@ -168,7 +168,7 @@ mod tests {
         // Names the exact connection that lacks consent + the remedy.
         assert!(err.to_string().contains("gmail"));
         assert!(err.to_string().contains("work"));
-        assert!(err.to_string().contains("connection add"));
+        assert!(err.to_string().contains("account add"));
     }
 
     #[test]

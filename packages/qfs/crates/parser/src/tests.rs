@@ -633,12 +633,50 @@ fn connect_without_a_target_is_a_crisp_error() {
 fn connect_and_disconnect_add_no_frozen_keyword() {
     // The additive-by-contextual-ident contract (the t31 AT lesson): CONNECT/DISCONNECT/TO are NOT
     // in the frozen keyword set — they are `word(...)` idents, exactly like CONNECTION/SECRET/AT.
-    for w in ["connect", "disconnect", "to"] {
+    // ADR 0008 adds HOST/ACCOUNT under the same contract.
+    for w in ["connect", "disconnect", "to", "host", "account"] {
         assert!(
             !KEYWORDS.contains(&w),
             "`{w}` must NOT be a frozen keyword (it is a contextual ident)"
         );
     }
+}
+
+#[test]
+fn connect_account_and_host_carry_the_mount_coordinate() {
+    // ADR 0008 §4: the mount carries the (host, driver, account) coordinate. ACCOUNT/HOST are
+    // clause-loop contextual idents like AT/SECRET, collected in any order.
+    let e = effect_of(parse_ok(
+        "CONNECT /mail TO gmail ACCOUNT 'you@work.example' HOST 'local'",
+    ));
+    assert_eq!(values_cell(&e, "driver").as_deref(), Some("gmail"));
+    assert_eq!(
+        values_cell(&e, "account").as_deref(),
+        Some("you@work.example")
+    );
+    assert_eq!(values_cell(&e, "host").as_deref(), Some("local"));
+    // Order-independent with the other clauses; absent clauses stay NULL (host resolves to the
+    // implicit `local` at the applier, not in the desugar).
+    let e = effect_of(parse_ok(
+        "CONNECT /m TO gmail SECRET 'vault:gmail/work' ACCOUNT 'me@personal.example'",
+    ));
+    assert_eq!(
+        values_cell(&e, "account").as_deref(),
+        Some("me@personal.example")
+    );
+    assert_eq!(values_cell(&e, "host"), None);
+    // An account-less CONNECT (a local source) carries NULLs — the pre-ADR shape still parses.
+    let e = effect_of(parse_ok("CONNECT /db TO sqlite AT '/data/l.db'"));
+    assert_eq!(values_cell(&e, "account"), None);
+    assert_eq!(values_cell(&e, "host"), None);
+}
+
+#[test]
+fn account_and_host_stay_ordinary_identifiers() {
+    // The contextual-ident regression: `account` / `host` remain usable as plain column names in a
+    // query — adding the CONNECT clauses must not steal them from the identifier space.
+    assert!(parse_statement("/sql/db/users |> select account, host |> limit 5").is_ok());
+    assert!(parse_statement("/sql/db/users |> where account == 'x' AND host == 'y'").is_ok());
 }
 
 #[test]

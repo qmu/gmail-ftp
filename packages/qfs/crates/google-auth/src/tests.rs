@@ -76,6 +76,9 @@ fn auth_url_carries_localhost_offline_consent_and_scopes() {
     assert!(!url.contains("127.0.0.1"));
     assert!(url.contains("access_type=offline"));
     assert!(url.contains("prompt=consent"));
+    // Incremental authorization: a later per-driver consent accumulates onto already-granted
+    // scopes instead of clobbering the shared refresh token.
+    assert!(url.contains("include_granted_scopes=true"));
     assert!(url.contains("gmail.readonly"));
     assert!(url.contains("state=STATE-XYZ"));
     assert!(url.contains("response_type=code"));

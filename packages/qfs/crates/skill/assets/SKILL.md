@@ -68,19 +68,21 @@ The four archetypes (RFD §5):
    contract bug to fix in the driver, never prose to bolt onto this skill. DESCRIBE is the only
    thing you read.
 
-6. **Cloud connections require sign-in (M4).** A driver that reaches an external service over OAuth
-   (gmail, gdrive, ga, github, slack, objstore, cf) is a **cloud** driver: it is unusable until you
-   have signed in to qfs identity (`qfs identity signup <email>`) **and** added a connection for it
-   (`qfs connection add <driver> <name>`), which records your consent against that connection. An
+6. **Cloud mounts require an operator + an account (ADR 0008).** A driver that reaches an external
+   service over OAuth (gmail, gdrive, ga, github, slack, objstore, cf) is a **cloud** driver, and
+   **nothing cloud is pre-mounted**. It is unusable until the operator exists (`qfs init`), the
+   account is authorized (`qfs account add <provider>` — browser consent on a terminal, or a piped
+   token in automation — which records consent), **and** a mount binds it
+   (`qfs connect /mail --driver gmail --account you@gmail.com`): the MOUNT carries the account, so
+   two accounts of one driver are simply two mounts (`/mail` + `/mail2`) in one process. An
    unauthenticated operator fails closed — a cloud driver will not bind a credential at COMMIT
-   without a consented, signed-in connection. Local drivers (`local`, `git`, `sql`, `sys`) are
-   ungated. **DESCRIBE and a write-plan PREVIEW stay pure** — they build the contract / effect-plan
-   with no credential bind, so `qfs run 'insert into /mail/drafts …'` previews fine from a bare
-   binary. **Reading live rows from a cloud service is different**: `/mail/inbox`, `/github/…`,
-   `/slack/…`, `/drive/…` reach the backend, so with no connection they **fail closed at resolve
-   time** (exit 3, `kind: capability`) with an actionable nudge — e.g. `connect a Google account to
-   read mail — run qfs identity signup <email>, then qfs connection add gmail`. That is the agent's
-   cue to connect an account, not a syntax error.
+   without a consented account. Local drivers (`local`, `git`, `sql`, `sys`) are ungated.
+   **DESCRIBE and a write-plan PREVIEW stay pure** — they build the contract / effect-plan with no
+   credential bind, so `qfs run 'insert into /mail/drafts …'` previews fine from a bare binary.
+   **Reading live rows from a cloud service is different**: `/mail/inbox`, `/github/…`, `/slack/…`,
+   `/drive/…` reach the backend, so with no mount they **fail closed at resolve time** (exit 3,
+   `kind: capability`). That is the agent's cue to have the account connected and mounted, not a
+   syntax error.
 
 ---
 
@@ -94,11 +96,11 @@ no account connected**:
 - **Write-plan PREVIEWs** for **any** driver — `insert/update/upsert into /path …` builds the typed
   effect-plan with no credential bind, so the PREVIEW prints (`"committed": false`) cred-free.
 
-What needs an account is **reading live rows from a cloud service** (gmail / github / slack, and
-soon drive) and **committing** anything. Those fail closed with an actionable connect-account error
-(see each example). The golden corpus (`crates/skill/tests/`) re-proves the PREVIEW plans against
-**in-test fixture drivers**, so it is hermetic; a bare binary reproduces the same write-plan
-PREVIEWs but resolves cloud *reads* to the connect-account error until you connect.
+What needs a mounted account is **reading live rows from a cloud service** (gmail / github / slack
+/ drive) and **committing** anything. Those fail closed (exit 3, `kind: capability`) until the
+mount exists (see each example). The golden corpus (`crates/skill/tests/`) re-proves the PREVIEW
+plans against **in-test fixture drivers**, so it is hermetic; a bare binary reproduces the same
+write-plan PREVIEWs but fails cloud *reads* closed until you connect a mount.
 
 ### local + sys — reads that run today (no creds)
 
@@ -113,7 +115,7 @@ These are the fastest way to confirm the binary works end-to-end:
 Codecs (`decode`/`encode` over `json`/`yaml`/`toml`/`csv`/…) must be the **final** stages — a
 relational op after a codec errors `codec_then_query`.
 
-### mail — append_log (`INSERT INTO /mail/drafts` PREVIEW; live read + send need a connection)
+### mail — append_log (`INSERT INTO /mail/drafts` PREVIEW; live read + send need a mounted account)
 
 1. **DESCRIBE** `qfs describe /mail/drafts --json` (pure, cred-free):
    ```json
@@ -135,12 +137,12 @@ relational op after a codec errors `codec_then_query`.
    /mail/inbox |> limit 5                 -- live read
    /mail/drafts |> call mail.send         -- the irreversible send (CALL mail.send)
    ```
-   With no account these return a `capability` error (exit 3): *connect a Google account to read
-   mail — run `qfs identity signup <email>`, then `qfs connection add gmail`*. Once connected,
-   `/mail/<label>` returns real messages and `CALL mail.send` is the **irreversible** send (a
-   one-shot commit needs `--commit --commit-irreversible`; a retry re-sends the same draft id).
+   With no mount these fail closed with a `capability` error (exit 3). The fix: `qfs init`, then
+   `qfs account add google`, then `qfs connect /mail --driver gmail --account you@gmail.com`. Once
+   mounted, `/mail/<label>` returns real messages and `CALL mail.send` is the **irreversible** send
+   (a one-shot commit needs `--commit --commit-irreversible`; a retry re-sends the same draft id).
 
-### drive — blob_namespace (`UPSERT INTO /drive/…` PREVIEW; reads coming soon)
+### drive — blob_namespace (`UPSERT INTO /drive/…` PREVIEW; reads need a mounted account)
 
 1. **DESCRIBE** `qfs describe /drive/my/Reports --json` → `"archetype": "blob_namespace"`, universal
    `upsert` (+ `ls/cp/mv` listed as native verbs).
@@ -151,11 +153,12 @@ relational op after a codec errors `codec_then_query`.
    upsert into /drive/my/Reports/report.pdf values ('report-bytes')
    ```
    PREVIEW shows one reversible `UPSERT` (`affected 1`, `committed: false`).
-3. **Reads coming soon** — `/drive/my/Reports |> select name` currently returns the same
-   connect-account error (drive read wiring lands next): *connect a Google account to read Drive …
-   `qfs connection add gdrive`*. COMMIT of the upsert needs a connected account.
+3. **Needs a mounted account** — `/drive/my/Reports |> select name` fails closed (exit 3,
+   `kind: capability`) until the mount exists: `qfs account add google`, then
+   `qfs connect /drive --driver gdrive --account you@gmail.com` (a Google account is shared across
+   gmail and gdrive mounts). COMMIT of the upsert needs the mounted account too.
 
-### github — object_graph_workflow (`INSERT INTO …/issues` PREVIEW; reads + merge need a connection)
+### github — object_graph_workflow (`INSERT INTO …/issues` PREVIEW; reads + merge need a mounted account)
 
 1. **DESCRIBE** `qfs describe /github/acme/web/pulls --json` → `"archetype":
    "object_graph_workflow"`, a `merge` procedure with `irreversible: true`.
@@ -168,10 +171,12 @@ relational op after a codec errors `codec_then_query`.
    /github/acme/web/pulls |> select number, title          -- live read
    /github/acme/web/pulls/42 |> call github.merge(method => 'squash')   -- irreversible merge
    ```
-   With no token these return *connect a GitHub account … `qfs connection add github`*. A merge is
-   **irreversible** — once connected, a one-shot commit needs `--commit --commit-irreversible`.
+   With no mount these fail closed (exit 3, `kind: capability`). The fix:
+   `printf %s "$TOKEN" | qfs account add github work`, then
+   `qfs connect /github --driver github --account work`. A merge is **irreversible** — once
+   mounted, a one-shot commit needs `--commit --commit-irreversible`.
 
-### slack — append_log (`INSERT INTO /slack/<ws>/<channel>/messages` PREVIEW; live read needs a connection)
+### slack — append_log (`INSERT INTO /slack/<ws>/<channel>/messages` PREVIEW; live read needs a mounted account)
 
 1. **DESCRIBE** `qfs describe /slack/acme/general/messages --json` → `"archetype": "append_log"`,
    `native_verbs: "SELECT(tail) INSERT(append) REMOVE"`. (A bare `general` or symbolic `#general`
@@ -180,8 +185,9 @@ relational op after a codec errors `codec_then_query`.
    ```text
    insert into /slack/acme/general/messages values ('Deploy finished')
    ```
-3. **Needs a connected account** — `/slack/acme/general/messages |> limit 5` returns *connect a
-   Slack workspace … `qfs connection add slack`*. An append log has no `UPDATE`: an
+3. **Needs a mounted account** — `/slack/acme/general/messages |> limit 5` fails closed (exit 3,
+   `kind: capability`) until the mount exists: `printf %s "$SLACK_TOKEN" | qfs account add slack acme`,
+   then `qfs connect /slack --driver slack --account acme`. An append log has no `UPDATE`: an
    `update /slack/…` is rejected at resolve time with `unsupported_verb` and a
    `supported: [SELECT, INSERT, REMOVE]` set — pick from it.
 

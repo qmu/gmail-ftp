@@ -64,14 +64,14 @@ pub fn warn_env_var_deprecation_once() {
             "qfs: warning: QFS_SQL_* / QFS_GIT_* connection env vars are deprecated. Declare \
              connections with `CREATE CONNECTION <name> DRIVER <driver> AT '<locator>'` in a \
              connections.qfs (point at it with QFS_CONNECTIONS=<file>, or \
-             ~/.config/qfs/connections.qfs). Run `qfs connection import-env` to print the \
+             ~/.config/qfs/connections.qfs). Run `qfs connect --import-env` to print the \
              equivalent declarations."
         );
     });
 }
 
 /// Build the `CREATE CONNECTION` declarations equivalent to the current `QFS_SQL_*` / `QFS_GIT_*`
-/// env vars (the `qfs connection import-env` migration). Reads only the non-secret locators; a
+/// env vars (the `qfs connect --import-env` migration). Reads only the non-secret locators; a
 /// SQLite/git connection carries no secret, so the output is paste-ready and secret-free.
 #[must_use]
 pub fn import_env_declarations() -> String {

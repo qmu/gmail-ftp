@@ -335,6 +335,17 @@ pub const SYSTEM_MIGRATIONS: &[Migration] = &[
         name: "system_billing",
         sql: include_str!("schema/system_billing.sql"),
     },
+    // EPIC 20260702120000 / ADR 0008 §1 (the multi-host account model): the CLIENT-SIDE `hosts`
+    // registry — `local` (the implicit embedded host, seeded) plus any remote a `qfs host login`
+    // records. Selectors + metadata only; no token (the remote protocol + session are deferred per
+    // ADR §6, so `session_ref` stays NULL). A mount's `host` column references a `name` here.
+    // Appended as a NEW version (#13) — migrations #1–#12 stay frozen. The I/O lives in the binary
+    // (`crates/qfs/src/hosts.rs`); this declares the shape.
+    Migration {
+        version: 13,
+        name: "system_hosts",
+        sql: include_str!("schema/system_hosts.sql"),
+    },
 ];
 
 /// The Project DB's ordered migration set (forward-only; append, never edit a shipped entry).
@@ -425,6 +436,43 @@ pub const PROJECT_MIGRATIONS: &[Migration] = &[
         name: "project_path_binding",
         sql: include_str!("schema/project_path_bindings.sql"),
     },
+    // EPIC 20260702120000 / ADR 0008 (the multi-host account model): the MOUNT COORDINATE columns
+    // on `path_binding` — `host` (which qfs host owns the mount; `'local'` is the implicit embedded
+    // host, ADR §1) and `account` (the service-account LABEL the mount binds, e.g. a Google email;
+    // never a token). The mount carrying the full (host, driver, account) coordinate is what
+    // replaces the `active_account` selection (retired by the mount-bound-accounts ticket,
+    // 20260702120050). Appended as a NEW version (#9) — migrations #1–#8 stay frozen (the checksum
+    // guard forbids editing a shipped migration). The passphrase-free read/write that fills these
+    // columns lives in the binary (`crates/qfs/src/path_binding.rs`); this declares the shape.
+    Migration {
+        version: 9,
+        name: "project_mount_coordinate",
+        sql: include_str!("schema/project_mount_coordinate.sql"),
+    },
+    // EPIC 20260702120000 / ADR 0008 §5 (KeyGuardian): the LUKS-style VAULT-KEY SLOT table
+    // (`vault_key_slot`) — the store DEK wrapped once per guardian (passphrase / OS keychain /
+    // later agent + managed KMS), any one slot unlocking the store. SUPERSEDES the single
+    // `secret_meta` wrap: the migration forward-copies the existing passphrase wrap into slot #1
+    // and empties `secret_meta` (whose shipped shape stays frozen), so a pre-v10 store opens with
+    // its existing passphrase unchanged. Appended as a NEW version (#10) — migrations #1–#9 stay
+    // frozen (the checksum guard forbids editing a shipped migration). The slot unlock/enroll I/O
+    // lives in the binary (`crates/qfs/src/secret_store.rs`); this declares the shape.
+    Migration {
+        version: 10,
+        name: "project_vault_key_slots",
+        sql: include_str!("schema/project_vault_key_slots.sql"),
+    },
+    // EPIC 20260702120000 / ADR 0008 §4 (ticket 20260702120050 — mount-bound accounts): DROP the
+    // `active_account` selection table. The mount's (host, driver, account) coordinate (migration
+    // #9) replaced selection state entirely — the bind path reads the account off the mount, so
+    // the table is dead. Appended as a NEW version (#11) — migrations #1–#10 stay frozen (the
+    // checksum guard forbids editing a shipped migration); migration #2's body still CREATEs the
+    // table on a fresh store and this version immediately drops it, keeping the ledger append-only.
+    Migration {
+        version: 11,
+        name: "project_drop_active_account",
+        sql: include_str!("schema/project_drop_active_account.sql"),
+    },
 ];
 
 /// Structured, secret-free persistence errors (AI-consumable; a DB path is infra, not a secret, but
@@ -494,7 +542,7 @@ mod tests {
         let applied = migrate(&mut db, SYSTEM_MIGRATIONS).unwrap();
         assert_eq!(
             applied,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
             "first migrate applies every pending version"
         );
         // Second call on the SAME db is a verified no-op (re-verifies the checksum, re-applies none).
@@ -701,7 +749,9 @@ mod tests {
         // t67 migration #12: the per-team billing plan + the webhook dedup ledger.
         assert!(table_exists(sys.db(), "billing_subscriptions"));
         assert!(table_exists(sys.db(), "billing_events"));
-        assert_eq!(applied_migrations(sys.db()).unwrap().len(), 12);
+        // ADR 0008 migration #13: the client-side hosts registry, with the implicit `local` seeded.
+        assert!(table_exists(sys.db(), "hosts"));
+        assert_eq!(applied_migrations(sys.db()).unwrap().len(), 13);
     }
 
     #[test]
@@ -710,10 +760,12 @@ mod tests {
         assert!(table_exists(proj.db(), "connections"));
         assert!(table_exists(proj.db(), "project_config"));
         assert!(table_exists(proj.db(), "project_state"));
-        // t43 migration #2: the envelope-encrypted credential store + active-account tables.
+        // t43 migration #2: the envelope-encrypted credential store tables. Its `active_account`
+        // selection table is created by #2 and DROPPED forward by #11 (ADR 0008 — the mount
+        // carries the account; selection state is abolished).
         assert!(table_exists(proj.db(), "secret_store"));
         assert!(table_exists(proj.db(), "secret_meta"));
-        assert!(table_exists(proj.db(), "active_account"));
+        assert!(!table_exists(proj.db(), "active_account"));
         // t54 migration #3: the cloud-connection consent ledger.
         assert!(table_exists(proj.db(), "connection_consent"));
         // t81 migration #4: the project/team-owned (shared) connection registry.
@@ -728,8 +780,13 @@ mod tests {
         assert!(table_exists(proj.db(), "broker_connection"));
         // t100020 migration #8: the defined-path binding registry (the CONNECT model).
         assert!(table_exists(proj.db(), "path_binding"));
-        // All eight project migrations are recorded.
-        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 8);
+        // ADR 0008 migration #9: the mount coordinate — host (default 'local') + account label.
+        assert!(column_exists(proj.db(), "path_binding", "host"));
+        assert!(column_exists(proj.db(), "path_binding", "account"));
+        // ADR 0008 migration #10: the KeyGuardian vault-key slots.
+        assert!(table_exists(proj.db(), "vault_key_slot"));
+        // All eleven project migrations are recorded (#11 drops `active_account` forward).
+        assert_eq!(applied_migrations(proj.db()).unwrap().len(), 11);
     }
 
     #[test]
@@ -845,7 +902,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1, "data persisted across reopen");
-        assert_eq!(applied_migrations(sys2.db()).unwrap().len(), 12);
+        assert_eq!(applied_migrations(sys2.db()).unwrap().len(), 13);
     }
 
     #[test]

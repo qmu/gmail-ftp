@@ -23,13 +23,20 @@
 use std::sync::Mutex;
 
 use qfs_secrets::{
-    derive_kek, generate_dek, generate_salt, open, rewrap_dek, seal, unwrap_dek, wrap_dek,
+    derive_kek, generate_dek, generate_salt, open, rewrap_dek, seal, unlock_via_slots, wrap_dek,
     ConnectionId, ConnectionRecord, CredentialKey, DriverId, OwnerScope, Secret, SecretError,
-    Secrets,
+    Secrets, SlotWrap,
 };
 use rusqlite::{Connection, OptionalExtension};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+
+/// The passphrase guardian's slot kind (ADR 0008 §5): the KEK is argon2id-derived from the
+/// operator's passphrase over the slot's `kdf_salt`.
+pub const GUARDIAN_PASSPHRASE: &str = "passphrase";
+/// The OS-keychain guardian's slot kind: a raw random KEK held by the platform secret service
+/// (no KDF salt) — non-interactive once enrolled.
+pub const GUARDIAN_KEYCHAIN: &str = "keychain";
 
 /// The SQLite-backed credential store. Owns the migrated Project-DB connection inside a `Mutex` (so
 /// the whole backend is `Send + Sync` behind `Arc<dyn Secrets>`) plus the unwrapped data-key held
@@ -53,44 +60,167 @@ impl SqliteSecrets {
     /// [`SecretError::Locked`] if the passphrase is wrong or the meta row is tampered (the DEK
     /// cannot be unwrapped); [`SecretError::Backend`] on a DB/seal failure (secret-free message).
     pub fn open_or_init(conn: Connection, passphrase: &Secret) -> Result<Self, SecretError> {
-        let meta: Option<(Vec<u8>, Vec<u8>)> = conn
-            .query_row(
-                "SELECT wrapped_dek, kdf_salt FROM secret_meta WHERE id = 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+        let slots = Self::db_load_slots(&conn)?;
+        let dek = if slots.is_empty() {
+            // Fresh store: mint a DEK and enroll the passphrase as slot #1 (ADR 0008: the
+            // passphrase is the FIRST guardian, not the mechanism — keychain/agent/KMS slots
+            // enroll beside it later).
+            let dek = generate_dek();
+            let salt = generate_salt();
+            let kek = derive_kek(passphrase.expose(), &salt).map_err(|_| SecretError::Locked)?;
+            let wrapped = wrap_dek(&kek, &dek)
+                .map_err(|_| SecretError::Backend("wrapping the data key".into()))?;
+            conn.execute(
+                "INSERT INTO vault_key_slot (guardian_kind, wrapped_dek, kdf_salt) \
+                 VALUES ('passphrase', ?1, ?2)",
+                rusqlite::params![wrapped, salt.as_slice()],
             )
-            .optional()
-            .map_err(|e| SecretError::Backend(format!("reading secret metadata: {e}")))?;
-
-        let dek = match meta {
-            // Established store: re-derive the KEK and unwrap the SAME DEK. A wrong passphrase /
-            // tampered meta fails authentication -> Locked (no bytes leaked).
-            Some((wrapped, salt)) => {
-                let kek =
-                    derive_kek(passphrase.expose(), &salt).map_err(|_| SecretError::Locked)?;
-                unwrap_dek(&kek, &wrapped).map_err(|_| SecretError::Locked)?
-            }
-            // Fresh store: mint a DEK + salt, wrap the DEK under the passphrase KEK, persist once.
-            None => {
-                let dek = generate_dek();
-                let salt = generate_salt();
-                let kek =
-                    derive_kek(passphrase.expose(), &salt).map_err(|_| SecretError::Locked)?;
-                let wrapped = wrap_dek(&kek, &dek)
-                    .map_err(|_| SecretError::Backend("wrapping the data key".into()))?;
-                conn.execute(
-                    "INSERT INTO secret_meta (id, wrapped_dek, kdf_salt) VALUES (1, ?1, ?2)",
-                    rusqlite::params![wrapped, salt.as_slice()],
-                )
-                .map_err(|e| SecretError::Backend(format!("initializing secret metadata: {e}")))?;
-                dek
-            }
+            .map_err(|e| SecretError::Backend(format!("initializing the vault key slot: {e}")))?;
+            dek
+        } else {
+            // Established store: the passphrase guardian tries each passphrase slot (a wrong
+            // passphrase / tampered wrap fails authentication -> Locked, slot-anonymous).
+            unlock_via_slots(&slots, |slot| {
+                if slot.guardian_kind != GUARDIAN_PASSPHRASE {
+                    return None;
+                }
+                let salt = slot.kdf_salt.as_deref()?;
+                derive_kek(passphrase.expose(), salt).ok()
+            })
+            .map_err(|_| SecretError::Locked)?
         };
 
         Ok(Self {
             conn: Mutex::new(conn),
             dek,
         })
+    }
+
+    /// Open an ESTABLISHED store through an arbitrary guardian resolver (ADR 0008 §5): the binary
+    /// composes the available guardians (an enrolled OS-keychain KEK, a cached passphrase, …) into
+    /// `kek_of`; the first slot that opens yields the DEK. Never initializes — a fresh store has
+    /// nothing to unlock (use [`Self::open_or_init`]).
+    ///
+    /// # Errors
+    /// [`SecretError::Locked`] when no slot opens (no guardian available, wrong key material, or an
+    /// empty slot set — deliberately indistinguishable); [`SecretError::Backend`] on a DB failure.
+    pub fn open_with_resolver<F>(conn: Connection, kek_of: F) -> Result<Self, SecretError>
+    where
+        F: FnMut(&SlotWrap) -> Option<[u8; 32]>,
+    {
+        let slots = Self::db_load_slots(&conn)?;
+        let dek = unlock_via_slots(&slots, kek_of).map_err(|_| SecretError::Locked)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            dek,
+        })
+    }
+
+    /// Load the vault-key slots (passphrase-free: wraps + public metadata only). Ordered
+    /// keychain-first so a non-interactive guardian gets its chance before anything that would
+    /// prompt, then by slot id (stable).
+    ///
+    /// # Errors
+    /// [`SecretError::Backend`] on a DB failure.
+    pub fn db_load_slots(conn: &Connection) -> Result<Vec<SlotWrap>, SecretError> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT slot_id, guardian_kind, wrapped_dek, kdf_salt FROM vault_key_slot \
+                 ORDER BY (guardian_kind = 'keychain') DESC, slot_id",
+            )
+            .map_err(|e| SecretError::Backend(format!("reading vault key slots: {e}")))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(SlotWrap {
+                    slot_id: r.get(0)?,
+                    guardian_kind: r.get(1)?,
+                    wrapped_dek: r.get(2)?,
+                    kdf_salt: r.get(3)?,
+                })
+            })
+            .map_err(|e| SecretError::Backend(format!("reading vault key slots: {e}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| SecretError::Backend(format!("reading vault key slots: {e}")))?;
+        Ok(rows)
+    }
+
+    /// **Enroll a new vault-key slot** (ADR 0008 §5): wrap this store's (already unlocked) DEK
+    /// under `kek` and insert the slot row. No sealed value is touched — that is the point of the
+    /// slot model. Returns the new slot id.
+    ///
+    /// # Errors
+    /// [`SecretError::Backend`] on a wrap/DB failure (secret-free message).
+    pub fn enroll_slot(
+        &self,
+        guardian_kind: &str,
+        kek: &[u8; 32],
+        kdf_salt: Option<&[u8]>,
+    ) -> Result<i64, SecretError> {
+        let wrapped = wrap_dek(kek, &self.dek)
+            .map_err(|_| SecretError::Backend("wrapping the data key for the new slot".into()))?;
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO vault_key_slot (guardian_kind, wrapped_dek, kdf_salt) VALUES (?1, ?2, ?3)",
+            rusqlite::params![guardian_kind, wrapped, kdf_salt],
+        )
+        .map_err(|e| SecretError::Backend(format!("enrolling the vault key slot: {e}")))?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// **Revoke a vault-key slot** — delete one wrap. The LAST slot is refused (a store with no
+    /// slot could never be opened again; delete the store, don't brick it).
+    ///
+    /// # Errors
+    /// [`SecretError::Backend`] when the slot does not exist, it is the last one, or on a DB
+    /// failure.
+    pub fn revoke_slot(&self, slot_id: i64) -> Result<(), SecretError> {
+        let conn = self.lock()?;
+        // Guard in one statement: the row is deleted only while ANOTHER slot remains.
+        let n = conn
+            .execute(
+                "DELETE FROM vault_key_slot WHERE slot_id = ?1 \
+                 AND (SELECT COUNT(*) FROM vault_key_slot) > 1",
+                rusqlite::params![slot_id],
+            )
+            .map_err(|e| SecretError::Backend(format!("revoking the vault key slot: {e}")))?;
+        if n == 0 {
+            return Err(SecretError::Backend(
+                "slot not revoked: it does not exist, or it is the last slot (a store needs at \
+                 least one guardian — enroll another before revoking this one)"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// List the vault-key slots as display metadata `(slot_id, guardian_kind, created_at)` — never
+    /// wrap material.
+    ///
+    /// # Errors
+    /// [`SecretError::Backend`] on a DB failure.
+    pub fn list_slots(&self) -> Result<Vec<(i64, String, String)>, SecretError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT slot_id, guardian_kind, created_at FROM vault_key_slot ORDER BY slot_id",
+            )
+            .map_err(|e| SecretError::Backend(format!("listing vault key slots: {e}")))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| SecretError::Backend(format!("listing vault key slots: {e}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| SecretError::Backend(format!("listing vault key slots: {e}")))?;
+        Ok(rows)
+    }
+
+    /// Consume the store and yield its owned (migrated) Project-DB connection — for flows that
+    /// unlock, mutate slots, and then re-open through a DIFFERENT guardian (and for tests). The
+    /// in-memory DEK is dropped with the store.
+    #[must_use]
+    pub fn into_connection(self) -> Connection {
+        self.conn
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Lock the connection mutex, mapping a poisoned lock to a secret-free backend error.
@@ -177,31 +307,47 @@ impl SqliteSecrets {
         new_pass: &Secret,
     ) -> Result<(), SecretError> {
         let conn = self.lock()?;
-        let meta: Option<(Vec<u8>, Vec<u8>)> = conn
-            .query_row(
-                "SELECT wrapped_dek, kdf_salt FROM secret_meta WHERE id = 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+        // The passphrase slot(s) (ADR 0008 §5: rekey is SLOT-SCOPED — other guardians' wraps are
+        // untouched, so an enrolled keychain keeps unlocking across a passphrase change).
+        let mut stmt = conn
+            .prepare(
+                "SELECT slot_id, wrapped_dek, kdf_salt FROM vault_key_slot \
+                 WHERE guardian_kind = 'passphrase' ORDER BY slot_id",
             )
-            .optional()
-            .map_err(|e| SecretError::Backend(format!("reading secret metadata: {e}")))?;
-        let (wrapped, salt) = meta.ok_or(SecretError::Locked)?;
+            .map_err(|e| SecretError::Backend(format!("reading the passphrase slot: {e}")))?;
+        let slots: Vec<(i64, Vec<u8>, Option<Vec<u8>>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| SecretError::Backend(format!("reading the passphrase slot: {e}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| SecretError::Backend(format!("reading the passphrase slot: {e}")))?;
+        drop(stmt);
+        if slots.is_empty() {
+            return Err(SecretError::Locked);
+        }
 
-        // Derive the OLD KEK from the supplied old passphrase + the stored salt, then re-wrap the
-        // DEK under a NEW KEK derived from the new passphrase + a FRESH salt. `rewrap_dek` unwraps
-        // under the old KEK first, so a wrong old passphrase fails authentication -> Locked.
-        let old_kek = derive_kek(old_pass.expose(), &salt).map_err(|_| SecretError::Locked)?;
-        let new_salt = generate_salt();
-        let new_kek = derive_kek(new_pass.expose(), &new_salt).map_err(|_| SecretError::Locked)?;
-        let new_wrapped =
-            rewrap_dek(&old_kek, &new_kek, &wrapped).map_err(|_| SecretError::Locked)?;
-
-        conn.execute(
-            "UPDATE secret_meta SET wrapped_dek = ?1, kdf_salt = ?2 WHERE id = 1",
-            rusqlite::params![new_wrapped, new_salt.as_slice()],
-        )
-        .map_err(|e| SecretError::Backend(format!("re-wrapping the data key: {e}")))?;
-        Ok(())
+        // Find the passphrase slot the OLD passphrase opens; re-wrap the SAME DEK under a NEW KEK
+        // (fresh salt) and update THAT row. `rewrap_dek` unwraps under the old KEK first, so a
+        // wrong old passphrase fails authentication -> Locked BEFORE any write.
+        for (slot_id, wrapped, salt) in &slots {
+            let Some(salt) = salt.as_deref() else {
+                continue;
+            };
+            let Ok(old_kek) = derive_kek(old_pass.expose(), salt) else {
+                continue;
+            };
+            let new_salt = generate_salt();
+            let new_kek =
+                derive_kek(new_pass.expose(), &new_salt).map_err(|_| SecretError::Locked)?;
+            if let Ok(new_wrapped) = rewrap_dek(&old_kek, &new_kek, wrapped) {
+                conn.execute(
+                    "UPDATE vault_key_slot SET wrapped_dek = ?1, kdf_salt = ?2 WHERE slot_id = ?3",
+                    rusqlite::params![new_wrapped, new_salt.as_slice(), slot_id],
+                )
+                .map_err(|e| SecretError::Backend(format!("re-wrapping the data key: {e}")))?;
+                return Ok(());
+            }
+        }
+        Err(SecretError::Locked)
     }
 }
 
@@ -319,35 +465,6 @@ fn parse_created_at(s: &str) -> OffsetDateTime {
     OffsetDateTime::parse(s, &Rfc3339).unwrap_or(OffsetDateTime::UNIX_EPOCH)
 }
 
-/// Set (UPSERT) the active connection for `driver` in the `active_account` table — last-writer-wins,
-/// the same semantics as the old `credentials.active` sidecar. Selectors only; no passphrase.
-///
-/// # Errors
-/// [`SecretError::Backend`] on a DB failure (secret-free message).
-pub fn db_set_active(conn: &Connection, driver: &str, connection: &str) -> Result<(), SecretError> {
-    conn.execute(
-        "INSERT INTO active_account (driver, connection) VALUES (?1, ?2) \
-         ON CONFLICT(driver) DO UPDATE SET connection = excluded.connection",
-        rusqlite::params![driver, connection],
-    )
-    .map_err(|e| SecretError::Backend(format!("setting active connection: {e}")))?;
-    Ok(())
-}
-
-/// Read the active connection for `driver` from the `active_account` table, or `None` if unset /
-/// unreadable. Best-effort (selectors only; no passphrase) so the commit resolver can fall back.
-#[must_use]
-pub fn db_get_active(conn: &Connection, driver: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT connection FROM active_account WHERE driver = ?1",
-        rusqlite::params![driver],
-        |r| r.get::<_, String>(0),
-    )
-    .optional()
-    .ok()
-    .flatten()
-}
-
 /// A recorded cloud-connection consent grant — selectors + metadata ONLY (subject, scope, time),
 /// **never** a secret. This is what [`db_get_consent`] reads back so the commit-time bind gate can
 /// confirm a signed-in operator granted this `(driver, connection)` explicit consent (t54 / M4).
@@ -364,7 +481,7 @@ pub struct ConsentRow {
 /// Record (UPSERT) that the `subject` granted consent for the cloud `driver`/`connection` with
 /// `scope`. Last-writer-wins per `(driver, connection)`. Selectors + metadata only — the refresh
 /// token itself is sealed separately in `secret_store`; this row carries no key material, so it needs
-/// no passphrase (the same passphrase-free path as `active_account`).
+/// no passphrase (the same passphrase-free path as `connection_consent`).
 ///
 /// # Errors
 /// [`SecretError::Backend`] on a DB failure (secret-free message).
@@ -428,7 +545,7 @@ pub struct SharedConnectionRow {
 /// member's actor-policy must grant to USE it, recording `shared_by` (who shared it). UPSERT —
 /// re-sharing updates the scope/sharer (last-writer-wins per `(driver, connection)`). Selectors +
 /// metadata only — the credential itself stays ENCRYPTED in `secret_store`; this row carries no key
-/// material, so it needs no passphrase (the same passphrase-free path as `active_account`).
+/// material, so it needs no passphrase (the same passphrase-free path as `connection_consent`).
 ///
 /// # Errors
 /// [`SecretError::Backend`] on a DB failure (secret-free message).
@@ -498,7 +615,7 @@ pub fn db_get_shared_connection(
 }
 
 /// List every project/team-owned (shared) connection as `(driver, connection, row)` — selectors +
-/// metadata only, never a secret. Powers a `connection list --project` / `/sys` style surface that
+/// metadata only, never a secret. Powers a `qfs account list --project` / `/sys` style surface that
 /// shows which connections are team-shared and at what scope. Best-effort: a query failure yields an
 /// empty list rather than erroring (the metadata view never blocks).
 #[must_use]
@@ -551,7 +668,7 @@ pub struct BrokerConnectionRow {
 /// `broker_client_id`, the `scope`, and who provisioned it (`brokered_by`). Last-writer-wins per
 /// `(driver, connection)`. Selectors + metadata only — the brokered token itself is sealed separately
 /// in `secret_store`; this row carries no key material, so it needs no passphrase (the same
-/// passphrase-free path as `shared_connection`/`active_account`).
+/// passphrase-free path as `shared_connection`/`connection_consent`).
 ///
 /// # Errors
 /// [`SecretError::Backend`] on a DB failure (secret-free message).
@@ -907,19 +1024,20 @@ mod tests {
         );
     }
 
+    /// ADR 0008 (migration #11): the `active_account` selection table is GONE — the mount carries
+    /// the account, so a migrated store has nothing to select against.
     #[test]
-    fn active_connection_set_get_round_trip() {
+    fn active_account_table_is_dropped() {
         let conn = migrated_conn();
-        assert!(db_get_active(&conn, "mail").is_none());
-        db_set_active(&conn, "mail", "work").unwrap();
-        assert_eq!(db_get_active(&conn, "mail").as_deref(), Some("work"));
-        // Last-writer-wins (UPSERT keeps one row per driver).
-        db_set_active(&conn, "mail", "personal").unwrap();
-        assert_eq!(db_get_active(&conn, "mail").as_deref(), Some("personal"));
-        // Other drivers are independent.
-        db_set_active(&conn, "s3", "prod").unwrap();
-        assert_eq!(db_get_active(&conn, "s3").as_deref(), Some("prod"));
-        assert_eq!(db_get_active(&conn, "mail").as_deref(), Some("personal"));
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'active_account'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(exists.is_none(), "active_account must be dropped by v11");
     }
 
     #[test]
@@ -1089,6 +1207,180 @@ mod tests {
                 || c.contains("ciphertext")
                 || c.contains("nonce")),
             "the broker registry must carry no secret column, got {cols:?}"
+        );
+    }
+
+    // ==== ADR 0008 §5 — the KeyGuardian vault-key slots (EPIC 20260702120000/120020) ==========
+
+    /// Enrolling a slot wraps the SAME DEK under one more KEK without re-sealing a single value:
+    /// the sealed secret still opens, the slot count grows, and the store now opens through
+    /// EITHER guardian alone (the point of the slot model).
+    #[test]
+    fn enroll_unlocks_via_either_slot_without_resealing() {
+        use qfs_store::{migrate, Db, MemorySource, PROJECT_MIGRATIONS};
+        let mut db = Db::open(&MemorySource).unwrap();
+        migrate(&mut db, PROJECT_MIGRATIONS).unwrap();
+        let conn = db.into_connection();
+
+        let store = SqliteSecrets::open_or_init(conn, &Secret::from("pass-A")).unwrap();
+        store
+            .put(&ckey("github", "work"), Secret::from("ghp_tok"))
+            .unwrap();
+
+        // Enroll a raw-KEK guardian slot (what the keychain guardian does).
+        let kek = qfs_secrets::generate_dek();
+        let slot = store.enroll_slot(GUARDIAN_KEYCHAIN, &kek, None).unwrap();
+        assert!(slot > 1, "the new slot sits beside the passphrase slot");
+        assert_eq!(store.list_slots().unwrap().len(), 2);
+        // The value sealed BEFORE the enroll still opens (no re-seal happened).
+        assert_eq!(
+            store.get(&ckey("github", "work")).unwrap().expose(),
+            b"ghp_tok"
+        );
+        let conn = store.into_connection();
+
+        // Open via the keychain KEK alone (no passphrase anywhere).
+        let store = SqliteSecrets::open_with_resolver(conn, |s| {
+            (s.guardian_kind == GUARDIAN_KEYCHAIN).then_some(kek)
+        })
+        .unwrap();
+        assert_eq!(
+            store.get(&ckey("github", "work")).unwrap().expose(),
+            b"ghp_tok"
+        );
+        let conn = store.into_connection();
+
+        // And via the passphrase alone (keychain unavailable — the headless host).
+        let store = SqliteSecrets::open_or_init(conn, &Secret::from("pass-A")).unwrap();
+        assert_eq!(
+            store.get(&ckey("github", "work")).unwrap().expose(),
+            b"ghp_tok"
+        );
+    }
+
+    /// A passphrase rekey is SLOT-SCOPED: the keychain slot keeps unlocking across it, the new
+    /// passphrase works, and the old one is locked out.
+    #[test]
+    fn rekey_of_the_passphrase_slot_leaves_other_slots_working() {
+        use qfs_store::{migrate, Db, MemorySource, PROJECT_MIGRATIONS};
+        let mut db = Db::open(&MemorySource).unwrap();
+        migrate(&mut db, PROJECT_MIGRATIONS).unwrap();
+        let conn = db.into_connection();
+
+        let store = SqliteSecrets::open_or_init(conn, &Secret::from("old-pass")).unwrap();
+        store
+            .put(&ckey("slack", "team"), Secret::from("xoxb"))
+            .unwrap();
+        let kek = qfs_secrets::generate_dek();
+        store.enroll_slot(GUARDIAN_KEYCHAIN, &kek, None).unwrap();
+
+        store
+            .rewrap_passphrase(&Secret::from("old-pass"), &Secret::from("new-pass"))
+            .unwrap();
+        let conn = store.into_connection();
+
+        // The keychain slot is untouched by the passphrase rekey.
+        let store = SqliteSecrets::open_with_resolver(conn, |s| {
+            (s.guardian_kind == GUARDIAN_KEYCHAIN).then_some(kek)
+        })
+        .unwrap();
+        assert_eq!(store.get(&ckey("slack", "team")).unwrap().expose(), b"xoxb");
+        let conn = store.into_connection();
+
+        // The new passphrase opens; the old one is locked out.
+        let store = SqliteSecrets::open_or_init(conn, &Secret::from("new-pass")).unwrap();
+        let conn = store.into_connection();
+        match SqliteSecrets::open_or_init(conn, &Secret::from("old-pass")) {
+            Err(SecretError::Locked) => {}
+            other => panic!(
+                "old passphrase must be locked out, got {other:?}",
+                other = other.map(|_| ())
+            ),
+        }
+    }
+
+    /// A wrong passphrase on a multi-slot store is the single, slot-anonymous `Locked` — and the
+    /// last remaining slot refuses revocation (a store with no slot could never open again).
+    #[test]
+    fn wrong_passphrase_is_locked_and_the_last_slot_is_irrevocable() {
+        use qfs_store::{migrate, Db, MemorySource, PROJECT_MIGRATIONS};
+        let mut db = Db::open(&MemorySource).unwrap();
+        migrate(&mut db, PROJECT_MIGRATIONS).unwrap();
+        let conn = db.into_connection();
+
+        let store = SqliteSecrets::open_or_init(conn, &Secret::from("right")).unwrap();
+        let kek = qfs_secrets::generate_dek();
+        let keychain_slot = store.enroll_slot(GUARDIAN_KEYCHAIN, &kek, None).unwrap();
+        let conn = store.into_connection();
+
+        // Wrong passphrase + keychain unavailable: Locked, with no hint of WHICH slot failed.
+        match SqliteSecrets::open_or_init(conn, &Secret::from("wrong")) {
+            Err(SecretError::Locked) => {}
+            other => panic!("expected Locked, got {other:?}", other = other.map(|_| ())),
+        }
+
+        // Reopen rightfully; revoke down to one slot; the last slot is refused.
+        let mut db = Db::open(&MemorySource).unwrap();
+        migrate(&mut db, PROJECT_MIGRATIONS).unwrap();
+        let store = SqliteSecrets::open_or_init(db.into_connection(), &Secret::from("p")).unwrap();
+        let extra = store.enroll_slot(GUARDIAN_KEYCHAIN, &kek, None).unwrap();
+        store.revoke_slot(extra).unwrap();
+        let slots = store.list_slots().unwrap();
+        assert_eq!(slots.len(), 1);
+        let last = slots[0].0;
+        assert!(
+            store.revoke_slot(last).is_err(),
+            "the last slot must be irrevocable"
+        );
+        let _ = keychain_slot;
+    }
+
+    /// The v10 forward-copy: a PRE-v10 store (its wrap in the single `secret_meta` row, its value
+    /// sealed in `secret_store`) opens after the full migration set with its EXISTING passphrase,
+    /// and the value still decrypts. `secret_meta` ends empty (the slot table is the one source of
+    /// truth from v10 on).
+    #[test]
+    fn pre_v10_store_opens_after_the_forward_copy_migration() {
+        use qfs_store::{migrate, Db, MemorySource, PROJECT_MIGRATIONS};
+        let mut db = Db::open(&MemorySource).unwrap();
+        // A v9 world: everything up to (and including) the mount-coordinate migration.
+        migrate(&mut db, &PROJECT_MIGRATIONS[..9]).unwrap();
+
+        // Build the pre-v10 store shape by hand with the same envelope primitives the old
+        // `open_or_init` used: a DEK wrapped under the passphrase KEK in `secret_meta`, and a
+        // value sealed under the DEK in `secret_store`.
+        let dek = qfs_secrets::generate_dek();
+        let salt = generate_salt();
+        let kek = derive_kek(b"legacy-pass", &salt).unwrap();
+        let wrapped = wrap_dek(&kek, &dek).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO secret_meta (id, wrapped_dek, kdf_salt) VALUES (1, ?1, ?2)",
+                rusqlite::params![wrapped, salt.as_slice()],
+            )
+            .unwrap();
+        let (nonce, ct) = seal(&dek, b"legacy-token").unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO secret_store (driver, connection, nonce, ciphertext) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params!["github", "work", nonce.as_slice(), ct],
+            )
+            .unwrap();
+
+        // The upgrade: the full migration set (v10 copies the wrap into slot #1 + empties
+        // secret_meta).
+        migrate(&mut db, PROJECT_MIGRATIONS).unwrap();
+        let conn = db.into_connection();
+        let meta_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM secret_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(meta_rows, 0, "secret_meta is emptied by the forward-copy");
+
+        // The existing passphrase still opens the store, and the sealed value still decrypts.
+        let store = SqliteSecrets::open_or_init(conn, &Secret::from("legacy-pass")).unwrap();
+        assert_eq!(
+            store.get(&ckey("github", "work")).unwrap().expose(),
+            b"legacy-token"
         );
     }
 }

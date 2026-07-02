@@ -250,7 +250,7 @@ impl Driver for GaDriver {
     /// The internal **plan/connection identity** stays `ga` even though the mount was renamed to
     /// `/google-analytics` (owner item #8). The default `id()` would derive `google-analytics` from
     /// the mount, but the runtime driver id keys the read-facet registry, the consent-scope map, and
-    /// the stored connection selector (`qfs connection add ga`) — renaming it would orphan existing
+    /// the stored connection selector (`qfs account add ga <label>`) — renaming it would orphan existing
     /// GA connections. Keeping `ga` confines the rename to the user-facing PATH surface.
     fn id(&self) -> qfs_types::DriverId {
         qfs_types::DriverId::new("ga")

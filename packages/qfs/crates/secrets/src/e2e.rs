@@ -20,7 +20,7 @@
 //! E2E buys server-compromise resistance (§4.5 threat 3): the server storing the ciphertext cannot
 //! by itself decrypt the secret. The unavoidable cost is that an UNATTENDED agent — which has no
 //! private key — cannot use such a connection either. This gate makes that trade-off explicit and
-//! auditable rather than silently failing deep in a decrypt: an E2E connection used unattended is
+//! auditable rather than silently failing deep in a decrypt: an E2E credential used unattended is
 //! refused **pending a human unwrap**, fail-closed, BEFORE any per-recipient DEK is touched.
 //!
 //! ## Why pure (the §3 purity invariant)
