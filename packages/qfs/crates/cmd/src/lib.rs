@@ -1864,8 +1864,8 @@ mod tests {
 
     #[test]
     fn connect_list_and_import_env_dispatch_pathless() {
-        // `qfs connect --list` / `--import-env` are the pathless modes that absorbed
-        // `connection paths` / `connection import-env`; a bare `qfs connect` is an error.
+        // `qfs connect --list` / `--import-env` are the pathless modes that absorbed the
+        // retired namespace's path-listing and env-import verbs; a bare `qfs connect` errors.
         assert_eq!(run_t(["qfs", "connect", "--list"]), 7);
         assert_eq!(run_t(["qfs", "connect", "--import-env"]), 7);
         assert_eq!(run_t(["qfs", "connect"]), 2);

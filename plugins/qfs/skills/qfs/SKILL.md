@@ -179,4 +179,4 @@ qfs run "/mail/drafts |> call mail.send" --commit --commit-irreversible
   the irreversible ack) — you never bypass it; preview, then commit, and let the gate decide.
 - **Teams:** `qfs invite create` → `qfs invite redeem` adds a member; a `POLICY` / the ACL (not
   membership) is what authorizes an action (default-deny).
-- **Credential lifecycle:** `qfs connection rotate|revoke|rekey` for offboarding + key hygiene.
+- **Credential lifecycle:** `qfs account rotate|revoke` for offboarding, `qfs vault rekey` for key hygiene.
