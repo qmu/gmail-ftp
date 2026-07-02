@@ -62,33 +62,52 @@ fn store_initialized(conn: &Connection) -> bool {
         .is_some()
 }
 
+/// A passphrase entered at an interactive prompt EARLIER in this same process. The store is opened
+/// many times per process — once per credentialed driver the shell binds at startup ([`commit`]'s
+/// `networked_credential` opens it before it even knows if the driver is configured), plus every
+/// read/commit leg — so without this an interactive session would prompt several times. Caching the
+/// first-entered passphrase makes `qfs` (the interactive shell especially) prompt AT MOST ONCE and
+/// reuse it for the whole session — the in-memory equivalent of `read -rs QFS_PASSPHRASE; export`,
+/// except the secret never touches your shell env or history. Process-scoped only: it can never
+/// reach a *sibling* `qfs` invocation (a child cannot mutate its parent shell), which is why a
+/// multi-command workflow wants the shell, not repeated one-shots. Not populated from
+/// `QFS_PASSPHRASE` (that path needs no cache) and never logged.
+static PROMPTED_PASSPHRASE: std::sync::OnceLock<Secret> = std::sync::OnceLock::new();
+
 /// Resolve the passphrase that unlocks (or initializes) the credential store. `QFS_PASSPHRASE` is
-/// the fast path automation always takes; a human at a terminal is instead PROMPTED (echo off), so
-/// no one has to `export QFS_PASSPHRASE` by hand. On a brand-new store the prompt confirms twice (a
-/// typo would otherwise lock the operator out of their own vault); on an existing store it asks once.
+/// the fast path automation always takes; else a passphrase already entered this process is reused
+/// ([`PROMPTED_PASSPHRASE`]); else a human at a terminal is PROMPTED (echo off), so no one has to
+/// `export QFS_PASSPHRASE` by hand. On a brand-new store the prompt confirms twice (a typo would
+/// otherwise lock the operator out of their own vault); on an existing store it asks once.
 /// Non-interactive + unset stays the same clear error automation already relies on.
 fn resolve_store_passphrase(conn: &Connection) -> Result<Secret, String> {
     match std::env::var("QFS_PASSPHRASE") {
-        Ok(pass) if !pass.is_empty() => Ok(Secret::from(pass)),
-        Ok(_) => Err("QFS_PASSPHRASE is empty".into()),
-        Err(_) if crate::tty::is_interactive() => {
-            if store_initialized(conn) {
-                crate::tty::prompt_secret("QFS passphrase (unlocks your local credential store): ")
-            } else {
-                eprintln!(
-                    "Welcome to qfs. Setting up your encrypted credential store on this machine — \
-                     choose a passphrase you'll reuse to unlock it (it never leaves this host)."
-                );
-                crate::tty::prompt_secret_confirmed(
-                    "Choose a passphrase: ",
-                    "Confirm passphrase: ",
-                )
-            }
-        }
-        Err(_) => Err("QFS_PASSPHRASE is not set — export it (or run qfs in a terminal to be \
-                       prompted) to unlock the encrypted credential store"
-            .into()),
+        Ok(pass) if !pass.is_empty() => return Ok(Secret::from(pass)),
+        Ok(_) => return Err("QFS_PASSPHRASE is empty".into()),
+        Err(_) => {}
     }
+    // Reuse a passphrase already entered this process (prompt once per session, not per driver).
+    if let Some(cached) = PROMPTED_PASSPHRASE.get() {
+        return Ok(Secret::from(cached.expose().to_vec()));
+    }
+    if !crate::tty::is_interactive() {
+        return Err("QFS_PASSPHRASE is not set — export it (or run qfs in a terminal to be \
+                    prompted) to unlock the encrypted credential store"
+            .into());
+    }
+    let entered = if store_initialized(conn) {
+        crate::tty::prompt_secret("QFS passphrase (unlocks your local credential store): ")?
+    } else {
+        eprintln!(
+            "Welcome to qfs. Setting up your encrypted credential store on this machine — choose a \
+             passphrase you'll reuse to unlock it (it never leaves this host)."
+        );
+        crate::tty::prompt_secret_confirmed("Choose a passphrase: ", "Confirm passphrase: ")?
+    };
+    // Cache for the rest of this process so later store-opens don't re-prompt. First writer wins;
+    // a lost race just means the redundant entry is dropped (both are the same passphrase anyway).
+    let _ = PROMPTED_PASSPHRASE.set(Secret::from(entered.expose().to_vec()));
+    Ok(entered)
 }
 
 /// Open the envelope-encrypted SQLite credential store: open + migrate the Project DB, then unlock
