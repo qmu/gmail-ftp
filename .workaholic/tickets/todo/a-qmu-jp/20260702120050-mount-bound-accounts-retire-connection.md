@@ -14,8 +14,65 @@ depends_on: [20260702120010-mount-coordinate-foundation.md, 20260702120040-qfs-a
 Part of EPIC `20260702120000` (ADR 0008 §4 — the core behavioral change). Selection state is
 abolished: a mount created by `qfs connect /mail gmail you@gmail.com` carries (host='local',
 driver, account), and **the bind path resolves the account from the mount**, not from
-`active_account` or `QFS_GOOGLE_ACCOUNT`. Two accounts of one driver coexist as two paths. The
+`active_account` or `QFS_GOOGLE_ACCOUNT`. N accounts of one driver coexist as N paths. The
 `connection add/use/list/remove` namespace is retired outright (pre-release hard break).
+
+## CONFIRMED DESIGN + implementation map (owner: option 1, 2026-07-02)
+
+Owner chose **full multi-account** ("2 accounts = N accounts"), design option 1: a **cloud mount
+is connect-created**, and the mount's **path leading segment becomes a unique `driver.id()`**
+(derived from `mount()` by the `Driver` trait default) backed by a driver of the chosen **kind**
+(gmail/gdrive/ga/github/slack/objstore/cf) bound to the mount's **account**:
+
+```
+qfs connect /mail  gmail work@x.com   → driver id "mail",  kind gmail, account work
+qfs connect /mail2 gmail home@x.com   → driver id "mail2", kind gmail, account home
+```
+
+This makes the built-in `/mail`/`/drive`/… mounts **no longer hardwired** — they become
+connect-created (the ADR "nothing pre-mounted" model). The owner APPROVED this behavior change.
+
+**Architecture finding (why this is a sub-epic, not one ticket):** all THREE runtime registries
+key by `driver.id()` — the `MountRegistry` (describe/plan, `qfs-core`), the `ReadRegistry`
+(scan, `qfs-exec`, keyed by the pushdown `SourceId = driver.id()`), and the `DriverRegistry`
+(apply, `qfs-runtime`). Path reconstruction (`/{driver.id()}/…`, `plan.rs`), pushdown source ids,
+`CALL <id>.proc` qualification, and interpreter grouping ALL derive from `driver.id()`. So a
+per-mount account REQUIRES a per-mount `driver.id()`, which requires a per-mount `mount()`.
+
+**The clean implementation (confined to `crate qfs`, NO driver-crate changes):** three thin
+**MountAdapter** wrappers — one each for `Driver`, `qfs_exec::ReadDriver`, and
+`qfs_runtime::ApplyDriver` — that (a) return the custom `mount()` (so `id()` derives to the
+segment), (b) rewrite the mount PREFIX on every inbound path/`ScanNode.source`/`EffectInput.target`
+(`/mail2/…` → the inner driver's `/mail/…`) and rewrite embedded paths back on the way out, and
+(c) precompute owned rewritten `prelude()` (`SEND → mail2.send`) so the borrowed-return methods
+work. `procedures()` is id-agnostic (`ProcSig("send")`, qualified at resolve time) and passes
+through; `pushdown()`/`describe`/`capabilities` clone/pass through with the prefix rewrite.
+
+### Sub-steps (each independently green + committable)
+
+1. **MountAdapter module** — the three trait wrappers + a prefix-rewrite helper + unit tests
+   (additive, UNWIRED — cannot break anything). The reusable core enabler.
+2. **Per-account client build** — a helper that builds a `GoogleStack`/client for ONE account
+   email (generalize `live_google_stack`, which today resolves a single active account).
+3. **Reshape cloud registration** — `commit.rs` (apply + live read), `shell.rs` (read facets),
+   `read_facets.rs`, `describe.rs`: iterate the `path_binding` cloud mounts and register a
+   MountAdapter-wrapped, per-account driver/read/apply under each mount's segment id. Retire the
+   hardwired built-in `/mail`/`/drive`/`/ga`/… registration.
+4. **Account resolution off the mount** — delete `resolve_account_email`'s active-connection read;
+   the account is the mount's `path_binding.account`. `QFS_GOOGLE_ACCOUNT` survives ONLY as a CI
+   override (documented).
+5. **Retire selection + the `connection` namespace** — delete `active_connection`,
+   `db_set_active`/`db_get_active`, the `active_account` table (migration v11 drop), and
+   `ConnectionVerb`/`ConnectionAction` Add/Use/List/Remove. `qfs account add` stops calling
+   `db_set_active` (step 4 makes it unnecessary). Move `rotate`/`revoke` under `qfs account`,
+   `rekey` under `qfs vault` (landed 120020). Update read-error strings to the connect flow.
+6. **The local Gmail + coexistence smoke** — init → app add → account add (two accounts, stdin
+   import) → connect /mail + /mail2 → reads resolve DIFFERENT mailboxes in one process.
+
+This is a focused multi-part push best run deliberately with the owner able to review each green
+commit — NOT crammed into a /drive tail while away. The `/drive` for the ADR epic paused here at
+5/7 shipped (120010/120020/120030/120040/120060, 1909 tests green, tree clean at the host-skeleton
+commit); the design above is locked, so execution can start immediately on the owner's word.
 
 ## Steps
 

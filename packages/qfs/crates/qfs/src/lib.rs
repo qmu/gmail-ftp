@@ -43,6 +43,7 @@ pub mod init;
 pub mod invite;
 pub mod job;
 pub mod mcp;
+pub mod mount_adapter;
 pub mod oauth;
 pub mod objstore;
 pub mod path_binding;
