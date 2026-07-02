@@ -20,7 +20,7 @@ use qfs_cmd::ConnectionAction;
 use qfs_identity::{IdentityStore, SoleUser};
 use qfs_secrets::{is_cloud_driver, ConnectionId, CredentialKey, DriverId, Secret, Secrets};
 use qfs_store::audit::AuditEvent;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::secret_store::{self, SqliteSecrets};
 
@@ -50,17 +50,54 @@ fn open_project_conn() -> Result<Connection, String> {
     Ok(proj.into_db().into_connection())
 }
 
+/// Has the credential store already been initialized on this host? True once the single
+/// `secret_meta` row exists (written by the first [`SqliteSecrets::open_or_init`]). Passphrase-free —
+/// it reads only a metadata presence flag, never key material — so it can decide *before* we know
+/// the passphrase whether this is a first-run store-creation (prompt + confirm) or an unlock.
+fn store_initialized(conn: &Connection) -> bool {
+    conn.query_row("SELECT 1 FROM secret_meta WHERE id = 1", [], |_| Ok(()))
+        .optional()
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+/// Resolve the passphrase that unlocks (or initializes) the credential store. `QFS_PASSPHRASE` is
+/// the fast path automation always takes; a human at a terminal is instead PROMPTED (echo off), so
+/// no one has to `export QFS_PASSPHRASE` by hand. On a brand-new store the prompt confirms twice (a
+/// typo would otherwise lock the operator out of their own vault); on an existing store it asks once.
+/// Non-interactive + unset stays the same clear error automation already relies on.
+fn resolve_store_passphrase(conn: &Connection) -> Result<Secret, String> {
+    match std::env::var("QFS_PASSPHRASE") {
+        Ok(pass) if !pass.is_empty() => Ok(Secret::from(pass)),
+        Ok(_) => Err("QFS_PASSPHRASE is empty".into()),
+        Err(_) if crate::tty::is_interactive() => {
+            if store_initialized(conn) {
+                crate::tty::prompt_secret("QFS passphrase (unlocks your local credential store): ")
+            } else {
+                eprintln!(
+                    "Welcome to qfs. Setting up your encrypted credential store on this machine — \
+                     choose a passphrase you'll reuse to unlock it (it never leaves this host)."
+                );
+                crate::tty::prompt_secret_confirmed(
+                    "Choose a passphrase: ",
+                    "Confirm passphrase: ",
+                )
+            }
+        }
+        Err(_) => Err("QFS_PASSPHRASE is not set — export it (or run qfs in a terminal to be \
+                       prompted) to unlock the encrypted credential store"
+            .into()),
+    }
+}
+
 /// Open the envelope-encrypted SQLite credential store: open + migrate the Project DB, then unlock
-/// (or initialize) the envelope with `QFS_PASSPHRASE`.
+/// (or initialize) the envelope with the resolved passphrase (`QFS_PASSPHRASE` or an interactive
+/// prompt — see [`resolve_store_passphrase`]).
 fn open_store() -> Result<SqliteSecrets, String> {
     let conn = open_project_conn()?;
-    let pass = std::env::var("QFS_PASSPHRASE").map_err(|_| {
-        "QFS_PASSPHRASE is not set — export it to unlock the encrypted credential store".to_string()
-    })?;
-    if pass.is_empty() {
-        return Err("QFS_PASSPHRASE is empty".into());
-    }
-    SqliteSecrets::open_or_init(conn, &Secret::from(pass))
+    let pass = resolve_store_passphrase(&conn)?;
+    SqliteSecrets::open_or_init(conn, &pass)
         .map_err(|e| format!("opening the credential store: {e}"))
 }
 
@@ -527,6 +564,28 @@ mod tests {
         let k = cred_key("mail", "work").expect("valid");
         assert_eq!(k.driver.0, "mail");
         assert_eq!(k.connection.as_str(), "work");
+    }
+
+    /// `store_initialized` is the passphrase-free flag that decides first-run (create + confirm) vs
+    /// unlock in the interactive prompt: false on a migrated-but-empty Project DB, true once the
+    /// single `secret_meta` row exists (what the first `open_or_init` writes).
+    #[test]
+    fn store_initialized_reflects_the_secret_meta_row() {
+        use qfs_store::{MemorySource, ProjectDb};
+        let conn = ProjectDb::open(&MemorySource)
+            .unwrap()
+            .into_db()
+            .into_connection();
+        assert!(!store_initialized(&conn), "a fresh store is not initialized");
+
+        // The first real open writes secret_meta id=1; emulate exactly that row (bytes are opaque to
+        // the presence check) and confirm the flag flips.
+        conn.execute(
+            "INSERT INTO secret_meta (id, wrapped_dek, kdf_salt) VALUES (1, ?1, ?2)",
+            rusqlite::params![vec![0u8; 4], vec![0u8; 4]],
+        )
+        .unwrap();
+        assert!(store_initialized(&conn), "an established store is initialized");
     }
 
     /// The active-connection selection now round-trips through the Project DB's `active_account`
