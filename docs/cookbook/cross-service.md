@@ -10,12 +10,11 @@ a `JOIN`, `UNION`, `INTERSECT`, or `EXCEPT` whose paths live in *different* serv
 service is the same kind of path yielding rows, a database table, a GitHub issue list, and a mailbox
 combine in a single query as easily as two tables would.
 
-::: tip Prerequisites — unlock the store, sign in
-A cross-service query needs **every** participating service connected. That means the two one-time
-setup gates: your `QFS_PASSPHRASE` unlocks the local credential store
-(**[The QFS passphrase](/guide/passphrase)**), and a signed-in operator identity
-(**[The operator identity](/guide/operator)**) is required for each cloud service. Connect each one
-via its own cookbook (linked below) first.
+::: tip Prerequisites — an operator, an account per service, a mount per service
+A cross-service query needs **every** participating service connected. That means the one-time
+setup gates: a signed-in operator (`qfs init` — **[The operator identity](/guide/operator)**), and,
+per cloud service, an authorized account (`qfs account add …`) bound to its mount
+(`qfs connect …`). Connect each one via its own cookbook (linked below) first.
 :::
 
 ## See it work first
@@ -119,8 +118,10 @@ Test <t@e.com> | platform | initial commit
 ```
 
 ::: warning Needs a connected account
-The `/sql` leg reads today, but the `/github` leg returns *connect a GitHub account to read it — run
-`qfs connection add github`* until you've authenticated. Once connected, the join runs end to end.
+The `/sql` leg reads today, but the `/github` leg fails with an actionable hint until an account is
+bound to the mount (`qfs account add github …`, then `qfs connect /github --driver github
+--account …` — see the [GitHub cookbook](/cookbook/github)). Once connected, the join runs end to
+end.
 :::
 
 ## Federate several services into one feed

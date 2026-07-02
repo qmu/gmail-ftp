@@ -113,7 +113,7 @@ impl ResolveError {
 ///
 /// - `flag` is the `--connection` override; `at_clause` is the `AT 'acct'` selector.
 /// - `mount` is the resolved mount's bound account (ADR 0008 — the mount carries the account).
-/// - `available` is the full connection list **already filtered to this driver** by the
+/// - `available` is the full list of connections **already filtered to this driver** by the
 ///   caller (a driver only sees its own connections — the capability boundary).
 ///
 /// An explicit selector (flag > at > mount) is honoured only if it names a configured

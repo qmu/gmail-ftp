@@ -4,7 +4,7 @@ Five ideas explain almost everything in qfs. None of them is complicated.
 
 ## What runs today
 
-This is the single source of truth for what the `v0.0.10` binary actually does — other pages link
+This is the single source of truth for what the `v0.0.14` binary actually does — other pages link
 here. Everything below is verified by running the binary as a fresh user with no credentials.
 
 **Reads that run offline, no account, no setup:**
@@ -18,20 +18,22 @@ here. Everything below is verified by running the binary as a fresh user with no
 
 The `<conn>`/`<repo>` segment is a **named connection** you define — for `/sql` and `/git` it's an
 environment variable whose value is where the database/repo lives (`QFS_SQL_orders=…` → `/sql/orders`);
-for credentialed services it's a stored credential (`qfs connection add s3 prod` → `/s3/prod`). See
+a credentialed service is a **mount** you define, bound to an authorized account
+(`qfs connect /s3 --driver s3 --account prod` → `/s3/…`). See
 [Connections & credentials](/guide/connections) for both.
 
 **Write-plan previews run with no account** — `insert`/`update`/`upsert`/`remove into /any/path …`
 returns a plan (`"committed": false`) without ever touching the service, because previewing never
 reads or writes. (See **Preview vs. commit**, §4 below.)
 
-**Cloud reads need a connected account.** A cloud read with no account fails closed (exit 3) with an
-actionable message, not a cryptic error:
+**Cloud reads need a connected account.** A cloud path exists only after a `qfs connect` mounts it
+(before that, a read reports `unknown source`), and a mounted path whose account isn't usable fails
+closed (exit 2) with an actionable message, not a cryptic error:
 
 ```console
 $ qfs run "/mail/inbox |> limit 5"
-{"error":{ … "message":"connect a Google account to read mail — run `qfs identity signup <email>`,
-then `qfs connection add gmail` (gmail reads are not available without an authenticated account)" }}
+{"error":{ … "message":"invalid path \"/mail/inbox\": this mail mount has no usable Google account
+— run `qfs app add google`, `qfs account add google <email>`, then `qfs connect <path> gmail <email>`" }}
 ```
 
 | Source | Status |
@@ -266,10 +268,10 @@ The path model, the four archetypes, and preview-then-commit are identical on al
 
 ## Credentials, briefly
 
-`describe` and `preview` never need a credential. To **commit** against a live service you store one
-once with `qfs connection add <service> <name>` — and qfs never prints it back. That command first
-needs `QFS_PASSPHRASE` exported (a password you choose that encrypts the service logins saved on this
-machine — not any service's own password) and reads the credential value from stdin. See
+`describe` and `preview` never need a credential. To **commit** against a live service you authorize
+the account once — `qfs account add <provider> <label>` seals its token into the encrypted vault
+(created by `qfs init`, unlocked by a passphrase or the OS-keychain slot) and qfs never prints it
+back — then mount the path with `qfs connect <path> --driver <driver> --account <label>`. See
 [Connections & credentials](/guide/connections) for the full flow.
 
 **Next:** put it all together in [the Cookbook →](/cookbook/)

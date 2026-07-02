@@ -30,7 +30,7 @@ use crate::key::DriverId;
 /// the canonical [`DriverId`] (driver ids are already lowercase by construction).
 ///
 /// Membership is the single source of truth for [`is_cloud_driver`]; a driver NOT listed here is a
-/// **local** driver (e.g. `local`, `git`, `sql`, `sys`, `http`) for which `connection add`/`use` and
+/// **local** driver (e.g. `local`, `git`, `sql`, `sys`, `http`) for which `qfs account add` and
 /// a commit-time bind need no identity and no recorded consent.
 pub const CLOUD_DRIVERS: &[&str] = &["gmail", "gdrive", "ga", "github", "slack", "objstore", "cf"];
 

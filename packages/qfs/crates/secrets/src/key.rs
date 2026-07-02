@@ -134,7 +134,7 @@ impl OwnerScope {
     }
 
     /// The canonical, secret-free round-trip label (`me` / `project`) — for `/sys/connections`,
-    /// `connection list`, and the audit trail. Never a credential.
+    /// `qfs account list`, and the audit trail. Never a credential.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {

@@ -53,35 +53,37 @@ verbatim.
 
 ## Setup
 
-::: tip Prerequisites — unlock the store, sign in
-Connecting a cloud service needs two one-time steps: your `QFS_PASSPHRASE` to unlock the local
-credential store (**[The QFS passphrase](/guide/passphrase)**) and a signed-in operator identity
-(**[The operator identity](/guide/operator)**). Do both first; every step below assumes them.
+::: tip Prerequisites — an operator, an account, a mount
+Reaching a cloud service takes three one-time steps: a signed-in operator (`qfs init` —
+**[The operator identity](/guide/operator)**), an authorized account (`qfs account add …`), and a
+mount binding that account to a path (`qfs connect …`). The steps below assume the first two.
 :::
 
-Drive uses the **same Google account and OAuth app as Gmail** — a single consent covers both. If you
-already followed the [Gmail cookbook Setup](/cookbook/gmail#setup), the happy path is one command:
+Drive uses the **same Google account and OAuth app as Gmail** — a single authorization serves both
+(and Google Analytics). If you already followed the [Gmail cookbook Setup](/cookbook/gmail#setup),
+the happy path is one command:
 
 ```sh
-qfs connect /drive --driver gdrive                    # mount Drive at /drive
+qfs connect /drive --driver gdrive --account you@gmail.com   # mount Drive at /drive
 ```
 
 The rest of this section explains the details.
 
-If you have **not** connected a Google account yet, do the Google-account steps in the
-[Gmail cookbook Setup](/cookbook/gmail#setup) first (sign in, hand qfs your `credentials.json`, get a
-refresh token), but enable the **Drive API** for your Google Cloud project. Then mount the path:
+If you have **not** authorized a Google account yet, do the Google-account steps in the
+[Gmail cookbook Setup](/cookbook/gmail#setup) first (`qfs init`, `cat credentials.json | qfs app add
+google`, `qfs account add google`), but enable the **Drive API** for your Google Cloud project. Then
+mount the path:
 
 ```sh
-qfs connect /drive --driver gdrive
+qfs connect /drive --driver gdrive --account you@gmail.com
 ```
 
-`QFS_PASSPHRASE` must be exported (it unlocks qfs's encrypted credential store). `qfs connection
-paths` now lists the mount, and `qfs describe /drive` shows the schema and verbs.
+`qfs connect --list` now lists the mount, and `qfs describe /drive` shows the schema and verbs.
 
-::: info The mount path is yours
-`/work/drive` works just as well as `/drive` — mount with `qfs connect /work/drive --driver gdrive`
-and every `/drive/…` recipe below simply becomes `/work/drive/…`.
+::: info The mount path is yours — and so is the account it carries
+`/work/drive` works just as well as `/drive` — mount with
+`qfs connect /work/drive --driver gdrive --account you@gmail.com` and every `/drive/…` recipe below
+simply becomes `/work/drive/…`.
 :::
 
 If a read reports *connect a Google account to read Drive*, you are past addressing (the path

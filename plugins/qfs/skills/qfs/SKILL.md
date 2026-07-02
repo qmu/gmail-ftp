@@ -22,18 +22,23 @@ authoritative; this skill is the quick operating guide.
 - **The binary.** Use an installed `qfs`, or build it: `cd packages/qfs && cargo build --release`
   → `packages/qfs/target/release/qfs`. `qfs --version` confirms it runs.
 - **Credentials are only needed to COMMIT against a live service.** `describe` and `preview` work
-  offline with no credentials at all. To apply real changes, the user adds a connection once. This
-  needs **`QFS_PASSPHRASE`** exported first — the master passphrase that unlocks the local encrypted
-  store (an argon2id KDF over the at-rest vault, NOT a service credential) — and reads the
+  offline with no credentials at all. To apply real changes, the user authorizes an account once
+  and mounts it at a path (ADR 0008: the mount carries the account). This needs
+  **`QFS_PASSPHRASE`** exported first — the master passphrase that unlocks the local encrypted
+  vault (an argon2id KDF over the at-rest store, NOT a service credential) — and reads the
   credential VALUE from stdin, never argv (argv leaks into the process table + shell history):
 
   ```sh
-  read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE        # unlock the vault, no shell-history leak
-  printf %s "$TOKEN" | qfs connection add mail work     # credential value via stdin, never argv
+  read -rs QFS_PASSPHRASE; export QFS_PASSPHRASE          # unlock the vault, no shell-history leak
+  qfs init you@example.com                                 # one-time: vault + operator identity
+  printf %s "$TOKEN" | qfs account add github work         # token via stdin, never argv
+  qfs connect /github --driver github --account work       # the mount carries the account
   ```
 
-  `QFS_PASSPHRASE` must stay set for the shell running `connection add/list/remove`. Names are safe
-  to print; the secret is never echoed. `qfs connection list` shows configured connections.
+  `QFS_PASSPHRASE` must stay set for the shell running `qfs account add/list/remove`. Labels are
+  safe to print; the secret is never echoed. `qfs account list` shows authorized accounts and
+  `qfs connect --list` the mounted paths. Two accounts of one service coexist as two mounts
+  (`/mail` and `/mail2`).
 
 ## The loop (do this for every task)
 

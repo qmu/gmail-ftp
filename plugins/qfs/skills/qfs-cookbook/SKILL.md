@@ -9,10 +9,12 @@ Every external service, one language. Mail, a database, a repo, a channel, a buc
 tree of paths you query with the same filesystem-shaped pipe-SQL.
 
 ::: tip Start here — the one-time setup gates
-`/local`, `/sys`, and local files/repos need no setup. **Every connected service below** needs your
-`QFS_PASSPHRASE` to unlock the local credential store (**[The QFS passphrase](/guide/passphrase)**),
-and every **cloud** service also needs a signed-in operator (**[The operator identity](/guide/operator)**).
-Do those first — without them you can't connect Gmail, Drive, GitHub, Slack, or object storage.
+`/local`, `/sys`, and local files/repos need no setup. Every **cloud** service needs a signed-in
+operator (`qfs init` — **[The operator identity](/guide/operator)**; it also creates the encrypted
+credential store, **[The QFS passphrase](/guide/passphrase)**), an authorized account
+(`qfs account add …`), and a mount binding that account to a path (`qfs connect …`). Each chapter's
+Setup walks through them — without them you can't reach Gmail, Drive, GitHub, Slack, or object
+storage.
 :::
 
 ## One query shape, any service
@@ -36,8 +38,8 @@ all of them.
 ::: tip Reads return rows; writes preview
 A **read** runs immediately and returns rows — `/local`, `/sys`, a `/sql` table, and a `/git` repo
 all read today. A read of a cloud service you haven't connected (mail, GitHub, Slack, S3, Drive)
-returns an *actionable* error telling you exactly which `qfs connection add …` to run — it never
-silently fails.
+returns an *actionable* error telling you exactly which `qfs account add …` / `qfs connect …` to
+run — it never silently fails.
 
 A **write** (`insert`, `update`, `upsert`, `remove`, `call`) **previews** by default: `qfs run`
 shows the plan and changes nothing. Add `--commit` to act, and `--commit-irreversible` for things

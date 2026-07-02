@@ -339,7 +339,7 @@ fn binary_is_the_thin_entrypoint_plus_the_t28_shell_composition_root() {
         "qfs-store",
         // t45 identity composition root: the binary wires the System-DB-backed identity store
         // (`SqliteIdentityStore` in qfs-store) + the identity DOMAIN core (qfs-identity) for `qfs
-        // identity signup/whoami`, injecting the launcher into qfs-cmd (which stays off both
+        // identity whoami` (and the `qfs init` signup), injecting the launcher into qfs-cmd (off both
         // backends). qfs-identity is a pure-ish leaf (no rusqlite/tokio/lang/plan/driver/codec/
         // parser — asserted by `identity_is_a_pure_domain_leaf` below), so the edge adds no
         // runtime/driver coupling to the terminal binary.

@@ -58,21 +58,27 @@ GitHub isn't reachable until you connect an account to it — one command, once,
 
 ## Setup
 
-::: tip Prerequisites — unlock the store, sign in
-Connecting a cloud service needs two one-time steps: your `QFS_PASSPHRASE` to unlock the local
-credential store (**[The QFS passphrase](/guide/passphrase)**) and a signed-in operator identity
-(**[The operator identity](/guide/operator)**). Do both first; every step below assumes them.
+::: tip Prerequisites — an operator, an account, a mount
+Reaching a cloud service takes three one-time steps: a signed-in operator (`qfs init` —
+**[The operator identity](/guide/operator)**), an authorized account (`qfs account add …`), and a
+mount binding that account to a path (`qfs connect …`). The happy path below is exactly those
+three.
 :::
 
-qfs pre-mounts nothing for GitHub. A read (and the `CALL` that targets a PR) needs a token:
+qfs pre-mounts nothing for GitHub. A read (and the `CALL` that targets a PR) needs a token-backed
+account bound to a mount:
 
 ```sh
-qfs connection add github
+qfs init you@example.com                                # 1. the operator + the vault (once per machine)
+printf '%s' "$GITHUB_TOKEN" | qfs account add github work   # 2. the token, labeled `work`
+qfs connect /github --driver github --account work          # 3. mount it at /github
 ```
 
-Until connected, a read returns the actionable *connect a GitHub account to read it — run
-`qfs connection add github`*. The token is sealed in qfs's encrypted credential store; once it's
-there, every `/github/<owner>/<repo>/…` path resolves against the GitHub API.
+The token comes in on **stdin**, never argv, and is sealed in qfs's encrypted credential store; the
+label defaults to `default` if you omit it. Until the mount is bound, a read fails with an
+actionable hint naming the `qfs account add github …` / `qfs connect …` to run. Once bound, every
+`/github/<owner>/<repo>/…` path resolves against the GitHub API. `qfs account list` and
+`qfs connect --list` show the account and the mount.
 
 ## The repo as paths
 

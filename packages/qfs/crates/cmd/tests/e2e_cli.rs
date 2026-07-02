@@ -72,12 +72,26 @@ struct Out {
     stderr: String,
 }
 
+/// A FRESH, harness-owned config home every spawned `qfs` child sees instead of the developer's
+/// real `~/.config/qfs` — these tests assert fresh-host behavior (nothing connected, no identity,
+/// no vault), so inheriting the host's real state would couple the suite to whatever the machine's
+/// operator has configured (the hermeticity rule). One directory per test-process run.
+fn hermetic_config_home() -> &'static PathBuf {
+    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("qfs-e2e-home-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create the hermetic config home");
+        dir
+    })
+}
+
 /// Run `qfs <args...>` with an empty stdin and a quiet `RUST_LOG` (so tracing never pollutes the
 /// machine streams under test). Returns the captured outcome.
 fn qfs(args: &[&str]) -> Out {
     let mut child = Command::new(qfs_bin())
         .args(args)
         .env("RUST_LOG", "off")
+        .env("XDG_CONFIG_HOME", hermetic_config_home())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -98,6 +112,7 @@ fn qfs_stdin(args: &[&str], stdin: &[u8]) -> Out {
     let mut child = Command::new(qfs_bin())
         .args(args)
         .env("RUST_LOG", "off")
+        .env("XDG_CONFIG_HOME", hermetic_config_home())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -807,6 +822,7 @@ fn error_dto_is_whitelisted_fields_only_no_secret_leak() {
         let child = Command::new(qfs_bin())
             .args(["run", "-e", stmt, "--json"])
             .env("RUST_LOG", "off")
+            .env("XDG_CONFIG_HOME", hermetic_config_home())
             .env("QFS_FAKE_TOKEN", CANARY)
             .env("AWS_SECRET_ACCESS_KEY", CANARY)
             .stdin(Stdio::null())
@@ -836,14 +852,15 @@ fn error_dto_is_whitelisted_fields_only_no_secret_leak() {
 }
 
 #[test]
-fn connection_stub_prints_no_credential_material() {
-    // `connection list` is an E0 stub, but it must never echo a credential. Plant a canary in the
-    // env the child inherits and confirm neither stream reflects it (the connection name is safe
-    // metadata; the credential value is not).
+fn account_listing_prints_no_credential_material() {
+    // `qfs account list` renders selectors + metadata only — it must never echo a credential.
+    // Plant a canary in the env the child inherits and confirm neither stream reflects it (the
+    // account label is safe metadata; the token value is not).
     const CANARY: &str = "CANARY-SECRET-acct-do-not-leak";
     let child = Command::new(qfs_bin())
-        .args(["--json", "connection", "list"])
+        .args(["--json", "account", "list"])
         .env("RUST_LOG", "off")
+        .env("XDG_CONFIG_HOME", hermetic_config_home())
         .env("QFS_FAKE_TOKEN", CANARY)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -855,7 +872,7 @@ fn connection_stub_prints_no_credential_material() {
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     assert!(
         !blob.contains(CANARY),
-        "connection stub leaked the planted credential value: {blob}"
+        "account listing leaked the planted credential value: {blob}"
     );
 }
 

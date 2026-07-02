@@ -1,6 +1,6 @@
 # ADR 0008 — The multi-host account model: the CLI is a client of hosts, local is a host, and the account layers get their own verbs
 
-- **Status**: Accepted
+- **Status**: Implemented (tickets 20260702120010–120070, shipped on branch work-20260702-012808)
 - **Date**: 2026-07-02
 - **Deciders**: project owner (direction + business framing); design review discussion 2026-07-02
 - **Supersedes / superseded by**: revises the account-surface parts of the t45/t54 CLI behavior

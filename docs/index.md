@@ -75,7 +75,8 @@ account, but they are the whole point of qfs.
 |> select id, title
 ```
 
-The `/sql` leg reads today; the GitHub leg needs a connected account — `qfs connection add github`.
+The `/sql` leg reads today; the GitHub leg needs a connected account —
+`qfs account add github work`, then `qfs connect /github --driver github --account work`.
 
 **Automate it — every time mail lands, post to Slack:**
 

@@ -62,7 +62,7 @@ qfs describe /mail/drafts
 qfs run "insert into /mail/drafts values ('alice@example.com', 'Hi', 'Body text')"
 ```
 
-When you're ready to act on real services, [add a connection](/guide/connections).
+When you're ready to act on real services, [connect a service](/guide/connect).
 
 ## Use qfs from Claude Code (the plugin)
 
@@ -89,7 +89,7 @@ This lands in `~/.claude/settings.json`:
 ```
 
 The plugin carries knowledge, not credentials: its skills shell out to the `qfs` binary you
-installed above, so finish a one-time [connection setup](/guide/connections) for the services you
+installed above, so finish a one-time [connect setup](/guide/connect) for the services you
 want. The agent inherits qfs's safety model unchanged — every write previews first, and irreversible
 actions (sending a draft, trashing, merging a PR) still need an explicit `--commit-irreversible`, so
 an agent can't fire them by accident.

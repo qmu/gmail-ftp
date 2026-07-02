@@ -1,39 +1,41 @@
-# The QFS passphrase — unlock your credential store
+# The QFS passphrase — unlock your credential vault
 
-**Do this once, before any third-party service.** Reading `/local`, `/sys`, a local SQLite file, or
-a local git repo needs nothing. But the moment you connect a service that stores a login — Gmail,
-Google Drive, GitHub, Slack, S3, R2, a remote database — qfs keeps that credential in an
-**envelope-encrypted store on this machine**, and the key that unlocks it is your **`QFS_PASSPHRASE`**.
+**`qfs init` does this once, before any third-party service.** Reading `/local`, `/sys`, a local
+SQLite file, or a local git repo needs nothing. But the moment you authorize an account whose login
+qfs stores — Gmail, Google Drive, GitHub, Slack, S3, R2, a remote database — qfs keeps that
+credential in an **envelope-encrypted vault on this machine**. `qfs init` creates the vault and
+walks you through choosing its **passphrase**; that passphrase is the vault's first key slot.
 
 ::: tip This is the gate for every service cookbook
 Every third-party cookbook (Gmail, Drive, GitHub, Slack, files/object storage, remote databases,
-cross-service, automation) assumes the store is unlocked. If a command reports
-*`QFS_PASSPHRASE is not set`*, come back here first — you can't `connection add` or read a connected
-service without it. A **cloud** service also needs a signed-in operator — see the companion step,
-**[The operator identity](/guide/operator)**.
+cross-service, automation) assumes the vault is unlocked. If a command reports
+*`QFS_PASSPHRASE is not set`*, come back here first — you can't `qfs account add` or read a
+connected service without unlocking. A **cloud** service also needs a registered operator — see the
+companion step, **[The operator identity](/guide/operator)**.
 :::
 
 ## What it is (and is not)
 
-`QFS_PASSPHRASE` is **a password you choose** that encrypts the service logins you save on this host.
+The passphrase is **a password you choose** that encrypts the service logins you save on this host.
 
 - It is **not** any service's own password. It locks the local file your saved tokens live in.
 - qfs derives a key from it (argon2id over a per-store salt) and seals every stored secret under a
-  data-key wrapped by that key. The passphrase itself is **never stored** — so if you forget it, the
-  stored logins can't be recovered (you re-add them under a new passphrase).
+  data-key wrapped by that key. The passphrase itself is **never stored** — it is one **key slot**
+  among possibly several (see the keychain slot below); if every slot is lost, the stored logins
+  can't be recovered (you re-add them under a new vault).
 - It protects the credential blob **at rest**. It is not a live-host guard: whoever can run `qfs`
-  with the passphrase available can use the connections.
+  with the vault unlockable can use the accounts.
 
 ## How to provide it — realistic options
 
 Pick the one that matches how much convenience vs. exposure you want. They differ only in **where the
-passphrase lives** and **how long**.
+unlocking key lives** and **how long**.
 
 ### 1. Interactive prompt — zero setup (default)
 
-Run any `qfs` command that needs the store on a terminal and, if `QFS_PASSPHRASE` isn't set, qfs
-**asks for it** (echo off). On the very first run it walks you through creating the store (typed
-twice); after that it just unlocks.
+Run any `qfs` command that needs the vault on a terminal and, if `QFS_PASSPHRASE` isn't set, qfs
+**asks for it** (echo off). The vault itself is created by `qfs init` (typed twice); after that any
+command just unlocks.
 
 - The **interactive shell** (`qfs` with no arguments) asks **once per session** and reuses it for
   every command in that session — the recommended way to run several statements.
@@ -59,38 +61,38 @@ makes it available to **every** new shell and pane automatically. That convenien
 passphrase now sits **in plaintext at rest** in that file — you own that risk. If you do this, lock
 the file down (`chmod 600`) and keep it out of any repo.
 
-### 4. Your OS keychain or your own secrets manager
+### 4. Enroll your OS keychain — no passphrase at all
 
-Keep the passphrase in the OS keychain (macOS Keychain, Linux `libsecret`) or a manager you already
-run (1Password CLI, `pass`, Vault, cloud secret manager), and fetch it into the environment at shell
-start:
+The vault's data-key can be wrapped under more than one **key slot** (KeyGuardian). Enroll the OS
+keychain (macOS Keychain, Linux secret service) as a second slot and this host unlocks the vault
+with **no passphrase from then on** — no prompt per pane, nothing to export:
 
 ```sh
-export QFS_PASSPHRASE="$(security find-generic-password -s qfs -w)"   # macOS Keychain, for example
-export QFS_PASSPHRASE="$(pass show qfs/passphrase)"                    # or pass, 1Password, Vault, …
+qfs vault enroll keychain    # unlocks via the platform secret service from now on
+qfs vault slots              # list the slots: id, guardian kind, created_at
+qfs vault revoke <slot>      # drop a slot (the last remaining slot is refused)
 ```
 
-The passphrase rests in **your** vault (encrypted, unlocked with your login), and every pane picks it
-up. This is the recommended path today if you want "type it once per login."
+The key rests in **your** OS keychain (encrypted, unlocked with your OS login), and every pane picks
+it up. This is the recommended path if you want "type it never."
 
 ### 5. Managed qfs (planned)
 
-The managed qfs service will remove this step entirely: it **generates a strong passphrase for you
-and keeps it in secure key storage**, so connections just work across your shells and machines with
-no passphrase to hold. Until then, options 1–4 are the local-only story, and option 4 is the closest
-to that experience.
+A managed key-guardian service would remove even the enrollment step across machines: a slot held in
+managed secure key storage, so accounts just work on every host you own. That guardian kind is
+**planned**, per the [roadmap](/roadmap) — today options 1–4 are the story, and the keychain slot
+(option 4) is the shipped "no passphrase" experience.
 
 ## Rotating the passphrase
 
-You can re-wrap the store's data-key under a **new** passphrase without re-adding a single connection
+You can re-wrap the vault's data-key under a **new** passphrase without re-adding a single account
 — the current passphrase must be set, the new one is read from stdin:
 
 ```sh
-printf %s "$NEW_PASSPHRASE" | qfs connection rekey   # old passphrase stops unlocking; logins survive
+printf %s "$NEW_PASSPHRASE" | qfs vault rekey   # old passphrase stops unlocking; logins survive
 ```
 
-See [The account model](/guide/account-model) for how the passphrase, the credential store,
-connections, and service accounts fit together; [Connections & credentials](/guide/connections) for
-the full operational model (rotating and revoking individual secrets); and
-[Connect a service](/guide/connect) for the exact per-service `connection add` steps once the store
-is unlocked.
+See [The account model](/guide/account-model) for how the passphrase, the vault, accounts, and
+mounts fit together; [Connections & credentials](/guide/connections) for the full operational model
+(rotating and revoking individual secrets); and [Connect a service](/guide/connect) for the exact
+per-service `account add` + `connect` steps once the vault exists.

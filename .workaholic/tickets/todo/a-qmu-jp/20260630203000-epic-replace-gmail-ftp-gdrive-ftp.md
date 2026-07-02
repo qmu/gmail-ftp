@@ -28,10 +28,10 @@ trash / mkdir / cp / mv. Gmail reads + Drive folder listing are wired live (this
 
 ## Already shipped this cycle (branch work-20260629-110121)
 
-- **Google app creds in qfs's own DB** (commit `92c6a9a`): `cat credentials.json | qfs connection add
-  google-app default`; `crate::google::google_app_config()` reads the DB first, env fallback. The
-  owner's design point ("qfs user offers the credential, qfs stores it in db"). Live-proven: the app
-  credentials.json is in qfs's DB.
+- **Google app creds in qfs's own DB** (commit `92c6a9a`): `cat credentials.json | qfs app add
+  google` (the ADR 0008 verb for the app-credential layer); `crate::google::google_app_config()`
+  reads the DB first, env fallback. The owner's design point ("qfs user offers the credential, qfs
+  stores it in db"). Live-proven: the app credentials.json is in qfs's DB.
 
 ## Sub-tickets
 

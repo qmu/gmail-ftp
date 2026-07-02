@@ -392,13 +392,13 @@ fn cloud_apply_driver(
         }
         "s3" => {
             let cfg = crate::objstore::s3_config()?;
-            let registry = build_obj_registry("s3", mount_connection(mount), cfg)?;
+            let registry = build_obj_registry(mount_connection(mount), cfg)?;
             let driver = qfs_driver_objstore::S3Driver::new(registry);
             Some(Arc::new(qfs_driver_objstore::s3_apply_driver(&driver)))
         }
         "r2" => {
             let cfg = crate::objstore::r2_config()?;
-            let registry = build_obj_registry("r2", mount_connection(mount), cfg)?;
+            let registry = build_obj_registry(mount_connection(mount), cfg)?;
             let driver = qfs_driver_objstore::R2Driver::new(registry);
             Some(Arc::new(qfs_driver_objstore::r2_apply_driver(&driver)))
         }
@@ -445,23 +445,28 @@ pub(crate) fn google_stack_for_mount(
     crate::google::google_stack_for_account(&email)
 }
 
-/// Shared objstore-registry builder for a `driver` id (`s3`/`r2`) over the mount's credential
+/// The provider the object-store credential is sealed under. `qfs account add objstore <label>`
+/// seals the secret access key by PROVIDER (`objstore`), not by scheme — one credential serves
+/// both `/s3`- and `/r2`-kind mounts (the scheme picks the routing config, the label picks the
+/// key). The t54 cloud gate keys on the same `(objstore, label)` pair `account add` records.
+const OBJSTORE_PROVIDER: &str = "objstore";
+
+/// Shared objstore-registry builder for one objstore-kind mount over the mount's credential
 /// `connection` label and a resolved [`ObjConfig`](crate::objstore::ObjConfig): resolve + gate
 /// the credential exactly like the networked drivers (the t81/t80 bind gates AND the t54 cloud
-/// bind gate — a no-op for the non-cloud-classified `s3`/`r2` ids, kept for structural parity
-/// and future-proofing), read the secret access key from the store (fail closed on any error),
-/// construct the SigV4 [`HttpBackend`](qfs_driver_objstore::HttpBackend) over the shared reqwest
-/// exchange, and register the single configured bucket. Returns `None` (driver left
-/// unregistered) whenever the credential cannot bind or resolve.
+/// bind gate for the `(objstore, label)` pair `qfs account add objstore` recorded), read the
+/// secret access key from the store (fail closed on any error), construct the SigV4
+/// [`HttpBackend`](qfs_driver_objstore::HttpBackend) over the shared reqwest exchange, and
+/// register the single configured bucket. Returns `None` (driver left unregistered) whenever
+/// the credential cannot bind or resolve.
 fn build_obj_registry(
-    driver: &str,
     connection: &str,
     cfg: crate::objstore::ObjConfig,
 ) -> Option<qfs_driver_objstore::ObjRegistry> {
     use qfs_driver_objstore::{Bucket, HttpBackend, ObjRegistry, SigV4Credentials};
 
-    let (store, cred) = networked_credential(driver, connection)?;
-    if !cloud_bind_allowed(driver, cred.connection.as_str()) {
+    let (store, cred) = networked_credential(OBJSTORE_PROVIDER, connection)?;
+    if !cloud_bind_allowed(OBJSTORE_PROVIDER, cred.connection.as_str()) {
         return None;
     }
     // Resolve the SECRET access key eagerly (the signer holds it for the commit's lifetime). A
@@ -489,23 +494,23 @@ pub(crate) fn live_obj_read_driver(
     connection: &str,
 ) -> Option<qfs_driver_objstore::ObjDriver> {
     use qfs_driver_objstore::Scheme;
-    let (driver_id, cfg) = match scheme {
-        Scheme::S3 => ("s3", crate::objstore::s3_config()?),
-        Scheme::R2 => ("r2", crate::objstore::r2_config()?),
+    let cfg = match scheme {
+        Scheme::S3 => crate::objstore::s3_config()?,
+        Scheme::R2 => crate::objstore::r2_config()?,
     };
-    let registry = build_obj_registry(driver_id, connection, cfg)?;
+    let registry = build_obj_registry(connection, cfg)?;
     Some(qfs_driver_objstore::ObjDriver::new(scheme, registry))
 }
 
 /// t54 / M4 — the commit-time **bind gate** for a cloud driver: may a credential for
 /// `driver`/`connection` bind into the live registry? Consults the SAME pure
-/// [`qfs_secrets::bind_gate`] decision the `connection add`/`use` path uses, wiring in the two real
+/// [`qfs_secrets::bind_gate`] decision the `qfs account add` path uses, wiring in the two real
 /// state reads:
 ///
 /// - **signed in?** — does a signed-up identity exist on this host (the System-DB identity store, t45;
 ///   sessions t46 are not yet wired into the one-shot CLI, so presence of an identity is the proxy)?
 /// - **consent recorded?** — is there a `connection_consent` row for this `(driver, connection)`
-///   (the Project-DB ledger `connection add` writes)?
+///   (the Project-DB ledger `qfs account add` writes)?
 ///
 /// Returns `true` to bind. On refusal returns `false` and logs the structured, secret-free
 /// [`qfs_secrets::ConsentError`] code so the operator can see WHY a cloud commit fell back to "no
@@ -551,7 +556,7 @@ fn operator_signed_in() -> bool {
 }
 
 /// Is consent recorded for this cloud `(driver, connection)` in the Project-DB consent ledger
-/// (`connection_consent`, written by `connection add`)? Best-effort + passphrase-free (the row carries
+/// (`connection_consent`, written by `qfs account add`)? Best-effort + passphrase-free (the row carries
 /// no key material); an unreadable Project DB reads as NO consent (fail closed).
 fn consent_recorded(driver: &str, connection: &str) -> bool {
     let Some(proj) = crate::store::open_project_db().ok().flatten() else {

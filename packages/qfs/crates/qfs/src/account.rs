@@ -3,7 +3,7 @@
 //!
 //! - **`qfs app`** owns OAuth **app registrations** — the operator's client id/secret (today:
 //!   Google's `credentials.json`), sealed in the vault under the `<provider>-app` driver exactly
-//!   where `connection add google-app default` used to put it (`crate::google::google_app_config`
+//!   where the retired connection namespace used to put it (`crate::google::google_app_config`
 //!   keeps reading it unchanged).
 //! - **`qfs account`** owns external **service accounts** — the token + the recorded consent.
 //!   For Google, ONE account-level authorization serves gmail + gdrive + ga (the shared
@@ -13,11 +13,11 @@
 //!   stdin with the email as the label. Other cloud providers (github/slack/objstore/cf) pipe or
 //!   prompt their token per label.
 //!
-//! ## Consent keying (the 120050 seam)
-//! Consent is recorded per Google DRIVER under the `default` connection (and the account is made
-//! the active `google` selection), mirroring what the retired flow recorded — so the commit-time
-//! bind gate keeps working unchanged until the mount-bound-accounts ticket (20260702120050)
-//! re-keys resolution off the mount coordinate.
+//! ## Consent keying (ADR 0008 §4 — mount-bound)
+//! Consent is recorded per Google DRIVER keyed by the ACCOUNT EMAIL (per `(provider, label)` for
+//! the other clouds) — exactly the `(kind, account)` pair the commit-time bind gate consults for
+//! a connect-created mount. There is no selection state: an authorized account becomes usable by
+//! connecting a mount to it (`qfs connect /mail --driver gmail --account <email>`).
 //!
 //! ## Secret hygiene (RFD §10)
 //! Tokens arrive on stdin or an echo-off TTY prompt, never argv; they are sealed by the vault and
@@ -121,7 +121,7 @@ fn revoke_account(provider: &str, label: &str) -> Result<String, String> {
 }
 
 /// The `<provider>-app` driver id an app registration is sealed under (the same key the retired
-/// `connection add google-app default` wrote, so `google_app_config` reads on unchanged).
+/// connection namespace wrote, so `google_app_config` reads on unchanged).
 fn app_key(provider: &str) -> Result<CredentialKey, String> {
     if provider != "google" {
         return Err(format!(
@@ -223,12 +223,12 @@ fn add_google(label: Option<&str>) -> Result<String, String> {
     // Record the account-level consent per Google DRIVER, keyed by the ACCOUNT EMAIL (ADR 0008
     // §4 — the mount carries the account, so the commit-time bind gate consults the mount's
     // `(driver, account)`). No selection is made: the account becomes usable by connecting a
-    // mount to it (`qfs connect /mail gmail <email>`).
+    // mount to it (`qfs connect /mail --driver gmail --account <email>`).
     let proj = open_project_conn()?;
     record_google_consents(&proj, &subject, &email)?;
     Ok(format!(
         "authorized google account {email} (one authorization serves mail, drive, and analytics; \
-         consent granted by {subject}) — mount it with `qfs connect /mail gmail {email}`"
+         consent granted by {subject}) — mount it with `qfs connect /mail --driver gmail --account {email}`"
     ))
 }
 

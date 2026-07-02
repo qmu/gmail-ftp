@@ -69,3 +69,19 @@ Global gate (EPIC) plus — this ticket owns the epic's final gates:
 - The getting-started + gmail-cookbook happy paths, followed verbatim on this machine (token-import
   variant), reach a real `/mail/inbox` read — the docs-are-true check.
 - Patch version bumped; `qfs --version` reflects it.
+
+## Completion record (2026-07-03, /drive)
+
+**Retired-verb-zero grep result** (`grep -rn "connection add\|connection use\|connection list\|connection remove\|identity signup" --include='*.md' --include='*.rs' --include='*.sh'`, excluding `tickets/archive|abandoned/`, `docs/adr/`, `.workaholic/stories/`, `/target/`):
+the only remaining hits are this ticket's own gate text and the two ADR-track queue tickets
+(`20260702120000` epic, `20260702130000` resume), all of which move to `tickets/archive/` at
+close of this drive — zero hits in product docs, code, cookbooks, skills, and installer.
+
+- Sweep totals: guides 70→0, cookbooks 24→0, README/skill/installer 13→0, crates prose →0.
+- `gen-docs --check` + `gen-skills --check` in sync; cookbook parse ratchet green.
+- Docs-are-true: the rewritten getting-started happy path (token-import variant) executed
+  verbatim on this machine reached a real `/mail/inbox` read.
+- Patch bumped 0.0.13 → 0.0.14; `qfs --version` reflects it.
+- Note: the CONNECT ACCOUNT/HOST reference lives in `docs/guide/connect.md` — the EBNF in
+  `crates/lang/src/reference.rs` deliberately carries only frozen-keyword forms (CONNECT is a
+  contextual-ident statement), so it was not extended.

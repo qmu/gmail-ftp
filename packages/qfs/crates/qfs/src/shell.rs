@@ -301,31 +301,32 @@ fn connect_hint(kind: &str) -> &'static str {
     match kind {
         "gmail" => {
             "this mail mount has no usable Google account — run `qfs app add google`, \
-             `qfs account add google <email>`, then `qfs connect <path> gmail <email>`"
+             `qfs account add google <email>`, then `qfs connect <path> --driver gmail --account <email>`"
         }
         "gdrive" => {
             "this Drive mount has no usable Google account — run `qfs app add google`, \
-             `qfs account add google <email>`, then `qfs connect <path> gdrive <email>`"
+             `qfs account add google <email>`, then `qfs connect <path> --driver gdrive --account <email>`"
         }
         "ga" | "google-analytics" => {
             "this Analytics mount has no usable Google account — run `qfs app add google`, \
-             `qfs account add google <email>`, then `qfs connect <path> ga <email>`"
+             `qfs account add google <email>`, then `qfs connect <path> --driver ga --account <email>`"
         }
         "github" => {
             "this GitHub mount has no usable account — run `qfs account add github <label>`, \
-             then `qfs connect <path> github <label>`"
+             then `qfs connect <path> --driver github --account <label>`"
         }
         "slack" => {
             "this Slack mount has no usable workspace token — run `qfs account add slack \
-             <label>`, then `qfs connect <path> slack <label>`"
+             <label>`, then `qfs connect <path> --driver slack --account <label>`"
         }
         "s3" => {
-            "this S3 mount has no usable credentials — run `qfs account add s3 <label>`, then \
-             `qfs connect <path> s3 <label>` (S3 reads need a credentialed bucket)"
+            "this S3 mount has no usable credentials — run `qfs account add objstore <label>`, \
+             then `qfs connect <path> --driver s3 --account <label>` (S3 reads need a \
+             credentialed bucket)"
         }
         "r2" => {
-            "this R2 mount has no usable credentials — run `qfs account add r2 <label>`, then \
-             `qfs connect <path> r2 <label>`"
+            "this R2 mount has no usable credentials — run `qfs account add objstore <label>`, \
+             then `qfs connect <path> --driver r2 --account <label>`"
         }
         _ => {
             "this mount's driver has no live read facet yet — see `qfs describe` for its \

@@ -2,7 +2,7 @@
 //!
 //! qfs is **stdin-pipe-first**: agents and scripts pipe secrets (never argv), and the credential
 //! path reads them from stdin. That is perfect for automation but makes a *human's* first run a
-//! copy-paste chore (`read -rs QFS_PASSPHRASE; export …`, `printf %s "$PW" | qfs identity signup …`).
+//! copy-paste chore (`read -rs QFS_PASSPHRASE; export …` before every fresh pane).
 //! These helpers add the missing INTERACTIVE path: when qfs is attached to a real terminal it
 //! *prompts* — with echo disabled — instead of requiring the env var or a piped password.
 //!

@@ -39,9 +39,10 @@ wired the binary so the headline things actually run:
 - **Query a SQL database**, with the filtering done *inside* the database (`where total > 100` runs
   as real SQL), and **query a git repository** — its commit history, branches, tags, and the files
   in its latest snapshot.
-- **Cloud sources fail honestly.** Reading `/mail` or `/github` with no account connected now returns
-  a clear, actionable *"connect a … account — run `qfs connection add …`"* message instead of a
-  cryptic internal error. Once you connect Gmail, reading `/mail` returns your real messages.
+- **Cloud sources fail honestly.** Reading `/mail` or `/github` with no usable account now returns
+  a clear, actionable *"connect a … account — run `qfs account add …`, then `qfs connect …`"*
+  message instead of a cryptic internal error. Once you connect Gmail, reading `/mail` returns your
+  real messages.
 - **Quieter, more honest output.** Unrelated commands no longer print confusing sign-in warnings, and
   `describe` now reports the *actual* operations a path supports.
 
@@ -55,7 +56,7 @@ or `~/.config/qfs/connections.qfs`). A declared `DRIVER sqlite` / `DRIVER git` c
 `/sql/<name>` / `/git/<name>` with **no env var** — the declaration is the reviewable, committable
 source of truth. `SECRET` is a reference (`env:<VAR>` / `vault:<driver>/<connection>`), never an
 inline value. The old `QFS_SQL_*` / `QFS_GIT_*` env vars are a warned, deprecated fallback —
-`qfs connection import-env` prints the equivalent declarations. (Extending declared mounts to
+`qfs connect --import-env` prints the equivalent declarations. (Extending declared mounts to
 Postgres/MySQL and the cloud drivers is the follow-up; the design that got us here is below.)
 
 A **connection** is a named pointer to one source: *which* database/repo/account it is, and how to
@@ -100,7 +101,7 @@ CREATE CONNECTION work                      -- usable at /mail/work/...
 - **`AT`** is the plain, non-secret location — a file path, a database URL, a bucket. (Omitted when
   the location is fixed, e.g. Gmail.)
 - **`SECRET`** *references* the secret, never the value: `env:NAME` reads an environment variable;
-  `vault:path` reads qfs's encrypted credential store (the same store `qfs connection add` writes to).
+  `vault:path` reads qfs's encrypted credential store (the same store `qfs account add` writes to).
   A local SQLite file or git repo needs no secret at all.
 - These declarations live in a plain config file (e.g. `connections.qfs`) you can keep in a repo —
   not in the names of environment variables.
@@ -115,10 +116,10 @@ one-command migration that prints the equivalent `CREATE CONNECTION` lines for y
 | **Design (first, the keystone)** | nail down the exact grammar and a couple of open questions — e.g. should the connection name always be *in the path* (`/mail/work/…`), to match how `/sql` already works? |
 | **Parser** | teach the language to read `CREATE CONNECTION` |
 | **Secret resolution** | implement `env:` and `vault:` lookups (read lazily, never logged) |
-| **Wire it up** | build qfs's connection list from these declarations instead of scanning env-var names |
+| **Wire it up** | build qfs's connection registry from these declarations instead of scanning env-var names |
 | **Load from config** | load a `connections.qfs` when running the server, a scheduled job, or `qfs run --config` |
 | **Retire the old way** | the `QFS_SQL_…`/`QFS_GIT_…` env vars become a warned, temporary fallback |
-| **Tidy the CLI** | `qfs connection add` becomes "store the secret a `vault:` reference points at" |
+| **Tidy the CLI** | `qfs account add` becomes "store the secret a `vault:` reference points at" |
 | **Docs** | rewrite the connection guide around this (done last, so the docs never get ahead of the code) |
 
 ## Near-term backlog 🧭 — known gaps to close

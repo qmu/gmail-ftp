@@ -43,10 +43,11 @@ Bindings don't run until a server hosts them — collect them in a `.qfs` file a
 
 ## Setup
 
-::: tip Prerequisites — unlock the store, sign in
-Connecting a cloud service needs two one-time steps: your `QFS_PASSPHRASE` to unlock the local
-credential store (**[The QFS passphrase](/guide/passphrase)**) and a signed-in operator identity
-(**[The operator identity](/guide/operator)**). Do both first; every step below assumes them.
+::: tip Prerequisites — an operator, an account, a mount
+A binding that touches a cloud service needs the same three one-time steps as any other query
+against it: a signed-in operator (`qfs init` — **[The operator identity](/guide/operator)**), an
+authorized account (`qfs account add …`), and a mount binding that account to a path
+(`qfs connect …`). Do them via each service's cookbook first; every step below assumes them.
 :::
 
 Put your `CREATE …` bindings in one config and serve them. The happy path is a single command:

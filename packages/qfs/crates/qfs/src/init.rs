@@ -1,7 +1,7 @@
 //! ADR 0008 §2 — **`qfs init`**, the first-run wizard (EPIC 20260702120000 / ticket
 //! 20260702120030). One command readies a fresh machine: it creates the **vault** (the
 //! envelope-encrypted credential store, via the KeyGuardian passphrase flow) and registers the
-//! **operator identity** — replacing `qfs identity signup`.
+//! **operator identity** — replacing the retired signup verb.
 //!
 //! ## No password — by design
 //! Local authentication is the OS login: whoever can run the binary under this OS user *is* the

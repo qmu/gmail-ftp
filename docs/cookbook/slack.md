@@ -53,21 +53,25 @@ After that every recipe on this page works verbatim.
 
 ## Setup
 
-::: tip Prerequisites — unlock the store, sign in
-Connecting a cloud service needs two one-time steps: your `QFS_PASSPHRASE` to unlock the local
-credential store (**[The QFS passphrase](/guide/passphrase)**) and a signed-in operator identity
-(**[The operator identity](/guide/operator)**). Do both first; every step below assumes them.
+::: tip Prerequisites — an operator, an account, a mount
+Reaching a cloud service takes three one-time steps: a signed-in operator (`qfs init` —
+**[The operator identity](/guide/operator)**), an authorized account (`qfs account add …`), and a
+mount binding that account to a path (`qfs connect …`). The happy path below is exactly those
+three.
 :::
 
-A Slack read needs a connected workspace:
+A Slack read needs a workspace token bound to a mount:
 
 ```sh
-qfs connection add slack
+qfs init you@example.com                               # 1. the operator + the vault (once per machine)
+printf '%s' "$SLACK_TOKEN" | qfs account add slack     # 2. the workspace token (label: `default`)
+qfs connect /slack --driver slack --account default    # 3. mount it at /slack
 ```
 
-Until connected, a read returns the actionable *connect a Slack workspace to read it — run
-`qfs connection add slack`*. Posting a message previews with no account (above); it sends only once
-connected and committed.
+The token comes in on **stdin**, never argv, and is sealed in qfs's encrypted credential store.
+Until the mount is bound, a read fails with an actionable hint naming the
+`qfs account add slack …` / `qfs connect …` to run. Posting a message previews with no account
+(above); it sends only once connected and committed.
 
 ## The channel as a path
 

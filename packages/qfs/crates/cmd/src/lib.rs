@@ -1892,7 +1892,7 @@ mod tests {
     fn identity_subcommand_parses_and_dispatches_to_the_launcher() {
         // `qfs identity …` parses cleanly and routes into the injected identity launcher (the stub
         // returns the sentinel 9). The real System-DB store I/O lives in the binary crate.
-        // `identity signup` is RETIRED (ADR 0008 — `qfs init` replaced it): a hard parse error.
+        // the signup verb is RETIRED (ADR 0008 — `qfs init` replaced it): a hard parse error.
         assert_eq!(run_t(["qfs", "identity", "whoami"]), 9);
         assert_eq!(run_t(["qfs", "identity", "whoami", "a@b.com"]), 9);
         assert_eq!(

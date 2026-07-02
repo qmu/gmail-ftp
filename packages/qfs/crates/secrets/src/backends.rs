@@ -258,7 +258,7 @@ mod tests {
         store.remove(&k).unwrap();
     }
 
-    /// Multi-connection listing: same driver, several connections; `list(Some(driver))` filters.
+    /// Listing across connections: same driver, several entries; `list(Some(driver))` filters.
     #[test]
     fn in_memory_lists_and_filters_by_driver() {
         let store = InMemoryStore::new();

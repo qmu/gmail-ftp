@@ -44,18 +44,17 @@ operating procedure ships embedded in the binary — run `qfs skill` (and `qfs s
 - **Purity invariant** (RFD §3/§6). Every function/alias produces a `Plan` and performs no I/O.
   `SEND(d)` does not send mail — it desugars to a `CALL mail.send` node in a `Plan`. Nothing
   happens until `COMMIT`. See [`docs/language.md`](docs/language.md).
-- **Least privilege** (RFD §10). Credentials are stored per driver/connection (`qfs connection add`),
-  never inline in a config, a log, or a doc. `QFS_PASSPHRASE` is a password you choose that encrypts
-  the service logins you save on this machine (not any service's own password). Under the hood they
-  are **envelope-encrypted at rest** in the SQLite Project DB: a random data-key encrypts each secret
-  value, and that data-key is itself wrapped under a key derived from `QFS_PASSPHRASE` (argon2id) — so
-  export `QFS_PASSPHRASE` before `qfs connection add`/`list`/`remove`, and pipe the credential value
-  in via stdin (never argv). See [Connect a service](docs/guide/connect.md) for the per-source steps,
-  and
-  [Connections & credentials](docs/guide/connections.md) for the full flow. (This SQLite store
-  replaces the old encrypted file vault; there is no migration — re-run `qfs connection add` once
-  for any existing connections.) `CREATE POLICY` gates writes by verb / path / irreversibility. See
-  [`docs/server.md`](docs/server.md).
+- **Least privilege** (RFD §10). Credentials are stored per layer — an OAuth **app** registration
+  (`cat credentials.json | qfs app add google`) and per service **account**
+  (`qfs account add google`, or `printf %s "$TOKEN" | qfs account add github work`) — never inline
+  in a config, a log, or a doc, and a secret value is always piped in via stdin (never argv). Under
+  the hood every secret is **envelope-encrypted at rest** in the SQLite Project DB: a random
+  data-key encrypts each value, and that data-key is wrapped by the vault's **KeyGuardian slots**
+  — the passphrase slot `qfs init` enrolls when it creates the store, plus an optional OS-keychain
+  slot (`qfs vault enroll keychain`) so this host unlocks without a passphrase. See
+  [Connect a service](docs/guide/connect.md) for the per-source steps, and
+  [Connections & credentials](docs/guide/connections.md) for the full flow. `CREATE POLICY` gates
+  writes by verb / path / irreversibility. See [`docs/server.md`](docs/server.md).
 
 ## The shipped surface (three faces, one engine)
 
@@ -71,8 +70,10 @@ gate, the policy gate) is identical on all of them:
 
 Beyond reads/writes, v0.0.9 ships the operator surface:
 
-- **Identity** — local sign-up + lookup: `qfs identity signup <email>` / `qfs identity whoami`
-  (authentication only; identity is not authorization).
+- **Identity** — first-run setup + lookup: `qfs init <email>` creates the encrypted vault and
+  registers the operator identity — one operator per OS user, no password (your OS login is the
+  authentication; the email is an accountability label). `qfs identity whoami` looks it up.
+  (Identity is not authorization.)
 - **Teams & invites** — `qfs invite create` mints a one-time, expiring token; `qfs invite redeem`
   creates the local user + membership; `qfs invite revoke` cancels a pending invite.
 - **Jobs** — a saved `CREATE JOB … EVERY … DO …` plan run by an **external** scheduler:
@@ -82,13 +83,15 @@ Beyond reads/writes, v0.0.9 ships the operator surface:
   **safety mode** lives in `/sys/settings`; the hash-chained WORM audit tail is `/sys/audit`; the
   per-team billing tier is recorded as data in `/sys/billing` (never a payment secret).
 - **OAuth Authorization Server** — qfs is its own OAuth AS (Dynamic Client Registration + PKCE) for
-  the agent/dashboard auth handshake. The credential store supports rotation / revocation / rekey
-  (`qfs connection rotate|revoke|rekey`).
+  the agent/dashboard auth handshake. Account credentials support rotation / revocation
+  (`qfs account rotate|revoke`), and the vault's key slots are managed with
+  `qfs vault slots|enroll|revoke|rekey`.
 
-Honestly **not yet wired** (kept out of the capability claims): live OAuth *browser* consent, the
-MCP cloud-tunnel dial, an LDAP/AD/Entra/Workspace directory backend, the qfs Cloud broker endpoint,
-a payment provider, Postgres/MySQL SQL backends (SQLite ships), live gmail/gdrive/ga/objstore
-*reads* (github/slack reads ship), and the Cloudflare Workers wasm artifact (parked, ADR-0005).
+Honestly **not yet wired** (kept out of the capability claims): the MCP cloud-tunnel dial, an
+LDAP/AD/Entra/Workspace directory backend, the qfs Cloud broker endpoint, a payment provider,
+Postgres/MySQL SQL backends (SQLite ships), live-verified ga/objstore *reads* (the read facets
+are wired; gmail/gdrive/github/slack reads are verified live), live `/cf` reads and commits (the
+mount is describe-only), and the Cloudflare Workers wasm artifact (parked, ADR-0005).
 
 ## Install
 
@@ -141,12 +144,16 @@ qfs run "insert into /mail/drafts values ('a@b.com','Hi','Body')"
 # 4. COMMIT applies the plan — `--commit` (writes need a CONNECTED account; below).
 qfs run "insert into /mail/drafts values ('a@b.com','Hi','Body')" --commit
 
-# A mail READ, or an irreversible CALL, needs a connected Google account today:
+# A mail READ, or an irreversible CALL, needs a mounted Google account. Nothing
+#    cloud is pre-mounted — until `qfs connect` creates the /mail mount, the read
+#    fails closed (exit 3, kind: capability). The one-time setup:
+#      qfs init you@example.com                    # vault + operator identity
+#      cat credentials.json | qfs app add google   # your Google OAuth app
+#      qfs account add google                      # browser consent on a TTY
+#      qfs connect /mail --driver gmail --account you@gmail.com
 qfs run "/mail/inbox |> where subject LIKE '%invoice%' |> select subject, from"
-# -> capability error (exit 3): "connect a Google account to read mail — run
-#    `qfs identity signup <email>`, then `qfs connection add gmail`"
 qfs run "/mail/drafts |> where id == 'draft-1' |> call mail.send" --commit --commit-irreversible
-# (same connect-account error until gmail is connected; `mail.send` is irreversible,
+# (same fail-closed error until /mail is mounted; `mail.send` is irreversible,
 #  so a one-shot COMMIT also needs the explicit `--commit-irreversible` ack)
 ```
 

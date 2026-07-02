@@ -52,43 +52,59 @@ it. Paste any recipe below and safely watch what it *would* do first.
 
 ## Setup
 
-::: tip Prerequisites — unlock the store, sign in
-Connecting a cloud service needs two one-time steps: your `QFS_PASSPHRASE` to unlock the local
-credential store (**[The QFS passphrase](/guide/passphrase)**) and a signed-in operator identity
-(**[The operator identity](/guide/operator)**). Do both first; every step below assumes them.
+::: tip Prerequisites — an operator, an account, a mount
+Reaching a cloud service takes three one-time steps: a signed-in operator (`qfs init` —
+**[The operator identity](/guide/operator)**), an authorized account (`qfs account add …`), and a
+mount binding that account to a path (`qfs connect …`). The happy path below is exactly those
+three.
 :::
 
 `/local` and `/sys` work out of the box — skip straight to the recipes. You only need this section to
-read **S3 or R2** buckets. The happy path is two commands:
+read **S3 or R2** buckets. The happy path is three commands:
 
 ```sh
-printf '%s' "$YOUR_PASSWORD" | qfs identity signup you@example.com   # 1. an operator
-qfs connection add s3                                                # 2. your AWS credentials
+qfs init you@example.com                                     # 1. the operator + the vault
+printf '%s' "$SECRET_ACCESS_KEY" | qfs account add objstore  # 2. your bucket credentials
+qfs connect /s3 --driver s3 --account default                # 3. mount the bucket at /s3
 ```
 
 The rest of this section explains each line.
 
-### 1. Sign in
+### 1. Ready the machine
 
-Object stores are cloud drivers, and cloud drivers require an authenticated operator — qfs fails
-closed for an anonymous one. The password is read from **stdin**, never argv:
-
-```sh
-printf '%s' "$YOUR_PASSWORD" | qfs identity signup you@example.com
-```
-
-### 2. Add the connection
-
-Store your bucket credentials in qfs's own encrypted store. `/s3` uses `s3`; `/r2` uses `r2`:
+Object stores are cloud drivers, and cloud drivers require a signed-in operator — qfs fails closed
+for an anonymous one. `qfs init` creates the encrypted credential store and registers you as this
+machine's operator (no password — your OS login is the authentication). Re-running it is safe:
 
 ```sh
-qfs connection add s3
-qfs connection add r2
+qfs init you@example.com
 ```
 
-`qfs connection paths` now lists them, and `qfs describe /s3` shows the schema and verbs. If an `/s3`
-list reports *connect AWS credentials to read S3 — run `qfs connection add s3`*, this step hasn't run
-yet: the path resolved (you're past addressing), but there's no signed-in operator or credentials.
+### 2. Authorize the credentials
+
+Seal the **secret access key** in qfs's encrypted store under the `objstore` provider — it comes in
+on **stdin**, never argv, and the label defaults to `default`:
+
+```sh
+printf '%s' "$SECRET_ACCESS_KEY" | qfs account add objstore
+```
+
+The **non-secret** routing config comes from the environment: `QFS_S3_REGION`,
+`QFS_S3_ACCESS_KEY_ID`, and `QFS_S3_BUCKET` for S3; `QFS_R2_ACCOUNT_ID`, `QFS_R2_ACCESS_KEY_ID`, and
+`QFS_R2_BUCKET` for R2.
+
+### 3. Connect the paths
+
+The mount carries the account. `/s3` uses the `s3` driver; `/r2` uses `r2`:
+
+```sh
+qfs connect /s3 --driver s3 --account default
+qfs connect /r2 --driver r2 --account default
+```
+
+`qfs connect --list` now lists them, and `qfs describe /s3` shows the schema and verbs. If an `/s3`
+list still fails with an actionable *no usable credentials* hint, a step above hasn't run yet: the
+path resolved (you're past addressing), but the mount has no bound account.
 
 ## Files & object storage as paths
 
@@ -98,8 +114,8 @@ covers all three:
 | store | qfs path | it is a… | needs |
 | ----- | -------- | -------- | ----- |
 | your disk | `/local/<absolute-host-path>` | folder of files, read **and** written today | nothing |
-| S3 | `/s3/<bucket>/<key>` | folder of objects | a connection |
-| R2 | `/r2/<bucket>/<key>` | folder of objects | a connection |
+| S3 | `/s3/<bucket>/<key>` | folder of objects | an account-bound mount |
+| R2 | `/r2/<bucket>/<key>` | folder of objects | an account-bound mount |
 
 They share three verbs: `SELECT` to list/read, `UPSERT` to write, `REMOVE` to delete. (In the
 [interactive shell](/guide/shell) the familiar `ls`/`cp`/`mv`/`rm` are just shorthand for these same
@@ -240,9 +256,10 @@ PREVIEW: 1 effect(s)
   total affected: 1
 ```
 
-::: warning Object stores need a connection, and their writes are not wired yet
-An `/s3` or `/r2` **read** needs credentials — an `/s3` list returns *connect AWS credentials to read
-S3 — run `qfs connection add s3`*. `/s3` and `/r2` **writes** are not implemented yet: `upsert into
+::: warning Object stores need an account-bound mount, and their writes are not wired yet
+An `/s3` or `/r2` **read** needs credentials — without them an `/s3` list fails with an actionable
+*no usable credentials* hint naming the `qfs account add …` / `qfs connect …` to run (see
+**[Setup](#setup)**). `/s3` and `/r2` **writes** are not implemented yet: `upsert into
 /s3/…` / `remove /s3/…` return `unsupported_verb` (`supported: []`). `/local` reads **and** writes are
-wired and run against your disk with no connection — use it for a runnable end-to-end blob recipe.
+wired and run against your disk with no mount — use it for a runnable end-to-end blob recipe.
 :::

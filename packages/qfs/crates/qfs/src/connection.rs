@@ -163,7 +163,7 @@ fn quiet_store_passphrase() -> Option<Secret> {
 }
 
 /// Open the credential store for the **commit resolver** (read path): the same envelope-encrypted
-/// SQLite store `connection add` writes to, when the passphrase + the Project DB are both available.
+/// SQLite store `qfs account add` writes to, when the passphrase + the Project DB are both available.
 /// Returns `None` (best-effort, never an error) when the store cannot be unlocked — the commit
 /// registry then falls back to the env-var store, and a missing credential surfaces lazily as a
 /// clear per-leg auth error rather than a panic. Never logs the passphrase.
@@ -172,7 +172,7 @@ fn quiet_store_passphrase() -> Option<Secret> {
 /// credential-free PREVIEW — and once per cloud driver, so an interactive prompt here would
 /// interrogate the operator for a passphrase the command may not even need (and block a
 /// non-human PTY forever). Only the explicit credential-management paths ([`open_store`]:
-/// `connection add`/`list`/`remove`/…) may prompt; this path reuses their cached entry or the
+/// `qfs account add`/`list`/`remove`/…) may prompt; this path reuses their cached entry or the
 /// env var, else falls back quietly.
 #[must_use]
 pub fn open_store_for_commit() -> Option<SqliteSecrets> {

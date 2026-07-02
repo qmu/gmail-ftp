@@ -615,7 +615,7 @@ pub fn db_get_shared_connection(
 }
 
 /// List every project/team-owned (shared) connection as `(driver, connection, row)` — selectors +
-/// metadata only, never a secret. Powers a `connection list --project` / `/sys` style surface that
+/// metadata only, never a secret. Powers a `qfs account list --project` / `/sys` style surface that
 /// shows which connections are team-shared and at what scope. Best-effort: a query failure yields an
 /// empty list rather than erroring (the metadata view never blocks).
 #[must_use]

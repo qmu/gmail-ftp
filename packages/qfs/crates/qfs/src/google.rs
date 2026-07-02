@@ -227,7 +227,7 @@ pub fn google_stack_for_account(email: &str) -> Option<GoogleStack> {
 ///
 /// The browser open + the human approval are interactive and **not hermetically testable**, so this
 /// is plumbing wired but never exercised by a test: it is reached only from the opt-in
-/// `QFS_GOOGLE_CONSENT` branch in [`crate::connection`]. The default `connection add` path still
+/// `QFS_GOOGLE_CONSENT` branch in [`crate::connection`]. The default `qfs account add` path still
 /// provisions a refresh token out of band (from stdin), so green never depends on this round-trip.
 ///
 /// # Errors

@@ -58,19 +58,20 @@ Gmail isn't reachable until you connect a Google account to a path — about fiv
 
 ## Setup
 
-::: tip Prerequisites — unlock the store, sign in
-Connecting a cloud service needs two one-time steps: your `QFS_PASSPHRASE` to unlock the local
-credential store (**[The QFS passphrase](/guide/passphrase)**) and a signed-in operator identity
-(**[The operator identity](/guide/operator)**). Do both first; every step below assumes them.
+::: tip Prerequisites — an operator, an account, a mount
+Reaching a cloud service takes three one-time steps: a signed-in operator (`qfs init` —
+**[The operator identity](/guide/operator)**), an authorized account (`qfs account add …`), and a
+mount binding that account to a path (`qfs connect …`). The happy path below is exactly those
+three, plus registering your OAuth app.
 :::
 
 You connect Gmail once. The happy path is four commands:
 
 ```sh
-printf '%s' "$YOUR_PASSWORD" | qfs identity signup you@example.com   # 1. an operator
-cat credentials.json         | qfs connection add google-app default  # 2. your OAuth app
-QFS_GOOGLE_CONSENT=1           qfs connection add gmail default        # 3. authorize (browser)
-qfs connect /mail --driver gmail                                       # 4. mount it at /mail
+qfs init you@example.com                                   # 1. the operator + the vault
+cat credentials.json | qfs app add google                  # 2. your OAuth app
+qfs account add google                                     # 3. authorize (browser consent)
+qfs connect /mail --driver gmail --account you@gmail.com   # 4. mount it at /mail
 ```
 
 The rest of this section explains each line and the alternatives.
@@ -81,70 +82,74 @@ The rest of this section explains each line and the alternatives.
 - A Google **Desktop-app** OAuth client (`client_id` + `client_secret`), downloaded from the
   [Google Cloud console](https://console.cloud.google.com/apis/credentials) as `credentials.json`,
   with the **Gmail API** enabled for the project.
-- `QFS_PASSPHRASE` exported in your shell — it unlocks qfs's encrypted credential store, where the
-  refresh token is sealed at rest.
 
-### 1. Sign in
+### 1. Ready the machine
 
-Cloud drivers require an authenticated operator — qfs fails closed for an anonymous one. The
-password is read from **stdin**, never argv:
+Cloud drivers require a signed-in operator — qfs fails closed for an anonymous one. `qfs init`
+creates the encrypted credential store (where the refresh token is sealed at rest — see
+**[The QFS passphrase](/guide/passphrase)**) and registers you as this machine's operator. There is
+no password: your OS login is the authentication, and the email is an accountability label.
+Re-running it is safe — it reports what already exists:
 
 ```sh
-printf '%s' "$YOUR_PASSWORD" | qfs identity signup you@example.com
+qfs init you@example.com
 ```
 
 ### 2. Hand qfs your OAuth app credentials
 
-Store the downloaded `credentials.json` in qfs's own encrypted store, so it no longer depends on a
-file on disk:
+Register the downloaded `credentials.json` in qfs's own encrypted store, so it no longer depends on
+a file on disk:
 
 ```sh
-cat credentials.json | qfs connection add google-app default
+cat credentials.json | qfs app add google
 ```
 
 CI and agents can instead export `QFS_GOOGLE_CLIENT_ID` and `QFS_GOOGLE_CLIENT_SECRET`.
 
 ### 3. Authorize your account (get a refresh token)
 
-Pick **one** path.
+Pick **one** path. Either way, **one authorization serves Gmail, Google Drive, and Google
+Analytics** — the account is stored once, under your email as its label.
 
-**A — Fresh browser consent (recommended).** One command opens a Google consent screen; approve it
-and qfs stores the refresh token under `google:<email>:refresh_token`, records your consent, and
-selects the account:
-
-```sh
-QFS_GOOGLE_CONSENT=1 qfs connection add gmail default
-```
-
-On a **headless server**, forward the loopback port over SSH first, then open the printed URL in
-your laptop browser:
+**A — Fresh browser consent (recommended).** On a terminal, one command opens a Google consent
+screen; approve it and qfs seals the refresh token and records your consent:
 
 ```sh
-ssh -L 8080:localhost:8080 you@your-server      # in a second terminal
+qfs account add google
 ```
 
-**B — Import an existing refresh token** (reuse one a prior tool already obtained). Store it under
-your url-encoded email, record consent, and select the account:
+**B — Pipe an existing refresh token** (reuse one a prior tool already obtained, or automate on a
+headless box with no browser). The token comes in on **stdin**, never argv, and the email is the
+account's label:
 
 ```sh
-printf '%s' "$REFRESH_TOKEN" | qfs connection add google 'you%40example.com'  # %40 = @
-printf 'x'                   | qfs connection add gmail default                # records consent
-export QFS_GOOGLE_ACCOUNT=you@example.com                                      # selects the account
+printf '%s' "$REFRESH_TOKEN" | qfs account add google you@gmail.com
 ```
+
+`qfs account list` shows the authorized accounts; `qfs account remove google you@gmail.com` deletes
+one along with its consent record.
 
 ### 4. Connect the path
 
-Mount Gmail wherever you like — the rest of this cookbook assumes `/mail`:
+Mount Gmail wherever you like — the mount carries the account, and the rest of this cookbook
+assumes `/mail`:
 
 ```sh
-qfs connect /mail --driver gmail
+qfs connect /mail --driver gmail --account you@gmail.com
 ```
 
-`qfs connection paths` now lists it, and `qfs describe /mail` shows the schema and verbs.
+`qfs connect --list` now lists it, and `qfs describe /mail` shows the schema and verbs.
+`qfs disconnect /mail` removes the mount.
 
-::: info The mount path is yours
-`/work/gmail` works just as well as `/mail` — mount with `qfs connect /work/gmail --driver gmail`
-and every `/mail/…` recipe below simply becomes `/work/gmail/…`.
+::: info The mount path is yours — and so is the account it carries
+`/work/gmail` works just as well as `/mail` — mount with
+`qfs connect /work/gmail --driver gmail --account you@gmail.com` and every `/mail/…` recipe below
+simply becomes `/work/gmail/…`. Two Gmail accounts are simply two mounts in the same process:
+
+```sh
+qfs connect /mail  --driver gmail --account work@example.com
+qfs connect /mail2 --driver gmail --account home@example.com
+```
 :::
 
 ### 5. Read real mail
