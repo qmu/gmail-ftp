@@ -4,7 +4,7 @@ author: a@qmu.jp
 type: enhancement
 layer: [UX, Config]
 effort:
-commit_hash:
+commit_hash: 0343c49
 category: Changed
 depends_on: [20260702120050-mount-bound-accounts-retire-connection.md, 20260702120060-qfs-host-skeleton.md]
 ---
