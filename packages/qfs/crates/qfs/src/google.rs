@@ -181,8 +181,9 @@ fn now_nanos() -> u128 {
         .unwrap_or(0)
 }
 
-/// Build the account-bound [`GoogleStack`] for the live commit registry, or `None` (fail closed)
-/// when the operator's OAuth app credentials or the active account email are absent.
+/// Build a [`GoogleStack`] bound to **one given account email**, or `None` (fail closed) when the
+/// operator's OAuth app credentials are absent. The mount-bound account model (ADR 0008) builds one
+/// stack per connect-created mount, so N accounts of one driver coexist as N stacks in one process.
 ///
 /// Composition: the shared reqwest transport (the binary's [`crate::transport::google_transport`])
 /// feeds BOTH the [`OAuthClient`] (token exchange/refresh) and the [`GoogleApiClient`] (API calls).
@@ -193,9 +194,8 @@ fn now_nanos() -> u128 {
 /// The credential is read **lazily** (at request-build time), so a missing refresh token does not
 /// fail registry build — it surfaces as a clear per-leg auth error at commit time (honest).
 #[must_use]
-pub fn live_google_stack() -> Option<GoogleStack> {
+pub fn google_stack_for_account(email: &str) -> Option<GoogleStack> {
     let (client_id, client_secret) = google_app_config()?;
-    let email = resolve_account_email()?;
     let transport = crate::transport::google_transport();
     let store = commit_secret_store();
     let oauth = OAuthClient::new(
@@ -204,9 +204,19 @@ pub fn live_google_stack() -> Option<GoogleStack> {
         all_google_scopes(),
         transport.clone(),
     );
-    let tokens: Arc<dyn TokenSource> = Arc::new(StoredTokenSource::new(email, store, oauth));
+    let tokens: Arc<dyn TokenSource> =
+        Arc::new(StoredTokenSource::new(email.to_string(), store, oauth));
     let api = Arc::new(GoogleApiClient::new(transport, tokens));
     Some(GoogleStack { api })
+}
+
+/// Build the [`GoogleStack`] for the **selected** account (the legacy single-active-account path):
+/// resolve the account email ([`GOOGLE_ACCOUNT_ENV`] else the active `google` connection) and bind
+/// a stack to it via [`google_stack_for_account`]. `None` (fail closed) when no account is selected
+/// or the OAuth app credentials are absent.
+#[must_use]
+pub fn live_google_stack() -> Option<GoogleStack> {
+    google_stack_for_account(&resolve_account_email()?)
 }
 
 /// **Documented SEAM — the live loopback browser consent flow.** Run `qfs_google_auth::authorize`
